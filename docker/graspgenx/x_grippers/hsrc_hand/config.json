@@ -1,0 +1,113 @@
+{
+    "open": {
+        "hand_motor_joint": 1.24,
+        "hand_l_proximal_joint": 1.24,
+        "hand_l_spring_proximal_joint": 0.688,
+        "hand_l_mimic_distal_joint": 0.0,
+        "hand_l_distal_joint": 0.798,
+        "hand_r_proximal_joint": 1.24,
+        "hand_r_spring_proximal_joint": 0.698,
+        "hand_r_mimic_distal_joint": 0.0,
+        "hand_r_distal_joint": 0.798
+    },
+    "close": {
+        "hand_motor_joint": 0.033,
+        "hand_l_proximal_joint": -0.798,
+        "hand_l_spring_proximal_joint": 0.0,
+        "hand_l_mimic_distal_joint": -0.698,
+        "hand_l_distal_joint": -1.24,
+        "hand_r_proximal_joint": -0.798,
+        "hand_r_spring_proximal_joint": 0.0,
+        "hand_r_mimic_distal_joint": -0.698,
+        "hand_r_distal_joint": -1.24
+    },
+    "fingertip": [
+        -0.008965771325700395,
+        0.012500230797224706,
+        -0.024435480414581413
+    ],
+    "sweep_volume": {
+        "extents": [
+            0.1455329506987858,
+            0.038999512423513474,
+            0.04704201005630382
+        ],
+        "offset": [
+            -0.008965771325700395,
+            0.012500230797224706,
+            -0.024435480414581413
+        ],
+        "extents2": [
+            0.0727664753493929,
+            0.038999512423513474,
+            0.04704201005630382
+        ],
+        "offset2": [
+            -0.008965771325700395,
+            0.012500230797224706,
+            -0.024435480414581413
+        ]
+    },
+    "links": [
+        "base_link",
+        "hand_palm_link",
+        "hand_motor_dummy_link",
+        "hand_l_proximal_link",
+        "hand_l_spring_proximal_link",
+        "hand_l_mimic_distal_link",
+        "hand_l_distal_link",
+        "hand_l_finger_tip_frame",
+        "hand_l_finger_vacuum_frame",
+        "hand_r_proximal_link",
+        "hand_r_spring_proximal_link",
+        "hand_r_mimic_distal_link",
+        "hand_r_distal_link",
+        "hand_r_finger_tip_frame",
+        "hand_camera_frame",
+        "hand_camera_gazebo_frame"
+    ],
+    "standoff": [
+        0.0,
+        0.02352100502815191
+    ],
+    "symmetric": true,
+    "type": "parallel_2f",
+    "bbox": [
+        [
+            -0.1013573427059152,
+            -0.043499434890691184,
+            -0.05194864687222145
+        ],
+        [
+            0.09483201773573341,
+            0.03199998700898144,
+            -6.394297261525655e-05
+        ]
+    ],
+    "base_rotation": [
+        [
+            -4.2862637970157366e-16,
+            1.0,
+            0.0,
+            0.0
+        ],
+        [
+            -1.0,
+            -4.2862637970157366e-16,
+            0.0,
+            0.0
+        ],
+        [
+            0.0,
+            0.0,
+            1.0,
+            0.0
+        ],
+        [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+        ]
+    ]
+}

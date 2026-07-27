@@ -1,0 +1,22 @@
+<?xml version="1.0"?>
+<!--
+hand.urdf.xacro (in hsrc_description) only defines macros - it's normally
+instantiated by the full-robot xacro (hsrc1s.urdf.xacro) with the real arm
+and wrist attached above it. This wrapper instantiates just the hsrb_hand
+macro (the macro is named hsrb_hand even in hsrc_description - that's just
+what HSR calls it internally) on a throwaway base_link, so xacro can expand
+the gripper alone into a standalone URDF. See export.sh, which runs this.
+-->
+<robot name="hsrc_hand" xmlns:xacro="http://ros.org/wiki/xacro">
+    <xacro:include filename="$(find hsrc_description)/urdf/common.xacro" />
+    <xacro:include filename="$(find hsrc_description)/urdf/materials.urdf.xacro" />
+    <xacro:include filename="$(find hsrc_description)/urdf/hand_v0/hand.urdf.xacro" />
+
+    <xacro:property name="personal_name" value="" />
+
+    <link name="base_link" />
+
+    <xacro:hsrb_hand prefix="hand" parent="base_link">
+        <origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0" />
+    </xacro:hsrb_hand>
+</robot>
