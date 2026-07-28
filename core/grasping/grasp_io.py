@@ -1,28 +1,37 @@
-"""Save candidate grasps to a plain YAML file, ranked best-first, so a
-consumer (e.g. MoveIt) can try each in turn until one is reachable. The
-top score alone isn't always achievable by a specific arm's kinematics."""
+"""Save candidate grasps as plain YAML, best-scoring first, so a consumer
+(e.g. MoveIt) can work down the list until one is reachable -- the top score
+alone isn't always achievable by a given arm's kinematics."""
 
 import yaml
 from scipy.spatial.transform import Rotation
 
+TOP_K = 10
 
-def save_grasps(poses, scores, frame_id, gripper_name, out_path, top_k=10):
-    """poses: (N, 4, 4) homogeneous transforms. scores: (N,).
-    Writes the top_k highest-scoring poses, best first."""
-    order = scores.argsort()[::-1][:top_k]
 
-    grasps = []
-    for i in order:
-        x, y, z = poses[i][:3, 3].tolist()
-        qx, qy, qz, qw = Rotation.from_matrix(poses[i][:3, :3]).as_quat().tolist()
-        grasps.append({
-            "score": float(scores[i]),
-            "pose": {
-                "position": {"x": x, "y": y, "z": z},
-                "orientation": {"x": qx, "y": qy, "z": qz, "w": qw},
-            },
-        })
+def _xyz(vector):
+    return dict(zip("xyz", (float(v) for v in vector)))
 
-    data = {"header": {"frame_id": frame_id}, "gripper": gripper_name, "grasps": grasps}
-    with open(out_path, "w") as f:
-        yaml.safe_dump(data, f, sort_keys=False)
+
+def _grasp(pose, score):
+    quaternion = Rotation.from_matrix(pose[:3, :3]).as_quat()
+    return {
+        "score": float(score),
+        "position": _xyz(pose[:3, 3]),
+        "orientation": dict(zip("xyzw", (float(q) for q in quaternion))),
+    }
+
+
+def save_grasps(path, poses, scores, points, frame_id, gripper, object_id):
+    """Write the TOP_K best of (N, 4, 4) `poses` / (N,) `scores` to `path`.
+    `points` contributes only its bounding box, so a consumer can register the
+    object as a collision object precisely."""
+    best_first = scores.argsort()[::-1][:TOP_K]
+    data = {
+        "frame_id": frame_id,
+        "gripper": gripper,
+        "object_id": object_id,
+        "bounding_box": {"min": _xyz(points.min(axis=0)), "max": _xyz(points.max(axis=0))},
+        "grasps": [_grasp(poses[i], scores[i]) for i in best_first],
+    }
+    path.write_text(yaml.safe_dump(data, sort_keys=False))
+    return len(data["grasps"])

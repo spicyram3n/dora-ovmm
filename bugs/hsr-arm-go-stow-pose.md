@@ -1,11 +1,11 @@
 # Reference: HSR's "go" arm pose (stow for driving)
 
+**Where:** `ros2_ws/src/hsrb_moveit/hsrb_moveit_config/config/hsrb.srdf`,
+`group_state name="go" group="arm"`.
+
 Not a bug, just a useful discovery worth keeping around: HSR's SRDF already
 defines a named pose for tucking the arm in close to the body, meant for
 driving around without the arm sticking out.
-
-**Where:** `ros2_ws/src/hsrb_moveit/hsrb_moveit_config/config/hsrb.srdf`,
-`group_state name="go" group="arm"`.
 
 **Joint values:**
 ```

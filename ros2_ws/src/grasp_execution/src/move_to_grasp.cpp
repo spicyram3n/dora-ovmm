@@ -1,25 +1,3 @@
-// Tries a list of candidate grasp poses, best-scored first, until MoveIt
-// reaches one. Two reasons a given candidate can fail:
-//  - GraspGenX scores grasps on geometry alone, with no idea which
-//    orientations HSR's arm can actually realize.
-//  - GraspGenX poses are the final, closed-gripper contact pose. By
-//    definition the gripper is touching or enclosing the object there, and
-//    a collision-aware planner will never plan straight into that. So this
-//    moves to a "pregrasp" pose instead: the same orientation, offset back
-//    along the grasp's own approach (+Z) axis. Actually closing the last
-//    bit onto the object is a separate step (short Cartesian move,
-//    collision checking relaxed) not done here.
-//
-// The right standoff distance isn't a fixed constant. It depends on how
-// much clearance the current scene needs (sensors_xtion.yaml pads every
-// perceived point by 10cm before it counts as an obstacle). So for each
-// grasp candidate, this tries kStandoffs from closest to farthest and takes
-// the first that's both reachable and collision-free: the tightest
-// approach that actually works, not just any that does.
-//
-// Reads parallel arrays (xs, ys, zs, qxs, qys, qzs, qws, scores) plus
-// frame_id and group_name as ROS parameters. See move_to_grasp.launch.py,
-// which builds these from a grasp YAML saved by core/run_pipeline.py.
 #include <vector>
 
 #include <moveit/move_group_interface/move_group_interface.h>

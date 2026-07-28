@@ -1,93 +1,92 @@
 """
-End-to-end grasp pipeline: prompt -> SAM3 mask -> object point cloud ->
-GraspGenX candidate grasps -> plot.
+Prompt -> SAM3 mask -> object point cloud -> GraspGenX grasps, saved under
+config/targets/<slug>/ as grasps.yaml, cloud.ply and plot.png.
 
-Usage: python3 run_pipeline.py "<prompt>" [gripper_name]
+Usage: python3 run_pipeline.py "<prompt>" ["<prompt>" ...] [--gripper hsrc_hand]
 
-Needs, already running:
-    docker/sam3/run_sam3.sh
-    docker/graspgenx/run_graspgenx.sh
-and a ROS 2 environment sourced (the only ROS2-dependent step is
-grasping/camera_ros2.py).
+Several prompts share a single camera frame, so every target found in one run
+is registered against the same instant. A target that isn't found is reported
+and skipped, leaving the rest of the run intact.
+
+Needs docker/sam3/run_sam3.sh and docker/graspgenx/run_graspgenx.sh already
+running, plus a sourced ROS 2 environment (only camera_ros2.py uses it).
 """
 
-import json
+import argparse
 import re
-import sys
-from datetime import datetime
 from pathlib import Path
 
-import cv2
-import numpy as np
+from grasping import grasp_io, graspgenx_client, visualize
+from perception import pointcloud, sam3_client
+from perception.camera_ros2 import BASE_FRAME, grab_rgbd
 
-from grasping import graspgenx_client, grasp_io, pointcloud, sam3_client, visualize
-from grasping.camera_ros2 import BASE_FRAME, grab_rgbd
-
-GRASPGENX_DIR = Path(__file__).resolve().parent.parent / "docker" / "graspgenx"
-GRASPS_DIR = Path(__file__).resolve().parent.parent / "config" / "grasps"
+TARGETS_DIR = Path(__file__).resolve().parent.parent / "config" / "targets"
 
 
-def _run_name(prompt):
-    """e.g. "big pringles can" -> "big_pringles_can_20260727_190533", so
-    grasps from different objects (or different runs) never overwrite each other."""
-    slug = re.sub(r"[^a-z0-9]+", "_", prompt.lower()).strip("_")
-    return f"{slug}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+def slug(prompt):
+    """"big pringles can" -> "big_pringles_can". Names the target's directory
+    and its MoveIt object_id, so re-querying a prompt refreshes that target
+    rather than piling up beside it."""
+    return re.sub(r"[^a-z0-9]+", "_", prompt.lower()).strip("_")
 
 
-def main(prompt, gripper_name="hsrc_hand"):
-    print("[pipeline] grabbing a frame from the head camera...")
-    rgb, depth_m, k, base_from_camera = grab_rgbd()
-
-    print(f"[pipeline] running SAM3 detection for '{prompt}'...")
-    masks, boxes, scores = sam3_client.detect(rgb, prompt)
-    if len(scores) == 0:
-        raise RuntimeError(f"SAM3 found no instance of '{prompt}'")
-    mask, sam3_score = sam3_client.best_instance(masks, scores)
-    print(f"[pipeline] using top detection, score={sam3_score:.2f}")
-
-    # SAM3 may process the image at a different resolution than the camera
-    # frame, so resize its mask back to match the depth image before using it.
-    mask = cv2.resize(mask.astype(np.uint8), (depth_m.shape[1], depth_m.shape[0]),
-                       interpolation=cv2.INTER_NEAREST).astype(bool)
-
+def find_object(prompt, rgb, depth_m, k):
+    """Segment `prompt` and back-project it into camera-frame points."""
+    mask, score = sam3_client.detect(rgb, prompt)
     points = pointcloud.deproject(depth_m, k, mask)
     if len(points) == 0:
-        raise RuntimeError("no valid depth points inside the mask")
-    print(f"[pipeline] object point cloud: {len(points)} points")
+        raise RuntimeError("no valid depth inside the mask")
+    print(f"  detected (score {score:.2f}), {len(points)} points")
+    return points
 
-    centered_points, centroid = pointcloud.center(points)
-    print(f"[pipeline] querying GraspGenX ('{gripper_name}')...")
-    grasps, grasp_scores = graspgenx_client.generate(centered_points, gripper_name=gripper_name)
-    if len(grasp_scores) == 0:
-        raise RuntimeError("GraspGenX returned no candidate grasps")
-    print(f"[pipeline] got {len(grasp_scores)} grasps, best score={grasp_scores.max():.2f}")
 
-    # Grasps came back in the centered frame; shift back to match `points`.
-    grasps = grasps.copy()
-    grasps[:, :3, 3] += centroid
+def grasps_for(points, gripper):
+    """Ask GraspGenX for grasps, centering the cloud on the way in and
+    undoing that on the way out, so the poses come back in `points`' frame."""
+    centroid = points.mean(axis=0)
+    poses, scores = graspgenx_client.generate(points - centroid, gripper)
+    poses = poses.copy()
+    poses[:, :3, 3] += centroid
+    print(f"  {len(scores)} grasps, best score {scores.max():.2f}")
+    return poses, scores
 
-    # Move everything from the camera frame into the robot's base frame, so
-    # the saved grasp is usable as a MoveIt pose target even as the head moves.
+
+def save_target(name, points, poses, scores, gripper):
+    """Write grasps.yaml, cloud.ply and plot.png into the target's directory."""
+    directory = TARGETS_DIR / name
+    directory.mkdir(parents=True, exist_ok=True)
+    saved = grasp_io.save_grasps(directory / "grasps.yaml", poses, scores, points,
+                                 BASE_FRAME, gripper, name)
+    pointcloud.save_ply(points, directory / "cloud.ply")
+    visualize.plot_grasps(points, poses, scores, directory / "plot.png", gripper)
+    print(f"  saved top {saved} grasps to {directory}")
+
+
+def process(prompt, gripper, rgb, depth_m, k, base_from_camera):
+    points = find_object(prompt, rgb, depth_m, k)
+    poses, scores = grasps_for(points, gripper)
+    # Into the robot's base frame, so a saved grasp stays a valid MoveIt pose
+    # target even once the head has moved.
     points = pointcloud.transform_points(base_from_camera, points)
-    grasps = pointcloud.transform_poses(base_from_camera, grasps)
+    poses = pointcloud.transform_poses(base_from_camera, poses)
+    save_target(slug(prompt), points, poses, scores, gripper)
 
-    GRASPS_DIR.mkdir(parents=True, exist_ok=True)
-    run_name = _run_name(prompt)
-    grasp_path = GRASPS_DIR / f"{run_name}.yaml"
-    plot_path = GRASPS_DIR / f"{run_name}.png"
 
-    grasp_io.save_grasps(grasps, grasp_scores, BASE_FRAME, gripper_name, grasp_path)
-    print(f"[pipeline] saved top {min(10, len(grasp_scores))} grasps to {grasp_path}")
+def main(prompts, gripper):
+    print("grabbing a frame from the head camera...")
+    rgb, depth_m, k, base_from_camera = grab_rgbd()
 
-    gripper_dir = GRASPGENX_DIR / "x_grippers" / gripper_name
-    base_rotation = json.loads((gripper_dir / "config.json").read_text())["base_rotation"]
-    visualize.plot_grasps(points, grasps, grasp_scores, plot_path,
-                           gripper_mesh_path=gripper_dir / "vis_mesh.obj",
-                           gripper_base_rotation=base_rotation)
-    print(f"[pipeline] saved plot to {plot_path}")
+    for prompt in prompts:
+        print(f"\n{prompt}:")
+        try:
+            process(prompt, gripper, rgb, depth_m, k, base_from_camera)
+        except RuntimeError as error:
+            print(f"  skipped: {error}")
 
 
 if __name__ == "__main__":
-    if len(sys.argv) < 2:
-        sys.exit('usage: python3 run_pipeline.py "<prompt>" [gripper_name]')
-    main(sys.argv[1], sys.argv[2] if len(sys.argv) > 2 else "hsrc_hand")
+    parser = argparse.ArgumentParser(description="Find graspable targets and save their grasps.")
+    parser.add_argument("prompts", nargs="+", help="what to look for, e.g. \"pringles can\"")
+    parser.add_argument("--gripper", default="hsrc_hand")
+    arguments = parser.parse_args()
+    main(arguments.prompts, arguments.gripper)

@@ -35,6 +35,9 @@ RUN apt-get update && apt-get upgrade -y && \
     ros-humble-moveit \
     ros-humble-pinocchio \
     ros-humble-rmw-zenoh-cpp \
+    ros-humble-rmw-cyclonedds-cpp \
+    ros-humble-teleop-twist-keyboard \
+    ros-humble-joy-linux \
     libignition-gazebo6 \
     libignition-gazebo6-dev \
     libignition-gazebo6-plugins \

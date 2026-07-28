@@ -129,6 +129,11 @@ def main():
     # small/infrequent enough that plain networking is fine.
     cfg = zenoh.Config()
     cfg.insert_json5("transport/shared_memory/enabled", "false")
+    # A fixed listen port so a remote client (e.g. one on the robot, see
+    # ZENOH_CONNECT in core/utils/zenoh_rpc.py) can reach this server without
+    # relying on multicast scouting to find an ephemeral one.
+    listen = os.environ.get("ZENOH_LISTEN", "tcp/0.0.0.0:7447")
+    cfg.insert_json5("listen/endpoints", json.dumps([listen]))
 
     with zenoh.open(cfg) as session:
         session.declare_queryable("sam3/detect", _on_detect)

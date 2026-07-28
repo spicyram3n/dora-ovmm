@@ -7,6 +7,12 @@ ros2_ws/build/
 ros2_ws/install/
 ros2_ws/log/
 
+# colcon dumps these wherever it is invoked from, not just in ros2_ws/. Any
+# copy outside ros2_ws/ is junk from running it in the wrong directory.
+build/
+install/
+log/
+
 # Everything under ros2_ws/src/ is a separately cloned vendor repo
 # (its own .git directory) except grasp_execution/, which is ours.
 ros2_ws/src/*
@@ -20,5 +26,6 @@ docker/sam3/checkpoints/
 docker/graspgenx/checkpoints/
 
 # Generated per-run outputs from core/run_pipeline.py, not source
-config/grasps/*.yaml
-config/grasps/*.png
+config/targets/
+
+.image_fingerprint

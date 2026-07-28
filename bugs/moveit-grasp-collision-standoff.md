@@ -1,5 +1,15 @@
 # MoveIt grasp execution: collision-aware planning to a GraspGenX pose
 
+**Where:** `ros2_ws/src/grasp_execution/src/move_to_grasp.cpp`,
+`core/grasping/camera_ros2.py`
+
+**Superseded:** the standoff-ladder fix in section 2 below is no longer in
+`move_to_grasp.cpp`. It was replaced by an Allowed Collision Matrix approach
+that plans straight to the real grasp pose instead of backing off from it.
+See `moveit-acm-diff-replaces-not-merges.md` for that part of the story.
+Kept here anyway since section 1 (pregrasp vs contact pose) and section 3
+(ruled-out causes) are still accurate and worth knowing.
+
 Not one bug, a chain of them found while getting `move_to_grasp` to actually
 drive the arm to a saved grasp pose. Logged together since they are all part
 of the same debugging session.

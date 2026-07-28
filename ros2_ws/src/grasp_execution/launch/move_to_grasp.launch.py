@@ -1,13 +1,3 @@
-# Reads a grasp YAML saved by core/run_pipeline.py (see
-# core/grasping/grasp_io.py for the format) and sends the pose to the
-# move_to_grasp node as parameters.
-#
-# MoveGroupInterface needs robot_description / robot_description_semantic /
-# kinematics parameters to build its robot model, same as any other MoveIt
-# node. Rather than duplicate that parsing, this reuses hsrb_moveit_config's
-# own launch helpers (read-only import, same pattern its own
-# hsrc_example.launch.py uses). See robot_description.py and utils.py
-# there for what these calls actually do.
 import glob
 import os
 import sys

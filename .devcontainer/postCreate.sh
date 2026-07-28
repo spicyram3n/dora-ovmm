@@ -9,18 +9,15 @@ sudo chown -R $(whoami) /home/ws
 grep -qxF 'export PYTHONPATH=$PYTHONPATH:/home/ws' ~/.bashrc || \
     echo 'export PYTHONPATH=$PYTHONPATH:/home/ws' >> ~/.bashrc
 
-grep -qxF 'export ZENOH_SESSION_CONFIG_URI=/home/ws/.devcontainer/zenoh/session_shm.json5' ~/.bashrc || \
-    echo 'export ZENOH_SESSION_CONFIG_URI=/home/ws/.devcontainer/zenoh/session_shm.json5' >> ~/.bashrc
-
-# every ros2 node in this container uses zenoh instead of DDS by default now
-grep -qxF 'export RMW_IMPLEMENTATION=rmw_zenoh_cpp' ~/.bashrc || \
-    echo 'export RMW_IMPLEMENTATION=rmw_zenoh_cpp' >> ~/.bashrc
-
-# postCreateCommand only runs once, at container creation - a plain container
-# restart (as opposed to a rebuild) kills the router below without anything
-# bringing it back, so also self-heal it from every new interactive shell
-ZENOH_ROUTER_SELFHEAL='pgrep -f "rmw_zenoh_cpp/rmw_zenohd" > /dev/null || { nohup ros2 run rmw_zenoh_cpp rmw_zenohd > /tmp/rmw_zenohd.log 2>&1 & disown; }'
-grep -qxF "$ZENOH_ROUTER_SELFHEAL" ~/.bashrc || echo "$ZENOH_ROUTER_SELFHEAL" >> ~/.bashrc
+# Was rmw_zenoh_cpp so this container could see SAM3/GraspGenX over zenoh
+# scouting instantly instead of falling back to plain scouting. The real robot
+# only ships rmw_cyclonedds_cpp, and rmw_zenoh_cpp/rmw_cyclonedds_cpp nodes
+# can't discover each other at all (different transports, not just different
+# QoS), so this container now matches the robot instead. The zenoh RPC path
+# to SAM3/GraspGenX (core/utils/zenoh_rpc.py) doesn't go through the RMW at
+# all - it opens its own bare zenoh session - so it's unaffected either way.
+grep -qxF 'export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp' ~/.bashrc || \
+    echo 'export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp' >> ~/.bashrc
 
 ROS2_WS=/home/ws/ros2_ws
 mkdir -p "$ROS2_WS/src"
@@ -70,15 +67,10 @@ fi
 cd "$ROS2_WS"
 source /opt/ros/humble/setup.bash
 
-# zenoh router so other containers (SAM3, GraspNet, etc.) discover this one
-# instantly instead of falling back to scouting-based peer discovery
-if ! pgrep -f "rmw_zenoh_cpp/rmw_zenohd" > /dev/null; then
-    echo "starting rmw_zenohd router (log: /tmp/rmw_zenohd.log)"
-    nohup ros2 run rmw_zenoh_cpp rmw_zenohd > /tmp/rmw_zenohd.log 2>&1 &
-    disown
-else
-    echo "rmw_zenohd router already running"
-fi
+# rmw_zenohd router no longer started here: this container now runs
+# rmw_cyclonedds_cpp to match the real robot, and the zenoh RPC path to
+# SAM3/GraspGenX (core/utils/zenoh_rpc.py) doesn't need a router - confirmed
+# it still works, router or not, over plain zenoh scouting.
 
 colcon build --symlink-install --cmake-args -DCMAKE_BUILD_TYPE=Release -DCMAKE_POLICY_VERSION_MINIMUM=3.5
 
