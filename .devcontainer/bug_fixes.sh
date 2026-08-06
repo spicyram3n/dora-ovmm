@@ -1,6 +1,7 @@
 #!/bin/bash
-# Idempotent build fixes for the upstream packages postCreate.sh clones.
-# Hand-editing the checkouts instead does not survive a workspace rebuild.
+# Idempotent patches for the upstream packages postCreate.sh clones: build
+# fixes plus local world edits. Hand-editing the checkouts instead does not
+# survive a workspace rebuild, so every change belongs here.
 set -e
 
 ROS2_WS="${1:-/home/ws/ros2_ws}"
@@ -112,3 +113,40 @@ if ! grep -qF "GZ_SIM_RESOURCE_PATH" "$worlds_hook"; then
         >> "$worlds_hook"
     assert_patched "$worlds_hook" "GZ_SIM_RESOURCE_PATH" "Ignition model resource path"
 fi
+
+# tmc_gazebo_worlds: drop the doors that shut the robot out of the rooms we
+# work in. apartment.world is regenerated from this xacro on every colcon
+# build, so the xacro is the only edit that sticks.
+apartment_xacro="$SRC/tmc_gazebo/tmc_gazebo_worlds/worlds/apartment.world.xacro"
+require_file "$apartment_xacro"
+python3 - "$apartment_xacro" <<'EOF'
+import re
+import sys
+
+REMOVE = {
+    "door_x05y09a"
+    "door_stopper_x05y09a",
+    "door_x03y09",
+    "door_x08y09a",
+    "door_stopper_x08y09a",
+    "door_x08y13",
+    "door_x10y11",
+    "door_stopper_x10y11",
+}
+
+path = sys.argv[1]
+text = open(path).read()
+
+def strip(match):
+    name = re.search(r"<name>(.*?)</name>", match.group(0))
+    return "" if name and name.group(1) in REMOVE else match.group(0)
+
+patched = re.sub(r"[ \t]*<include>.*?</include>\n", strip, text, flags=re.S)
+
+left = REMOVE & set(re.findall(r"<name>(.*?)</name>", patched))
+if left:
+    sys.exit(f"bug_fixes.sh: could not remove {sorted(left)} from {path}")
+if patched != text:
+    open(path, "w").write(patched)
+    print(f"bug_fixes.sh: patched {path} (removed {len(REMOVE)} door includes)")
+EOF

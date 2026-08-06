@@ -1,56 +1,53 @@
 #!/bin/bash
+# devcontainer postCreate: shell env, hsr_ros2 vendor sources, workspace build.
 set -e
 
-# resolved before the cd below
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-
-sudo chown -R $(whoami) /home/ws
-
-grep -qxF 'export PYTHONPATH=$PYTHONPATH:/home/ws' ~/.bashrc || \
-    echo 'export PYTHONPATH=$PYTHONPATH:/home/ws' >> ~/.bashrc
-
-# Was rmw_zenoh_cpp so this container could see SAM3/GraspGenX over zenoh
-# scouting instantly instead of falling back to plain scouting. The real robot
-# only ships rmw_cyclonedds_cpp, and rmw_zenoh_cpp/rmw_cyclonedds_cpp nodes
-# can't discover each other at all (different transports, not just different
-# QoS), so this container now matches the robot instead. The zenoh RPC path
-# to SAM3/GraspGenX (core/utils/zenoh_rpc.py) doesn't go through the RMW at
-# all - it opens its own bare zenoh session - so it's unaffected either way.
-grep -qxF 'export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp' ~/.bashrc || \
-    echo 'export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp' >> ~/.bashrc
-
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"  # resolved before any cd
 ROS2_WS=/home/ws/ros2_ws
+
+sudo chown -R "$(whoami)" /home/ws
+
+# --- shell env ---------------------------------------------------------------
+
+bashrc_line() {
+    grep -qxF "$1" ~/.bashrc || echo "$1" >> ~/.bashrc
+}
+
+bashrc_line 'export PYTHONPATH=$PYTHONPATH:/home/ws'
+bashrc_line 'export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp'  # matches the real robot
+bashrc_line "export CYCLONEDDS_URI=file://$SCRIPT_DIR/cyclonedds_profile.xml"
+
+# --- vendor sources ----------------------------------------------------------
+
 mkdir -p "$ROS2_WS/src"
 
-# hsr_ros2 package list per hsr-project/hsr_ros2_doc, humble, setup_sim_en.md
-if [ -z "$(ls -A "$ROS2_WS/src")" ]; then
-    echo "ros2_ws/src is empty - cloning hsr_ros2 packages"
+# package list per hsr-project/hsr_ros2_doc, humble, setup_sim_en.md, plus
+# hsrb_moveit, which is where move_group comes from
+if [ ! -d "$ROS2_WS/src/hsrb_common" ]; then
+    echo "cloning hsr_ros2 vendor packages"
     cd "$ROS2_WS/src"
     for repo in \
         hsrb_controllers hsrb_common hsrb_drivers hsrb_launch hsrb_manipulation \
         hsrb_rosnav hsrb_simulator hsr_common hsrb_teleop tmc_gazebo tmc_teleop \
         tmc_common tmc_common_msgs tmc_drivers tmc_database tmc_manipulation \
         tmc_manipulation_base tmc_manipulation_planner tmc_point_cloud \
-        tmc_realtime_control tmc_voice tmc_navigation; do
+        tmc_realtime_control tmc_voice tmc_navigation hsrb_moveit; do
         git clone -b humble "https://github.com/hsr-project/${repo}.git"
     done
     rm -rf hsrb_launch/hsrb_robot_launch hsrb_simulator/hsrb_rviz_simulator tmc_drivers/tmc_pgr_camera
-
-    # not in the doc's list; move_group comes from hsrb_moveit_config
-    git clone -b humble "https://github.com/hsr-project/hsrb_moveit.git"
-
-    "$SCRIPT_DIR/bug_fixes.sh" "$ROS2_WS"
 fi
 
-# the Dockerfile clears /var/lib/apt/lists, so apt has no index until refreshed
-sudo apt-get update
+# --- dependencies ------------------------------------------------------------
+
+sudo apt-get update  # the Dockerfile clears /var/lib/apt/lists
 rosdep update
 rosdep install --from-paths "$ROS2_WS/src" --ignore-src -r -y
 
-# HSR-C smoke test: expanding the URDF fails loudly here rather than at launch.
-# Used both as a pre-build health check (decides whether to wipe) and as the
-# post-build confirmation - Docker/devcontainer.json churn continuously here,
-# so whether the *existing* install actually works is the real signal, not a hash.
+# --- build -------------------------------------------------------------------
+
+# Expanding the HSR-C URDF fails here rather than at launch. Used both to decide
+# whether to wipe and to confirm the rebuild: Docker/devcontainer.json churn
+# continuously, so whether the existing install works is the signal, not a hash.
 smoke_test() {
     source "$ROS2_WS/install/setup.bash" || return 1
     xacro "$(ros2 pkg prefix hsrc_description)/share/hsrc_description/robots/hsrc1s.urdf.xacro" > /dev/null 2>&1 || return 1
@@ -58,20 +55,19 @@ smoke_test() {
 }
 
 if [ -f "$ROS2_WS/install/setup.bash" ] && (smoke_test); then
-    echo "ros2_ws already built and healthy - keeping build/install for an incremental colcon build"
+    echo "ros2_ws healthy - incremental build"
 else
-    echo "ros2_ws missing or failed the health check - wiping build/install/log for a clean rebuild"
+    echo "ros2_ws missing or unhealthy - wiping build/install/log"
     rm -rf "$ROS2_WS/build" "$ROS2_WS/install" "$ROS2_WS/log"
 fi
 
+# unconditional: the patches are idempotent and a re-cloned src loses them
+"$SCRIPT_DIR/bug_fixes.sh" "$ROS2_WS"
+
+# no rmw_zenohd router here - this container speaks rmw_cyclonedds_cpp, and the
+# zenoh RPC to SAM3/GraspGenX (core/utils/zenoh_rpc.py) scouts without a router
 cd "$ROS2_WS"
 source /opt/ros/humble/setup.bash
-
-# rmw_zenohd router no longer started here: this container now runs
-# rmw_cyclonedds_cpp to match the real robot, and the zenoh RPC path to
-# SAM3/GraspGenX (core/utils/zenoh_rpc.py) doesn't need a router - confirmed
-# it still works, router or not, over plain zenoh scouting.
-
 colcon build --symlink-install --cmake-args -DCMAKE_BUILD_TYPE=Release -DCMAKE_POLICY_VERSION_MINIMUM=3.5
 
 if ! (smoke_test); then

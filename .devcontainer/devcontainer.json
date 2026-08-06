@@ -30,7 +30,7 @@
     },
     "containerEnv": {
         "ROS_LOCALHOST_ONLY": "0",
-        "ROS_DOMAIN_ID": "42",
+        "ROS_DOMAIN_ID": "0",
         "NVIDIA_DRIVER_CAPABILITIES": "all"
     },
     "hostRequirements": {
