@@ -101,8 +101,11 @@ python3 search_object.py --furniture high_table01  # skip the lookup, just drive
 python3 search_object.py hsr_pringles --dry-run    # print the plan, touch no robot
 ```
 
-The robot parks in front of the furniture, facing it. Detection and grasping
-from there are not wired in yet.
+For each of the top-3 candidate locations in turn, the robot parks in front of
+the furniture, runs SAM3 on the head camera, and moves on if the object is not
+there. Once it is found, a second drive closes in until the object is inside
+the arm's reach ring -- the standoff ring never is. Grasp execution from there
+is not wired in yet (`grasp_execution` was removed in ff59dd1).
 
 Set `DEEPSEEK_API_KEY` for anything that reaches the LLM. Its guesses are
 cached per object under `outputs/scene_graph/apartment/locations/`, so the same

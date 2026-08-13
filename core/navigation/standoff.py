@@ -29,6 +29,10 @@ WORKING_DISTANCE = 0.8
 # Never closer than this to the centroid, however small the piece.
 MIN_STANDOFF = 0.8
 
+# nav2_params.yaml's robot_radius: how much clearance a pose needs from
+# another piece's footprint before the base actually fits there.
+ROBOT_RADIUS = 0.3
+
 
 def ring_radius(dimensions, angle):
     """Distance from the centroid to stand on this bearing: clear of the
@@ -42,7 +46,14 @@ def ring_radius(dimensions, angle):
     return float(max(reach + WORKING_DISTANCE, MIN_STANDOFF))
 
 
-def candidates(centroid, dimensions, count=12, robot_xy=None):
+def blocks(pose, blockers):
+    """Is (x, y) inside another piece's footprint, plus room for the base?"""
+    return any(abs(pose[0] - c[0]) <= d[0] / 2 + ROBOT_RADIUS
+               and abs(pose[1] - c[1]) <= d[1] / 2 + ROBOT_RADIUS
+               for c, d in blockers)
+
+
+def candidates(centroid, dimensions, count=12, robot_xy=None, blockers=()):
     """Poses around the furniture, each turned to face it, best first.
 
     Returns [(x, y, yaw)]. Ordered by how close to the piece that bearing lets
@@ -50,7 +61,14 @@ def candidates(centroid, dimensions, count=12, robot_xy=None):
     drive. Approaching a long table from its side beats approaching it from
     the end, because everything on it is then within arm's reach rather than
     two metres away; among comparable bearings there is no reason to cross the
-    room. Reachability is not decided here -- that is the planner's job.
+    room.
+
+    That preference is for the *broadside*, which is exactly where a coffee
+    table's sofas sit, so `blockers` -- (centroid, dimensions) for the other
+    furniture -- drops poses landing inside one of them. Nav2 does not catch
+    these on its own: it finds a path to such a pose, then its 0.25 m goal
+    tolerance lets the controller stop against the sofa and report success.
+    Whether the rest are reachable is still the planner's job.
     """
     poses = []
     for angle in np.linspace(0, 2 * np.pi, count, endpoint=False):
@@ -65,4 +83,4 @@ def candidates(centroid, dimensions, count=12, robot_xy=None):
         return round(pose[3] / 0.1), travel
 
     poses.sort(key=rank)
-    return [(x, y, yaw) for x, y, yaw, _ in poses]
+    return [(x, y, yaw) for x, y, yaw, _ in poses if not blocks((x, y), blockers)]

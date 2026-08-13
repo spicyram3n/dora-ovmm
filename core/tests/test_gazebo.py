@@ -2,8 +2,8 @@
 against anything this file made up.
 
 From core/, either of:
-    python3 -m scene_graph.test_gazebo          # also prints the graph
-    python3 -m pytest scene_graph/test_gazebo.py -p no:anyio
+    python3 -m tests.test_gazebo                # also prints the graph
+    python3 -m pytest tests/test_gazebo.py -p no:anyio
 
 The -p no:anyio is this image's pytest 6.2.5 being older than the installed
 anyio plugin expects; it has nothing to do with these tests.

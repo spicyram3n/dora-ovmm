@@ -24,6 +24,14 @@ from tf2_ros import Buffer, TransformListener
 FRAME = "map"
 BASE = "base_footprint"
 
+# How far from the commanded pose still counts as having arrived. Must stay
+# looser than nav2_params.yaml's own xy_goal_tolerance (0.10), since Nav2
+# legitimately declares success anywhere inside that -- a guard set equal to it
+# rejects honest arrivals, every candidate "fails", and a robot that parked
+# perfectly well reports that it cannot stand anywhere. This is here to catch
+# the robot wedged against a sofa a metre out, nothing finer.
+GOAL_TOLERANCE = 0.25
+
 
 def _pose(x, y, yaw):
     pose = PoseStamped()
@@ -66,6 +74,19 @@ class Navigator(Node):
         translation = self.tf_buffer.lookup_transform(FRAME, BASE, Time()).transform.translation
         return translation.x, translation.y
 
+    def robot_pose(self, timeout=10.0):
+        """(x, y, yaw) in the map frame. The head needs the yaw as well, since
+        pan is measured from wherever the base happens to be facing."""
+        deadline = self.get_clock().now().nanoseconds + timeout * 1e9
+        while not self.tf_buffer.can_transform(FRAME, BASE, Time()):
+            if self.get_clock().now().nanoseconds > deadline:
+                raise RuntimeError(f"no tf {FRAME} <- {BASE}; is localisation up?")
+            rclpy.spin_once(self, timeout_sec=0.1)
+        transform = self.tf_buffer.lookup_transform(FRAME, BASE, Time()).transform
+        t, q = transform.translation, transform.rotation
+        return t.x, t.y, math.atan2(2.0 * (q.w * q.z + q.x * q.y),
+                                    1.0 - 2.0 * (q.y * q.y + q.z * q.z))
+
     def reachable(self, x, y, yaw):
         """Does the global planner find a path to this pose? Far cheaper than
         driving there to find out, and it is what rules out the side of a
@@ -82,7 +103,14 @@ class Navigator(Node):
         goal = NavigateToPose.Goal()
         goal.pose = _pose(x, y, yaw)
         outcome = self._run(self.driver, goal, timeout)
-        return outcome is not None and outcome.status == GoalStatus.STATUS_SUCCEEDED
+        if outcome is None or outcome.status != GoalStatus.STATUS_SUCCEEDED:
+            return False
+        here = self.robot_xy()
+        off = math.hypot(here[0] - x, here[1] - y)
+        if off > GOAL_TOLERANCE:
+            print(f"    nav2 reported success but stopped {off:.2f} m short")
+            return False
+        return True
 
     def go_to_first_reachable(self, poses):
         """Drive to the first of `poses` the planner accepts. Returns the pose

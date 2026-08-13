@@ -16,7 +16,7 @@ import networkx as nx
 import numpy as np
 
 from scene_graph import relations
-from scene_graph.instance import is_structure, normalize
+from scene_graph.instance import is_structure, match_score
 
 # networkx 3.4 warns unless this is explicit, and flips the default in 3.6.
 _EDGES = "edges"
@@ -76,9 +76,8 @@ def objects(graph):
 def find_object(graph, label, near=None):
     """Node id of the `label` the caller means, or None.
 
-    Matched on the normalised name, so 'Apple' and 'apple_2' are the same
-    object; a genuine miss is scenario A, which the LLM handles, not something
-    to paper over with fuzzy matching here.
+    Matched via `same_object`, so 'Apple', 'apple_2' and 'hsr_apple' are all
+    the same object; a genuine miss is scenario A, which the LLM handles.
 
     The apartment holds two pringles cans, and which one "the pringles" means
     depends on where the robot is standing. Pass `near` as an (x, y) to get the
@@ -87,10 +86,11 @@ def find_object(graph, label, near=None):
     in the plane, since the robot drives on the floor and a can on a high
     shelf is no further away for being high up.
     """
-    wanted = normalize(label)
-    matches = [n for n, d in objects(graph).items() if normalize(d["label"]) == wanted]
-    if not matches:
+    scored = [(match_score(d["label"], label), n) for n, d in objects(graph).items()]
+    best = max((s for s, _ in scored), default=0.0)
+    if best == 0.0:
         return None
+    matches = [n for s, n in scored if s == best]
     if near is None:
         return max(matches, key=lambda node: graph.nodes[node]["confidence"])
     point = np.asarray(near, float)[:2]

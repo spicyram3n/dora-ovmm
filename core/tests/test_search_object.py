@@ -13,10 +13,11 @@ From core/:
 from pathlib import Path
 
 import search_object
+from navigation import standoff
 from scene_graph import graph as sg
 from spatial_reasoning import query_sg
 
-GRAPH = Path(__file__).resolve().parent.parent / "outputs/scene_graph/apartment/graph.json"
+GRAPH = Path(__file__).resolve().parents[2] / "outputs/scene_graph/apartment/graph.json"
 
 
 def _no_llm_allowed():
@@ -50,6 +51,38 @@ def test_the_search_order_stays_lazy():
     produced = search_object.targets(scene, "hsr_pringles", None, None, (0.0, 0.0), 3)
     assert hasattr(produced, "__next__"), "targets() must not be materialised"
     assert next(produced).source == "scene_graph"
+
+
+def test_a_coffee_table_is_approached_from_its_ends_not_through_its_sofas():
+    """kitchen_lowtable sits 0.9 m from sofa01 and 1.0 m from sofa02, and is
+    wider than it is deep -- so the smallest-radius bearing, the one
+    candidates() prefers, points straight into a sofa. Nav2 does not save us:
+    it finds a path to such a pose, then stops against the sofa inside its
+    0.25 m goal tolerance and reports success."""
+    scene = sg.load(GRAPH)
+    table = scene.nodes[4]
+    blockers = [(f["centroid"], f["dimensions"])
+                for node, f in sg.furniture(scene).items() if node != 4]
+
+    assert any(standoff.blocks(pose, blockers)
+               for pose in standoff.candidates(table["centroid"], table["dimensions"]))
+
+    poses = standoff.candidates(table["centroid"], table["dimensions"], blockers=blockers)
+    assert poses, "the table must still be approachable from its ends"
+    assert not any(standoff.blocks(pose, blockers) for pose in poses)
+    # the two best survivors are on the table's x ends, level with its centre
+    assert all(abs(y - table["centroid"][1]) < 0.3 for _, y, _ in poses[:2])
+
+
+def test_every_piece_keeps_somewhere_to_stand():
+    """A filter that empties the list for some piece would strand the robot."""
+    scene = sg.load(GRAPH)
+    pieces = sg.furniture(scene)
+    for node, data in pieces.items():
+        blockers = [(f["centroid"], f["dimensions"]) for other, f in pieces.items()
+                    if other != node]
+        assert standoff.candidates(data["centroid"], data["dimensions"],
+                                   blockers=blockers), data["name"]
 
 
 if __name__ == "__main__":

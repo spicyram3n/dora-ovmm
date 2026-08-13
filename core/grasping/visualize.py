@@ -2,13 +2,14 @@
 and the real gripper mesh at the best one. Matplotlib only, so no display
 server is needed."""
 
-import json
 from pathlib import Path
 
 import numpy as np
 import trimesh
 from matplotlib.figure import Figure
 from mpl_toolkits.mplot3d.art3d import Line3DCollection, Poly3DCollection
+
+from grasping.graspgenx_client import base_rotation
 
 GRIPPERS_DIR = Path(__file__).resolve().parents[2] / "docker" / "graspgenx" / "x_grippers"
 AXIS_LENGTH = 0.03  # meters, per drawn grasp frame
@@ -28,13 +29,11 @@ def _axis_lines(poses):
 
 
 def _gripper_mesh_at(gripper, pose):
-    """Load the gripper's visual mesh and place it at `pose`. GraspGenX poses
-    live in a canonical grasp frame (+Z = approach), and config.json's
-    base_rotation maps the mesh's own URDF frame into that one."""
-    gripper_dir = GRIPPERS_DIR / gripper
-    base_rotation = json.loads((gripper_dir / "config.json").read_text())["base_rotation"]
-    mesh = trimesh.load(gripper_dir / "vis_mesh.obj", force="mesh")
-    mesh.apply_transform(np.asarray(base_rotation, dtype=np.float64))
+    """Load the gripper's visual mesh and place it at `pose`. The wizard bakes
+    base_rotation into vis_mesh.obj, so undo it to get back to the URDF frame
+    the pose is in."""
+    mesh = trimesh.load(GRIPPERS_DIR / gripper / "vis_mesh.obj", force="mesh")
+    mesh.apply_transform(np.linalg.inv(base_rotation(gripper)))
     mesh.apply_transform(pose)
     return mesh
 

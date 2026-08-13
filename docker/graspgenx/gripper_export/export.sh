@@ -1,6 +1,9 @@
 #!/bin/bash
-# Export a standalone URDF + meshes for the HSRC gripper (hand_v0). Run ON
-# THE HOST, inside the ROS 2 devcontainer, with the workspace already built.
+# Export a standalone URDF + meshes for the HSRC gripper (hand_v0). Run INSIDE
+# THE DEVCONTAINER, with ros2_ws already built -- not on the host, and not in
+# the GraspGenX container. This is the one step that needs ROS (xacro expands
+# the hand macros, ros2 pkg prefix locates the meshes), and it needs it so
+# that nothing downstream does: the bundle it writes has no package:// refs.
 #
 # Produces hsrc_hand/hsrc_hand.urdf and hsrc_hand/meshes/ - a self-contained
 # bundle with no package:// references, ready to hand to

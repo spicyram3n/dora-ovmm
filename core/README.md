@@ -61,8 +61,8 @@ both gitignored and both safe to delete and regenerate.
 ## Tests
 
 ```bash
-python3 -m scene_graph.test_gazebo                              # also prints the graph
-python3 -m pytest scene_graph/test_gazebo.py -p no:anyio
+python3 -m tests.test_gazebo                                   # also prints the graph
+python3 -m pytest tests/test_gazebo.py -p no:anyio
 ```
 
 `-p no:anyio` works around this image's pytest 6.2.5 being older than the

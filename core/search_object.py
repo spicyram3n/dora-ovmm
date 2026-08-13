@@ -20,7 +20,7 @@ from pathlib import Path
 
 import numpy as np
 
-from navigation import standoff
+from navigation import reach, standoff
 from scene_graph import graph as sg
 from spatial_reasoning import query_sg
 from spatial_reasoning.query_sg import Location
@@ -55,15 +55,51 @@ def targets(scene, obj, furniture, cache, robot_xy, top_k):
 
 def plan(scene, location, robot_xy):
     data = scene.nodes[location.furniture_id]
-    poses = standoff.candidates(data["centroid"], data["dimensions"], robot_xy=robot_xy)
-    reach = np.hypot(poses[0][0] - data["centroid"][0], poses[0][1] - data["centroid"][1])
+    # Every other piece is something the base cannot stand inside -- a coffee
+    # table's own sofas are the case that matters.
+    blockers = [(f["centroid"], f["dimensions"]) for node, f in sg.furniture(scene).items()
+                if node != location.furniture_id]
+    poses = standoff.candidates(data["centroid"], data["dimensions"],
+                                robot_xy=robot_xy, blockers=blockers)
     print(f"target: {data['name']} ({data['label']}) at "
           f"{[round(v, 2) for v in data['centroid'][:2]]}, room {data['room']} "
           f"-- from {location.source}")
     if location.reason:
         print(f"  because: {location.reason}")
+    if not poses:
+        print("  no standoff clear of the surrounding furniture")
+        return poses
+    reach = np.hypot(poses[0][0] - data["centroid"][0], poses[0][1] - data["centroid"][1])
     print(f"  {len(poses)} candidates, best stands {reach:.2f} m from the centroid")
     return poses
+
+
+def locate(obj):
+    """Where `obj` actually is, in the map frame, or None if it is not in
+    view from here.
+
+    Perception, not the scene graph, even when the graph claims to know: a
+    remembered centroid is where the object was last seen, and the whole point
+    of driving somewhere is to find out whether it is still there.
+    """
+    # Imported here, not at the top: --dry-run must not need ROS or the
+    # SAM3 server, and neither must the tests.
+    from navigation import nav2_client
+    from perception import pointcloud, sam3_client
+    from perception.camera_ros2 import grab_rgbd
+
+    rgb, depth_m, k, map_from_camera = grab_rgbd(target_frame=nav2_client.FRAME)
+    try:
+        mask, score = sam3_client.detect(rgb, obj)
+    except RuntimeError as error:
+        print(f"  {error}")
+        return None
+    points = pointcloud.deproject(depth_m, k, mask)
+    if len(points) == 0:
+        print("  found it, but no valid depth inside the mask")
+        return None
+    print(f"  detected (score {score:.2f}), {len(points)} points")
+    return pointcloud.transform_points(map_from_camera, points).mean(axis=0)
 
 
 def main(obj, furniture, name, dry_run, top_k):
@@ -88,17 +124,31 @@ def main(obj, furniture, name, dry_run, top_k):
                     print(f"    ({x:6.2f}, {y:6.2f}) facing {yaw:5.2f} rad")
                 return          # stop here too, or the next location is pulled
                                 # from the generator and that costs an LLM call
-            if navigator.go_to_first_reachable(poses):
-                print("arrived. Look for the object from here.")
+            if not navigator.go_to_first_reachable(poses):
+                print("  no reachable pose here, trying the next location")
+                continue
+            if not obj:                       # --furniture with nothing to find
+                print("arrived.")
                 return
-            print("  no reachable pose here, trying the next location")
+            centroid = locate(obj)
+            if centroid is None:
+                print("  not here, trying the next location")
+                continue
+            furniture = [(f["centroid"], f["dimensions"])
+                         for f in sg.furniture(scene).values()]
+            if reach.move_into_reach(navigator, reach.hand_pose(centroid), furniture):
+                print(f"in reach of {obj} at {[round(v, 2) for v in centroid]}. Ready to grasp.")
+                return
+            print("  found it but cannot stand anywhere that reaches it")
+            robot_xy = navigator.robot_xy()   # it has moved; rank the next one from here
         if not dry_run:
             print("no location worked out")
     finally:
         if navigator is not None:
             import rclpy
             navigator.destroy_node()
-            rclpy.shutdown()
+            if rclpy.ok():          # Ctrl-C: rclpy's own handler got there first
+                rclpy.shutdown()
 
 
 if __name__ == "__main__":

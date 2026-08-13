@@ -31,8 +31,8 @@ often through `core/build_scene_graph.py`.
 
 ```bash
 cd core
-python3 -m scene_graph.test_gazebo                            # prints the graph, then asserts
-python3 -m pytest scene_graph/test_gazebo.py -p no:anyio
+python3 -m tests.test_gazebo                                 # prints the graph, then asserts
+python3 -m pytest tests/test_gazebo.py -p no:anyio
 ```
 
 Typical use:

@@ -69,6 +69,27 @@ def _matches(label, vocabulary):
                for word in candidates)
 
 
+def match_score(label, wanted):
+    """How well `label` names the thing `wanted` asks for; 0.0 for not at all.
+
+    Word overlap, not equality, because both sides carry words the other will
+    not: an asset name prefixes ('hsr_pringles'), and a person adds the
+    category ('pringles can'). Requiring either to be a subset of the other
+    sent every two-word query to the LLM for an object already in the graph.
+
+    Scored rather than boolean so 'pringles can' prefers 'hsr_pringles' over a
+    'trash_can' that happens to share the word 'can'.
+    """
+    mine, theirs = set(normalize(label).split()), set(normalize(wanted).split())
+    shared = mine & theirs
+    return len(shared) / len(mine | theirs) if shared else 0.0
+
+
+def same_object(label, wanted):
+    """Does `label` name the thing `wanted` asks for?"""
+    return match_score(label, wanted) > 0.0
+
+
 def is_furniture(label, vocabulary=FURNITURE):
     return _matches(label, vocabulary)
 

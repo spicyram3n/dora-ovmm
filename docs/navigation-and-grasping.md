@@ -72,24 +72,82 @@ just needs a bound on how many viewpoints to try before giving up.
 
 This is the part that replaces what `whole_body` used to be relied on for.
 
-### Step 1: build an inverse reachability map, once, offline
+### Step 1: ~~build an inverse reachability map, once, offline~~ DONE, and it needed no map
 
-This does not depend on which object is being grasped, only on the arm's own
-kinematics, so it can and should be built ahead of time, not per query.
+**Superseded. Implemented as `core/navigation/reach.py`, tested in
+`core/tests/test_reach.py`.**
 
-- Sample a dense grid of end effector target poses (position and approach
-  direction) relative to the base frame.
-- For each one, solve IK using `hsrb_analytic_ik` (the same analytic solver
-  MoveIt's own `HSRBKinematicsPlugin` wraps, so this is fast, well under a
-  millisecond per query, cheap enough to sample very densely).
-- Store, for each relative pose bucket, whether it is solvable and a
-  manipulability score.
-- Invert it: given a target pose, look up which base offsets (dx, dy, dyaw)
-  would make it reachable, ranked by score.
+The original plan was the standard mobile-manipulation one: sample a dense
+grid of end effector poses relative to the base, solve IK on each with
+`hsrb_analytic_ik`, store solvability plus a manipulability score, and invert
+the result into a lookup from target pose to ranked base offsets (the
+"Reuleaux" technique).
 
-This is the standard "inverse reachability map" technique from mobile
-manipulation (the ROS package "Reuleaux" is the well known reference
-implementation, worth reusing rather than rederiving the math).
+None of that is necessary on this robot. `hsrb_analytic_ik` already exposes
+the inverted answer in closed form:
+
+```cpp
+// hsrb_analytic_ik/hsrc_ik_solver.hpp:41
+BasePositionRange GetHsrcBasePositionRange(const Eigen::Affine3d& origin_to_hand);
+```
+
+`BasePositionRange` is `{center[2], radius_min, radius_max}` — given a hand
+pose, the annulus of base positions that can reach it. That is exactly what
+the sampled map was going to be built to answer.
+
+Why it collapses so cleanly (`ik_solver_base.cpp:43-124`): back the palm
+offset off the hand pose and you get the wrist centre, where the arm_roll,
+wrist_flex and wrist_roll axes meet. Its *height* is absorbed entirely by the
+prismatic lift, so height alone decides reachable-at-all; what is left in the
+plane is a circle the base can sit anywhere on. The source comment says it
+outright — this point "is the rotation center of the cart position".
+
+`reach.py` is that function ported to numpy, so the Python half of the stack
+calls it without a pybind wrapper or a ROS service. It is exact rather than
+sampled, has no offline build step, no resolution, and no file to keep in
+sync, and costs microseconds per grasp — cheap enough to run over every
+candidate GraspGenX returns. The `MARGIN` constant stands in for the
+manipulability score the sampled map would have stored: keep off both edges of
+the annulus, since both are singular postures.
+
+The annulus gives (x, y) but not yaw. `reach.py` derives it — the arm flexes
+only in its own plane and mounts `L42` off centre, so in the base frame the
+wrist centre is always at exactly `(sqrt(r^2 - L42^2), L42)`, which pins the
+yaw. `test_reach.py` checks that to 1e-9. If a concrete joint solution is
+wanted rather than just a base pose, `HsrcIKSolver::Solve` with
+`BaseMovementType kPlanar` returns `origin_to_base_out` and the arm angles
+together.
+
+**This robot is hsrc, not hsrb.** The two differ in lift mount height
+(0.350 vs 0.340), palm offset (0.155 vs 0.1405) and lateral arm mount
+(0.0785 vs 0.078). Small enough to look like rounding, big enough to miss a
+grasp. `reach.PARAMETERS` carries both sets and `DEFAULT_ROBOT` is `hsrc`.
+
+Numbers that fall out, and what they mean for the rest of this document:
+
+| | |
+|---|---|
+| Max horizontal reach | 0.492 m |
+| Min (arm folded) | 0.166 m |
+| Wrist-centre height envelope | 0.048 – 1.385 m |
+| Top-down grasp ceiling | 1.230 m |
+| Floor picking | works top-down; the palm offset lifts the wrist centre 0.155 m clear |
+
+- **The reposition in Step 3 is mandatory, not a refinement.**
+  `standoff.WORKING_DISTANCE` is 0.8 m, set by Nav2's inflation radius, and
+  max reach is 0.492 m. The standoff ring is *always* outside the reach ring.
+  Part 1 gets the robot close enough to see; it can never get close enough to
+  grasp. `test_reach.py` asserts the two rings do not overlap.
+- **Reach and the costmap footprint are in tension.** `robot_radius` is 0.3,
+  so the base centre stays 0.3 m clear of anything marked. With 0.492 m of
+  reach that is about 0.19 m onto a surface. The saving grace is that the base
+  lidar sees table *legs*, not the tabletop, so the costmap often permits
+  tucking under an overhang — while `standoff.py` uses the scene graph's full
+  bounding box. Those two disagree about where a table is, and this is the
+  step where the disagreement starts to matter.
+- **Tall furniture may need a side grasp.** Anything above 1.230 m is
+  unreachable top-down. Worth checking with `base_annulus()` before driving,
+  since it costs microseconds and a wasted drive costs a minute.
 
 ### Step 2: once the object is found, look up candidate base poses
 
@@ -272,7 +330,8 @@ retreat.
 
 ## Open items for when this gets implemented
 
-- Build the inverse reachability map offline (one time cost, not per run).
+- ~~Build the inverse reachability map offline (one time cost, not per run).~~
+  Done, and it needed no map — see Step 1. `core/navigation/reach.py`.
 - Write the search loop (head sweep plus SAM3, with a bounded number of
   fallback viewpoints).
 - Write the candidate ranking and `SolveIkWithCollision` validation step

@@ -29,17 +29,25 @@ def _matrix(transform):
     return matrix
 
 
-def grab_rgbd():
+def grab_rgbd(target_frame=BASE_FRAME):
     """Wait for one message on each camera topic, then look up where the
     camera is in the robot's base frame.
+
+    `target_frame` is what the camera is resolved into: BASE_FRAME for grasps,
+    which MoveIt plans in, but "map" for anything handed to Nav2. The two only
+    coincide at startup and drift apart as amcl corrects.
 
     Returns (rgb, depth_m, k, base_from_camera):
         rgb:              (H, W, 3) uint8 bgr8
         depth_m:          (H, W) float32 meters, 0 where there was no return
         k:                (3, 3) intrinsic matrix
-        base_from_camera: (4, 4) mapping camera-frame points into BASE_FRAME
+        base_from_camera: (4, 4) mapping camera-frame points into target_frame
     """
-    rclpy.init()
+    # A caller that already runs ROS (search_object holds a Navigator) keeps
+    # ownership of the context; tearing it down here would kill their node.
+    owns_context = not rclpy.ok()
+    if owns_context:
+        rclpy.init()
     node = Node("grasp_pipeline_camera")
     bridge = CvBridge()
     tf_buffer = Buffer()
@@ -67,11 +75,12 @@ def grab_rgbd():
     while not {"rgb", "depth", "k"} <= frame.keys():
         rclpy.spin_once(node)
 
-    print(f"waiting for tf {BASE_FRAME} <- {frame['camera_frame']}...")
-    while not tf_buffer.can_transform(BASE_FRAME, frame["camera_frame"], Time()):
+    print(f"waiting for tf {target_frame} <- {frame['camera_frame']}...")
+    while not tf_buffer.can_transform(target_frame, frame["camera_frame"], Time()):
         rclpy.spin_once(node, timeout_sec=0.1)
-    transform = tf_buffer.lookup_transform(BASE_FRAME, frame["camera_frame"], Time())
+    transform = tf_buffer.lookup_transform(target_frame, frame["camera_frame"], Time())
 
     node.destroy_node()
-    rclpy.shutdown()
+    if owns_context:
+        rclpy.shutdown()
     return frame["rgb"], frame["depth"], frame["k"], _matrix(transform.transform)

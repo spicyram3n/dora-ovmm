@@ -2,6 +2,7 @@
 (e.g. MoveIt) can work down the list until one is reachable -- the top score
 alone isn't always achievable by a given arm's kinematics."""
 
+import numpy as np
 import yaml
 from scipy.spatial.transform import Rotation
 
@@ -35,3 +36,18 @@ def save_grasps(path, poses, scores, points, frame_id, gripper, object_id):
     }
     path.write_text(yaml.safe_dump(data, sort_keys=False))
     return len(data["grasps"])
+
+
+def load_grasps(path):
+    """Read back what `save_grasps` wrote: (N, 4, 4) poses, (N,) scores, and
+    the rest of the file as a dict. Poses come back best-first, as saved."""
+    data = yaml.safe_load(path.read_text())
+    poses = np.zeros((len(data["grasps"]), 4, 4))
+    scores = np.zeros(len(data["grasps"]))
+    for i, grasp in enumerate(data["grasps"]):
+        q, t = grasp["orientation"], grasp["position"]
+        poses[i] = np.eye(4)
+        poses[i][:3, :3] = Rotation.from_quat([q["x"], q["y"], q["z"], q["w"]]).as_matrix()
+        poses[i][:3, 3] = [t["x"], t["y"], t["z"]]
+        scores[i] = grasp["score"]
+    return poses, scores, data

@@ -85,8 +85,9 @@ files), so this got corrected to pull from `hsrc_description` everywhere.
    it produces is self-contained. It does not depend on the ROS workspace
    being mounted anywhere.
 
-To run it (needs the ROS 2 workspace already built, since it uses `xacro`
-and `ros2 pkg prefix`):
+To run it (**inside the devcontainer**, with `ros2_ws` already built, since it
+uses `xacro` and `ros2 pkg prefix` -- the host has no ROS, and neither does the
+GraspGenX image):
 
 ```bash
 bash docker/graspgenx/gripper_export/export.sh
@@ -103,16 +104,17 @@ check_urdf docker/graspgenx/gripper_export/hsrc_hand/hsrc_hand.urdf
 
 ## Setup, in order
 
-Run all of these from your normal host terminal (not inside a container),
-from the `docker/graspgenx` folder, unless noted otherwise.
+Run these from your normal host terminal, from the `docker/graspgenx` folder,
+unless noted otherwise -- with one exception, step 1.
 
 ### 1. Export the gripper URDF
 
-Already covered above. Only needs to be rerun if HSR's hand description
-changes.
+**This one runs inside the devcontainer, not the host**, since it is the only
+step that needs ROS. Already covered above. Only needs to be rerun if HSR's
+hand description changes.
 
 ```bash
-bash gripper_export/export.sh
+bash docker/graspgenx/gripper_export/export.sh
 ```
 
 ### 2. Register the gripper with GraspGenX (the wizard)
