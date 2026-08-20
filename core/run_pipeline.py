@@ -16,7 +16,8 @@ import argparse
 import re
 from pathlib import Path
 
-from grasping import grasp_io, graspgenx_client, visualize
+from grasping import grasp_io, graspgenx_client
+from grasping.visualization import visualize
 from perception import pointcloud, sam3_client
 from perception.camera_ros2 import BASE_FRAME, grab_rgbd
 

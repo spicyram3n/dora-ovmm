@@ -2,15 +2,12 @@
 and the real gripper mesh at the best one. Matplotlib only, so no display
 server is needed."""
 
-import json
-from pathlib import Path
-
 import numpy as np
 import trimesh
 from matplotlib.figure import Figure
 from mpl_toolkits.mplot3d.art3d import Line3DCollection, Poly3DCollection
 
-GRIPPERS_DIR = Path(__file__).resolve().parents[2] / "docker" / "graspgenx" / "x_grippers"
+from grasping.gripper_frame import GRIPPERS_DIR, palm_from_canonical
 AXIS_LENGTH = 0.03  # meters, per drawn grasp frame
 AXIS_COLORS = [(1, 0, 0), (0, 1, 0), (0, 0, 1)]  # x, y, z
 MAX_POINTS = 20_000  # subsample above this, just for plot speed
@@ -28,13 +25,17 @@ def _axis_lines(poses):
 
 
 def _gripper_mesh_at(gripper, pose):
-    """Load the gripper's visual mesh and place it at `pose`. GraspGenX poses
-    live in a canonical grasp frame (+Z = approach), and config.json's
-    base_rotation maps the mesh's own URDF frame into that one."""
-    gripper_dir = GRIPPERS_DIR / gripper
-    base_rotation = json.loads((gripper_dir / "config.json").read_text())["base_rotation"]
-    mesh = trimesh.load(gripper_dir / "vis_mesh.obj", force="mesh")
-    mesh.apply_transform(np.asarray(base_rotation, dtype=np.float64))
+    """Load the gripper's visual mesh and place it at `pose`. vis_mesh.obj
+    ships in GraspGenX's canonical frame, while `pose` places hand_palm_link
+    (graspgenx_client converts on the way in), so the mesh needs
+    palm_from_canonical before it is posed.
+
+    The mesh itself is a poor export -- its fingers are folded backwards, so
+    the drawn hand is only ever indicative of pose, never of aperture. Forward
+    kinematics on gripper.urdf, as animate_grasp.py does, is the accurate
+    picture."""
+    mesh = trimesh.load(GRIPPERS_DIR / gripper / "vis_mesh.obj", force="mesh")
+    mesh.apply_transform(palm_from_canonical(gripper))
     mesh.apply_transform(pose)
     return mesh
 

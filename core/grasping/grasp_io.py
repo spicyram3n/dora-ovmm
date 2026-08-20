@@ -1,7 +1,17 @@
-"""Save candidate grasps as plain YAML, best-scoring first, so a consumer
-(e.g. MoveIt) can work down the list until one is reachable -- the top score
-alone isn't always achievable by a given arm's kinematics."""
+"""Read and write candidate grasps as plain YAML, best-scoring first, so a
+consumer (e.g. MoveIt) can work down the list until one is reachable -- the top
+score alone isn't always achievable by a given arm's kinematics.
 
+Both directions live here on purpose. The schema is defined by `save_grasps`,
+so anything that opens grasps.yaml elsewhere is a second definition free to
+drift from it -- which is exactly how move_to_grasp.launch.py ended up reading
+`grasp["header"]["frame_id"]` for a writer that emits `frame_id`. Consumers
+call `load_grasps` and never see the dictionary.
+"""
+
+from pathlib import Path
+
+import numpy as np
 import yaml
 from scipy.spatial.transform import Rotation
 
@@ -35,3 +45,23 @@ def save_grasps(path, poses, scores, points, frame_id, gripper, object_id):
     }
     path.write_text(yaml.safe_dump(data, sort_keys=False))
     return len(data["grasps"])
+
+
+def load_grasps(path):
+    """The inverse of `save_grasps`.
+
+    Returns (poses, scores, meta):
+        poses:  (N, 4, 4) hand_palm_link poses in meta["frame_id"]
+        scores: (N,)
+        meta:   the parsed file, for frame_id / gripper / object_id / bounding_box
+    """
+    data = yaml.safe_load(Path(path).read_text())
+    grasps = data["grasps"]
+
+    poses = np.tile(np.eye(4), (len(grasps), 1, 1))
+    for i, grasp in enumerate(grasps):
+        poses[i, :3, :3] = Rotation.from_quat(
+            [grasp["orientation"][k] for k in "xyzw"]).as_matrix()
+        poses[i, :3, 3] = [grasp["position"][a] for a in "xyz"]
+
+    return poses, np.array([g["score"] for g in grasps]), data

@@ -2,30 +2,45 @@ import glob
 import os
 import sys
 
-import yaml
 from ament_index_python.packages import get_package_share_directory
+from scipy.spatial.transform import Rotation
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, OpaqueFunction
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
-GRASPS_DIR = "/home/ws/config/grasps"
+# One directory per target, written by core/run_pipeline.py.
+TARGETS_DIR = "/home/ws/config/targets"
 
 sys.path.append(os.path.join(get_package_share_directory("hsrb_moveit_config"), "launch"))
 import robot_description  # noqa: E402
 from utils import load_file, load_yaml  # noqa: E402
 
-
-def _newest_grasp_file():
-    files = sorted(glob.glob(os.path.join(GRASPS_DIR, "*.yaml")), key=os.path.getmtime)
-    return files[-1] if files else ""
+sys.path.append("/home/ws/core")
+from grasping import grasp_io  # noqa: E402
 
 
-def launch_setup(context, grasp_file, group_name, description_package, description_file):
-    grasp_file_str = context.perform_substitution(grasp_file) or _newest_grasp_file()
-    with open(grasp_file_str) as f:
-        grasp = yaml.safe_load(f)
-    grasps = grasp["grasps"]
+def _resolve_grasp_file(grasp_file, target):
+    """An explicit path wins, then target:=<name>, then the most recently
+    written target."""
+    if grasp_file:
+        return grasp_file
+    if target:
+        return os.path.join(TARGETS_DIR, target, "grasps.yaml")
+    files = sorted(glob.glob(os.path.join(TARGETS_DIR, "*", "grasps.yaml")),
+                   key=os.path.getmtime)
+    if not files:
+        raise RuntimeError(f"no grasps.yaml under {TARGETS_DIR} -- run core/run_pipeline.py first")
+    return files[-1]
+
+
+def launch_setup(context, grasp_file, target, group_name, description_package, description_file):
+    grasp_file_str = _resolve_grasp_file(context.perform_substitution(grasp_file),
+                                         context.perform_substitution(target))
+    # grasp_io owns the schema. Parsing it here as well is how this file came to
+    # read grasp["header"]["frame_id"] for a writer that emits frame_id.
+    poses, scores, meta = grasp_io.load_grasps(grasp_file_str)
+    quaternions = Rotation.from_matrix(poses[:, :3, :3]).as_quat()
 
     robot_description_moveit = robot_description.parse(
         context.perform_substitution(description_package), context.perform_substitution(description_file))
@@ -41,27 +56,30 @@ def launch_setup(context, grasp_file, group_name, description_package, descripti
             {
                 "use_sim_time": LaunchConfiguration("use_sim_time"),
                 "robot_name": LaunchConfiguration("robot_name"),
-                "frame_id": grasp["header"]["frame_id"],
+                "frame_id": meta["frame_id"],
                 "group_name": context.perform_substitution(group_name),
-                "xs": [g["pose"]["position"]["x"] for g in grasps],
-                "ys": [g["pose"]["position"]["y"] for g in grasps],
-                "zs": [g["pose"]["position"]["z"] for g in grasps],
-                "qxs": [g["pose"]["orientation"]["x"] for g in grasps],
-                "qys": [g["pose"]["orientation"]["y"] for g in grasps],
-                "qzs": [g["pose"]["orientation"]["z"] for g in grasps],
-                "qws": [g["pose"]["orientation"]["w"] for g in grasps],
-                "scores": [g["score"] for g in grasps],
+                "xs": poses[:, 0, 3].tolist(),
+                "ys": poses[:, 1, 3].tolist(),
+                "zs": poses[:, 2, 3].tolist(),
+                "qxs": quaternions[:, 0].tolist(),
+                "qys": quaternions[:, 1].tolist(),
+                "qzs": quaternions[:, 2].tolist(),
+                "qws": quaternions[:, 3].tolist(),
+                "scores": scores.tolist(),
             },
         ])
 
-    print(f"[move_to_grasp.launch] using {grasp_file_str} ({len(grasps)} candidate grasps)")
+    print(f"[move_to_grasp.launch] using {grasp_file_str} ({len(poses)} candidate grasps)")
     return [node]
 
 
 def generate_launch_description():
     declared_arguments = [
         DeclareLaunchArgument("grasp_file", default_value="",
-                              description=f"Grasp YAML to load. Defaults to the newest file in {GRASPS_DIR}."),
+                              description="Explicit path to a grasps.yaml. Overrides target."),
+        DeclareLaunchArgument("target", default_value="",
+                              description=f"Target name under {TARGETS_DIR}, e.g. pringles_can. "
+                                          "Defaults to the most recently written target."),
         DeclareLaunchArgument("group_name", default_value="whole_body",
                               description="MoveIt group to plan with."),
         DeclareLaunchArgument("use_sim_time", default_value="true", choices=["true", "false"]),
@@ -71,5 +89,7 @@ def generate_launch_description():
     ]
     return LaunchDescription(declared_arguments + [
         OpaqueFunction(function=launch_setup,
-                       args=[LaunchConfiguration("grasp_file"), LaunchConfiguration("group_name"),
-                             LaunchConfiguration("description_package"), LaunchConfiguration("description_file")])])
+                       args=[LaunchConfiguration("grasp_file"), LaunchConfiguration("target"),
+                             LaunchConfiguration("group_name"),
+                             LaunchConfiguration("description_package"),
+                             LaunchConfiguration("description_file")])])

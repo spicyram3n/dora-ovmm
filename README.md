@@ -91,7 +91,7 @@ ephemeral one, so it can be reached directly without scouting:
 - SAM3: `tcp/0.0.0.0:7447` (override with the `ZENOH_LISTEN` env var)
 - GraspGenX: `tcp/0.0.0.0:7448` (same)
 
-On the client side (`core/utils/zenoh_rpc.py`, running wherever the ROS 2
+On the client side (robot side) (`core/utils/zenoh_rpc.py`, running wherever the ROS 2
 workspace runs), set `ZENOH_CONNECT` to a comma separated list of those
 endpoints using the PC's real address, for example:
 

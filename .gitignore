@@ -17,6 +17,7 @@ log/
 # (its own .git directory) except grasp_execution/, which is ours.
 ros2_ws/src/*
 !ros2_ws/src/grasp_execution/
+!ros2_ws/src/nbv/
 
 # Secrets: HF_TOKEN and the cached HF login it produces
 docker/sam3/.env
@@ -27,5 +28,9 @@ docker/graspgenx/checkpoints/
 
 # Generated per-run outputs from core/run_pipeline.py, not source
 config/targets/
+
+# Recorded runs. Useful to keep around locally while tuning navigation, but
+# they are measurements, not source, and they get large fast.
+bags/
 
 .image_fingerprint
