@@ -1,0 +1,17 @@
+[
+  {
+    "furniture_id": 14,
+    "relation": "on",
+    "reason": "high table is a central surface where snack cans are often placed"
+  },
+  {
+    "furniture_id": 4,
+    "relation": "on",
+    "reason": "kitchen low table is a convenient surface for snacks"
+  },
+  {
+    "furniture_id": 12,
+    "relation": "in",
+    "reason": "sideboard can store snack items like a Pringles can"
+  }
+]

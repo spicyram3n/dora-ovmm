@@ -1,0 +1,52 @@
+/// zenoh bridge config for the ROBOT (hsrc, 10.7.3.185).
+/// Copy to /etc/zenoh-bridge-ros2dds/ on the robot. Start this side first.
+///
+///   export CYCLONEDDS_URI=file:///etc/zenoh-bridge-ros2dds/cdds_bridge.xml
+///   zenoh-bridge-ros2dds -c /etc/zenoh-bridge-ros2dds/bridge_robot.json5
+{
+  plugins: {
+    ros2dds: {
+      /// ROS_DOMAIN_ID env overrides this. Keep it 0 or unset here.
+      domain: 0,
+
+      /// Must match bridge_pc.json5 exactly.
+      /// Leading "/" anchors the pattern; ".*/" would also match the other
+      /// team's /remote/... topics and double the traffic.
+      allow: {
+        subscribers: [
+          "/scan",
+          "/tf",
+          "/tf_static",
+          "/robot_description",
+          "/head_rgbd_sensor/rgb/camera_info",
+          "/head_rgbd_sensor/rgb/image_rect_color/compressed",
+          "/head_rgbd_sensor/depth_registered/camera_info",
+          "/head_rgbd_sensor/depth_registered/image_rect_raw/compressedDepth"
+        ],
+        publishers: [
+          "/scan",
+          "/tf",
+          "/tf_static",
+          "/robot_description",
+          "/head_rgbd_sensor/rgb/camera_info",
+          "/head_rgbd_sensor/rgb/image_rect_color/compressed",
+          "/head_rgbd_sensor/depth_registered/camera_info",
+          "/head_rgbd_sensor/depth_registered/image_rect_raw/compressedDepth"
+        ]
+      },
+
+      /// Rate cap on the link only; robot nodes keep full rate locally.
+      /// 15 Hz is ~4.5 MB/s. 30 Hz is ~9 MB/s, also fine on 1 Gbps.
+      pub_max_frequencies: [
+        "/head_rgbd_sensor/rgb/image_rect_color/compressed=15.0",
+        "/head_rgbd_sensor/depth_registered/image_rect_raw/compressedDepth=15.0"
+      ]
+    }
+  },
+
+  transport: { shared_memory: { enabled: false } },
+  scouting: { multicast: { enabled: false } },
+
+  /// 7447 and 7448 are taken (vision_transport_tx, SAM3, GraspGenX).
+  listen: { endpoints: ["tcp/0.0.0.0:7449"] }
+}

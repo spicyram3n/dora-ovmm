@@ -1,0 +1,53 @@
+/// zenoh bridge config for THIS PC. Start after the robot side.
+///
+///   export ROS_DOMAIN_ID=1
+///   zenoh-bridge-ros2dds -c /home/ws/.devcontainer/zenoh/bridge_pc.json5
+///
+/// Domain 1 is isolated from the robot's domain 0, so anything appearing on
+/// domain 1 arrived over zenoh. Rate caps live in bridge_robot.json5.
+{
+  mode: "client",
+
+  plugins: {
+    ros2dds: {
+      /// ROS_DOMAIN_ID env overrides this. Export it as 1.
+      domain: 1,
+
+      /// Must match bridge_robot.json5 exactly.
+      allow: {
+        subscribers: [
+          "/scan",
+          "/tf",
+          "/tf_static",
+          "/robot_description",
+          "/head_rgbd_sensor/rgb/camera_info",
+          "/head_rgbd_sensor/rgb/image_rect_color/compressed",
+          "/head_rgbd_sensor/depth_registered/camera_info",
+          "/head_rgbd_sensor/depth_registered/image_rect_raw/compressedDepth"
+        ],
+        publishers: [
+          "/scan",
+          "/tf",
+          "/tf_static",
+          "/robot_description",
+          "/head_rgbd_sensor/rgb/camera_info",
+          "/head_rgbd_sensor/rgb/image_rect_color/compressed",
+          "/head_rgbd_sensor/depth_registered/camera_info",
+          "/head_rgbd_sensor/depth_registered/image_rect_raw/compressedDepth"
+        ]
+      }
+    }
+  },
+
+  transport: { shared_memory: { enabled: false } },
+  scouting: { multicast: { enabled: false } },
+
+  /// exit_on_failure false: client mode otherwise dies on first failed
+  /// connect, and this link drops often.
+  connect: {
+    endpoints: ["tcp/10.7.3.185:7449"],
+    timeout_ms: -1,
+    exit_on_failure: false,
+    retry: { period_init_ms: 1000, period_max_ms: 4000, period_increase_factor: 2 }
+  }
+}

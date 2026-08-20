@@ -1,0 +1,17 @@
+[
+  {
+    "furniture_id": 4,
+    "relation": "on",
+    "reason": "low table is a common snack spot"
+  },
+  {
+    "furniture_id": 14,
+    "relation": "on",
+    "reason": "tabletop commonly holds snack cans"
+  },
+  {
+    "furniture_id": 15,
+    "relation": "on",
+    "reason": "packaged snacks often stored on shelf"
+  }
+]

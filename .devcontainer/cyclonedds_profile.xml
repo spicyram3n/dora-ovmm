@@ -1,0 +1,26 @@
+<CycloneDDS>
+  <Domain>
+    <General>
+      <AllowMulticast>false</AllowMulticast>
+      <EnableMulticastLoopback>false</EnableMulticastLoopback>
+      <MaxMessageSize>65500B</MaxMessageSize>
+    </General>
+    <Discovery>
+      <ParticipantIndex>auto</ParticipantIndex>
+      <MaxAutoParticipantIndex>100</MaxAutoParticipantIndex>
+      <Peers>
+        <Peer Address="10.7.3.185"/>
+        <Peer Address="localhost"/>
+      </Peers>
+    </Discovery>
+    <Internal>
+      <SocketReceiveBufferSize min="32MB"/>
+      <SocketSendBufferSize min="32MB"/>
+      <MaxSampleSize>100MB</MaxSampleSize>
+      <DefragReliableMaxSamples>64</DefragReliableMaxSamples>
+      <DefragUnreliableMaxSamples>64</DefragUnreliableMaxSamples>
+      <PrimaryReorderMaxSamples>1024</PrimaryReorderMaxSamples>
+      <DeliveryQueueMaxSamples>1024</DeliveryQueueMaxSamples>
+    </Internal>
+  </Domain>
+</CycloneDDS>

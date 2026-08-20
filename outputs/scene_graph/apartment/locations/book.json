@@ -1,0 +1,17 @@
+[
+  {
+    "furniture_id": 15,
+    "relation": "on",
+    "reason": "books are commonly kept on shelves"
+  },
+  {
+    "furniture_id": 5,
+    "relation": "on",
+    "reason": "books are often placed on desks"
+  },
+  {
+    "furniture_id": 12,
+    "relation": "in",
+    "reason": "books may be stored in a sideboard"
+  }
+]

@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Minimal CycloneDDS profile for the zenoh bridge on the robot.
+  Copy to the robot as /etc/zenoh-bridge-ros2dds/cdds_bridge.xml.
+
+  The robot's own full profile crashes the bridge with a glibc buffer
+  overflow. Running with no profile leaves the bridge unable to discover any
+  ROS node, since the robot's nodes are unicast only. This keeps just what
+  discovery needs.
+-->
+<CycloneDDS>
+  <Domain>
+    <General>
+      <Interfaces>
+        <NetworkInterface name="enp0s31f6" autodetermine="false" multicast="false"/>
+      </Interfaces>
+      <AllowMulticast>false</AllowMulticast>
+      <EnableMulticastLoopback>false</EnableMulticastLoopback>
+    </General>
+    <Discovery>
+      <ParticipantIndex>auto</ParticipantIndex>
+      <MaxAutoParticipantIndex>99</MaxAutoParticipantIndex>
+      <Peers>
+        <Peer Address="localhost"/>
+        <Peer Address="10.7.3.185"/>
+      </Peers>
+    </Discovery>
+  </Domain>
+</CycloneDDS>

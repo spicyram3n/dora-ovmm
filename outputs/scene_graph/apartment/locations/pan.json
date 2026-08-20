@@ -1,0 +1,17 @@
+[
+  {
+    "furniture_id": 4,
+    "relation": "on",
+    "reason": "kitchen low table is a common surface for a pan"
+  },
+  {
+    "furniture_id": 15,
+    "relation": "on",
+    "reason": "high shelf is a likely storage spot for cookware"
+  },
+  {
+    "furniture_id": 14,
+    "relation": "on",
+    "reason": "high table could temporarily hold a pan"
+  }
+]

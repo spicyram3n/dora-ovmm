@@ -2,6 +2,17 @@
 set -e
 sudo chown -R $(whoami) /home/ws
 
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+
+# Appends a line to ~/.bashrc unless it's already there.
+bashrc_line() {
+    grep -qxF "$1" ~/.bashrc || echo "$1" >> ~/.bashrc
+}
+
+bashrc_line 'export PYTHONPATH=$PYTHONPATH:/home/ws'
+bashrc_line 'export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp'  # matches the real robot
+bashrc_line "export CYCLONEDDS_URI=file://$SCRIPT_DIR/cyclonedds_profile.xml"
+
 WS=/home/ws/ros2_ws
 mkdir -p $WS/src
 
@@ -35,9 +46,7 @@ sudo apt-get update
 rosdep update
 rosdep install --from-paths $WS/src --ignore-src -r -y
 
-# Reuse build/ and install/ only if the last build actually finished. A leftover
-# half-built workspace makes colcon resume from stale CMake caches, which fails
-# in confusing ways, so wipe it and start clean instead.
+# Reuse build/ and install/ only if the last build actually finished.
 SIM_LAUNCH=$WS/install/hsrb_gazebo_launch/share/hsrb_gazebo_launch/launch/hsrc_apartment_world.launch.py
 if [ -f $WS/install/setup.bash ] && [ -f $SIM_LAUNCH ]; then
     echo "ros2_ws looks built - incremental colcon build"
@@ -46,8 +55,6 @@ else
     rm -rf $WS/build $WS/install $WS/log
 fi
 
-# CMAKE_CXX_STANDARD: tmc_robot_collision_detector sets none but includes a
-# header declaring std::optional. Humble is C++17 anyway, so it changes nothing else.
 cd $WS
 source /opt/ros/humble/setup.bash
 colcon build --symlink-install --cmake-args -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_STANDARD=17

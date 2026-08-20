@@ -63,6 +63,69 @@ ros2 launch grasp_execution move_to_grasp.launch.py
 Uses the newest saved grasp file by default. Pass `grasp_file:=<path>` to
 pick a specific one.
 
+## 6. Robot communication setup (one time)
+
+Only needed when running against the real robot over the lab network. Full
+detail and troubleshooting is in [zenoh_routing.md](zenoh_routing.md).
+
+**a. Route.** The robot loses its path back to this subnet because a
+teammate's USB ethernet adapter installs a lower metric default route. Symptom
+is ping to `10.7.3.185` failing while the gateway `10.7.3.254` answers. On the
+robot:
+
+```bash
+sudo nmcli connection modify "Internet" +ipv4.routes "131.220.7.0/24 10.7.3.254"
+sudo nmcli connection up "Internet"
+```
+
+**b. Clock.** zenoh drops samples whose timestamp is more than 500 ms off.
+Check `date -u` on both machines and sync with `sudo timedatectl set-ntp true`
+on the robot if they disagree.
+
+**c. Robot side config.** Copy both files from `.devcontainer/zenoh/`:
+
+```bash
+scp .devcontainer/zenoh/bridge_robot.json5 \
+    .devcontainer/zenoh/cdds_bridge_robot.xml \
+    administrator@10.7.3.185:/tmp/
+ssh administrator@10.7.3.185
+sudo mkdir -p /etc/zenoh-bridge-ros2dds
+sudo cp /tmp/bridge_robot.json5 /etc/zenoh-bridge-ros2dds/
+sudo cp /tmp/cdds_bridge_robot.xml /etc/zenoh-bridge-ros2dds/cdds_bridge.xml
+```
+
+The robot needs its own minimal CycloneDDS profile. Its full profile crashes
+the bridge with a glibc buffer overflow, and running with no profile leaves
+the bridge unable to discover any ROS node.
+
+**d. Start.** Robot first, it is the listener:
+
+```bash
+# robot
+export CYCLONEDDS_URI=file:///etc/zenoh-bridge-ros2dds/cdds_bridge.xml
+zenoh-bridge-ros2dds -c /etc/zenoh-bridge-ros2dds/bridge_robot.json5
+```
+
+```bash
+# this container
+export ROS_DOMAIN_ID=1
+zenoh-bridge-ros2dds -c /home/ws/.devcontainer/zenoh/bridge_pc.json5
+```
+
+Both are foreground processes and must stay running. `CYCLONEDDS_URI` is set
+for you by `devcontainer.json`.
+
+**e. Pointcloud.** Only compressed images cross the link, so rebuild the cloud
+locally:
+
+```bash
+export ROS_DOMAIN_ID=1
+ros2 launch /home/ws/zenoh/pointcloud_reconstruct.launch.py
+```
+
+This publishes `/head_rgbd_sensor/depth_registered/rectified_points`, the same
+topic name the robot uses. In rviz set Fixed Frame to `odom`.
+
 ## About zenoh
 
 SAM3 and GraspGenX are reached over zenoh instead of ROS 2 topics, since

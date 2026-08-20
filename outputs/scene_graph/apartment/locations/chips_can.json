@@ -1,0 +1,17 @@
+[
+  {
+    "furniture_id": 4,
+    "relation": "on",
+    "reason": "Kitchen table is a common surface for snacks like chips"
+  },
+  {
+    "furniture_id": 12,
+    "relation": "in",
+    "reason": "Sideboard provides enclosed storage for packaged food"
+  },
+  {
+    "furniture_id": 14,
+    "relation": "on",
+    "reason": "High table is a convenient eating or serving surface"
+  }
+]

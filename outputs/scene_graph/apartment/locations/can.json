@@ -1,0 +1,17 @@
+[
+  {
+    "furniture_id": 14,
+    "relation": "on",
+    "reason": "common table surface for a can"
+  },
+  {
+    "furniture_id": 5,
+    "relation": "on",
+    "reason": "desk surface often holds cans"
+  },
+  {
+    "furniture_id": 4,
+    "relation": "on",
+    "reason": "kitchen table is a likely spot"
+  }
+]

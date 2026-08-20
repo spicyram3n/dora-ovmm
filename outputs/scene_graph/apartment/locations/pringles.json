@@ -1,0 +1,17 @@
+[
+  {
+    "furniture_id": 15,
+    "relation": "on",
+    "reason": "high shelves commonly store dry snacks like pringles"
+  },
+  {
+    "furniture_id": 12,
+    "relation": "in",
+    "reason": "openable sideboard can contain snack cans"
+  },
+  {
+    "furniture_id": 4,
+    "relation": "on",
+    "reason": "kitchen low table is a convenient surface for snacks"
+  }
+]

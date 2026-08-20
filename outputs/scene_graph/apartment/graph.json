@@ -1,0 +1,504 @@
+{
+  "directed": true,
+  "multigraph": false,
+  "graph": {},
+  "nodes": [
+    {
+      "label": "wagon",
+      "name": "wagon",
+      "movable": false,
+      "confidence": 1.0,
+      "centroid": [
+        -0.5,
+        -5.221,
+        0.375
+      ],
+      "dimensions": [
+        0.47,
+        0.445,
+        0.67
+      ],
+      "room": null,
+      "id": 0
+    },
+    {
+      "label": "nasal_inflammation_capsul",
+      "name": "nasal_cupsul",
+      "movable": true,
+      "confidence": 1.0,
+      "centroid": [
+        -0.5,
+        -5.22,
+        0.69
+      ],
+      "dimensions": [
+        0.083,
+        0.135,
+        0.026
+      ],
+      "room": null,
+      "id": 1
+    },
+    {
+      "label": "sofa-fix",
+      "name": "sofa01",
+      "movable": false,
+      "confidence": 1.0,
+      "centroid": [
+        -3.44,
+        -4.905,
+        0.128
+      ],
+      "dimensions": [
+        1.257,
+        0.776,
+        0.592
+      ],
+      "room": null,
+      "id": 2
+    },
+    {
+      "label": "sofa-fix",
+      "name": "sofa02",
+      "movable": false,
+      "confidence": 1.0,
+      "centroid": [
+        -3.44,
+        -3.015,
+        0.128
+      ],
+      "dimensions": [
+        1.257,
+        0.776,
+        0.592
+      ],
+      "room": null,
+      "id": 3
+    },
+    {
+      "label": "kitchen_lowtable",
+      "name": "kitchen_lowtable",
+      "movable": false,
+      "confidence": 1.0,
+      "centroid": [
+        -3.44,
+        -4.02,
+        0.266
+      ],
+      "dimensions": [
+        1.25,
+        0.8,
+        0.4
+      ],
+      "room": null,
+      "id": 4
+    },
+    {
+      "label": "office_desk",
+      "name": "office_desk01",
+      "movable": false,
+      "confidence": 1.0,
+      "centroid": [
+        4.1,
+        -3.84,
+        0.465
+      ],
+      "dimensions": [
+        1.2,
+        0.6,
+        0.7
+      ],
+      "room": null,
+      "id": 5
+    },
+    {
+      "label": "office_desk",
+      "name": "office_desk02",
+      "movable": false,
+      "confidence": 1.0,
+      "centroid": [
+        2.8,
+        -3.84,
+        0.465
+      ],
+      "dimensions": [
+        1.2,
+        0.6,
+        0.7
+      ],
+      "room": null,
+      "id": 6
+    },
+    {
+      "label": "office_desk",
+      "name": "office_desk06",
+      "movable": false,
+      "confidence": 1.0,
+      "centroid": [
+        2.8,
+        -0.64,
+        0.465
+      ],
+      "dimensions": [
+        1.2,
+        0.6,
+        0.7
+      ],
+      "room": null,
+      "id": 7
+    },
+    {
+      "label": "kitchen_chair",
+      "name": "chair00",
+      "movable": false,
+      "confidence": 1.0,
+      "centroid": [
+        1.018,
+        -3.592,
+        0.258
+      ],
+      "dimensions": [
+        0.524,
+        0.528,
+        0.848
+      ],
+      "room": null,
+      "id": 8
+    },
+    {
+      "label": "kitchen_chair",
+      "name": "chair01",
+      "movable": false,
+      "confidence": 1.0,
+      "centroid": [
+        2.9,
+        -3.592,
+        0.258
+      ],
+      "dimensions": [
+        0.524,
+        0.528,
+        0.848
+      ],
+      "room": null,
+      "id": 9
+    },
+    {
+      "label": "kitchen_chair",
+      "name": "chair02",
+      "movable": false,
+      "confidence": 1.0,
+      "centroid": [
+        4.2,
+        -3.592,
+        0.258
+      ],
+      "dimensions": [
+        0.524,
+        0.528,
+        0.848
+      ],
+      "room": null,
+      "id": 10
+    },
+    {
+      "label": "kitchen_chair",
+      "name": "chair05",
+      "movable": false,
+      "confidence": 1.0,
+      "centroid": [
+        2.9,
+        -0.292,
+        0.258
+      ],
+      "dimensions": [
+        0.524,
+        0.528,
+        0.848
+      ],
+      "room": null,
+      "id": 11
+    },
+    {
+      "label": "openable_living_sideboard",
+      "name": "living_sideboard",
+      "movable": false,
+      "confidence": 1.0,
+      "centroid": [
+        -3.768,
+        -6.191,
+        0.379
+      ],
+      "dimensions": [
+        1.15,
+        0.476,
+        0.615
+      ],
+      "room": null,
+      "id": 12
+    },
+    {
+      "label": "wallet",
+      "name": "wallet",
+      "movable": true,
+      "confidence": 1.0,
+      "centroid": [
+        -4.006,
+        -6.326,
+        0.507
+      ],
+      "dimensions": [
+        0.197,
+        0.098,
+        0.029
+      ],
+      "room": null,
+      "id": 13
+    },
+    {
+      "label": "high_table",
+      "name": "high_table01",
+      "movable": false,
+      "confidence": 1.0,
+      "centroid": [
+        -0.4,
+        -2.6,
+        0.695
+      ],
+      "dimensions": [
+        0.5,
+        2.3,
+        1.05
+      ],
+      "room": null,
+      "id": 14
+    },
+    {
+      "label": "high_shelf",
+      "name": "high_shelf01",
+      "movable": false,
+      "confidence": 1.0,
+      "centroid": [
+        -0.325,
+        6.439,
+        0.918
+      ],
+      "dimensions": [
+        0.45,
+        0.295,
+        1.8
+      ],
+      "room": null,
+      "id": 15
+    },
+    {
+      "label": "high_shelf",
+      "name": "high_shelf02",
+      "movable": false,
+      "confidence": 1.0,
+      "centroid": [
+        -0.775,
+        6.439,
+        0.918
+      ],
+      "dimensions": [
+        0.45,
+        0.295,
+        1.8
+      ],
+      "room": null,
+      "id": 16
+    },
+    {
+      "label": "high_shelf",
+      "name": "high_shelf03",
+      "movable": false,
+      "confidence": 1.0,
+      "centroid": [
+        -1.225,
+        6.439,
+        0.918
+      ],
+      "dimensions": [
+        0.45,
+        0.295,
+        1.8
+      ],
+      "room": null,
+      "id": 17
+    },
+    {
+      "label": "hsr_orange",
+      "name": "hsr_orange_02",
+      "movable": true,
+      "confidence": 1.0,
+      "centroid": [
+        -0.425,
+        -3.042,
+        1.113
+      ],
+      "dimensions": [
+        0.091,
+        0.091,
+        0.123
+      ],
+      "room": null,
+      "id": 18
+    },
+    {
+      "label": "hsr_pringles",
+      "name": "hsr_pringles_01",
+      "movable": true,
+      "confidence": 1.0,
+      "centroid": [
+        -0.663,
+        6.399,
+        0.771
+      ],
+      "dimensions": [
+        0.091,
+        0.091,
+        0.225
+      ],
+      "room": null,
+      "id": 19
+    },
+    {
+      "label": "hsr_pringles",
+      "name": "hsr_pringles_02",
+      "movable": true,
+      "confidence": 1.0,
+      "centroid": [
+        -0.332,
+        -2.707,
+        1.163
+      ],
+      "dimensions": [
+        0.077,
+        0.077,
+        0.225
+      ],
+      "room": null,
+      "id": 20
+    },
+    {
+      "label": "apple",
+      "name": "apple_01",
+      "movable": true,
+      "confidence": 1.0,
+      "centroid": [
+        -0.32,
+        6.451,
+        1.274
+      ],
+      "dimensions": [
+        0.124,
+        0.124,
+        0.09
+      ],
+      "room": null,
+      "id": 21
+    },
+    {
+      "label": "banana",
+      "name": "banana_01",
+      "movable": true,
+      "confidence": 1.0,
+      "centroid": [
+        -1.247,
+        6.384,
+        0.379
+      ],
+      "dimensions": [
+        0.13,
+        0.103,
+        0.033
+      ],
+      "room": null,
+      "id": 22
+    },
+    {
+      "label": "pear",
+      "name": "pear_01",
+      "movable": true,
+      "confidence": 1.0,
+      "centroid": [
+        -1.188,
+        6.432,
+        1.284
+      ],
+      "dimensions": [
+        0.11,
+        0.11,
+        0.11
+      ],
+      "room": null,
+      "id": 23
+    },
+    {
+      "label": "lawn_garden",
+      "name": "lawn_garden",
+      "movable": true,
+      "confidence": 1.0,
+      "centroid": [
+        0.375,
+        -0.01,
+        -0.011
+      ],
+      "dimensions": [
+        14.075,
+        17.185,
+        0.02
+      ],
+      "room": null,
+      "id": 24
+    }
+  ],
+  "edges": [
+    {
+      "relation": "on",
+      "source": 1,
+      "target": 0
+    },
+    {
+      "relation": "in",
+      "source": 13,
+      "target": 12
+    },
+    {
+      "relation": "on",
+      "source": 18,
+      "target": 14
+    },
+    {
+      "relation": "in",
+      "source": 19,
+      "target": 16
+    },
+    {
+      "relation": "on",
+      "source": 20,
+      "target": 14
+    },
+    {
+      "relation": "in",
+      "source": 21,
+      "target": 15
+    },
+    {
+      "relation": "in",
+      "source": 22,
+      "target": 17
+    },
+    {
+      "relation": "in",
+      "source": 23,
+      "target": 17
+    },
+    {
+      "relation": "near",
+      "source": 24,
+      "target": 14
+    }
+  ]
+}
