@@ -1,5 +1,4 @@
-"""Depth image + mask + intrinsics -> 3D points, in the camera's optical
-frame (meters, +Z forward)."""
+"""Depth image + mask + intrinsics -> 3D points, in the camera's optical frame (meters, +Z forward)."""
 
 import numpy as np
 import trimesh
@@ -7,7 +6,11 @@ import trimesh
 
 def deproject(depth_m, k, mask):
     """Back-project every masked pixel that has valid depth into (N, 3) points."""
-    fx, fy, cx, cy = k[0, 0], k[1, 1], k[0, 2], k[1, 2]
+    fx = k[0, 0]
+    fy = k[1, 1]
+    cx = k[0, 2]
+    cy = k[1, 2]
+    # Missing depth cannot define a 3D object point.
     rows, cols = np.nonzero(mask & np.isfinite(depth_m) & (depth_m > 0))
     z = depth_m[rows, cols]
     x = (cols - cx) * z / fx

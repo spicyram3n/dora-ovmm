@@ -27,6 +27,11 @@ RUN apt-get update && apt-get upgrade -y && \
     apt-get install -y --no-install-recommends \
     python3-pip python-is-python3 ssh neovim git wget unzip \
     ros-humble-control-msgs \
+    ros-humble-cv-bridge \
+    ros-humble-message-filters \
+    ros-humble-image-transport \
+    ros-humble-compressed-image-transport \
+    ros-humble-compressed-depth-image-transport \
     ros-humble-navigation2 \
     ros-humble-nav2-bringup \
     ros-humble-nav2-simple-commander \

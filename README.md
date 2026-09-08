@@ -19,16 +19,9 @@ ros2 launch hsrb_gazebo_launch hsrc_apartment_world.launch.py
 
 **Real robot:**
 
-The container's RMW is `rmw_cyclonedds_cpp` by default, matching the robot.
-Before connecting, make sure:
-
-- The robot and this machine are on the same private network, not a shared
-  public/campus Wi-Fi. Most of those isolate clients from each other, which
-  blocks ROS 2 discovery entirely. Use your own router or a hotspot instead.
-- `ROS_DOMAIN_ID` matches on both sides (`42` here, see
-  `.devcontainer/devcontainer.json`).
-
-No bridge or extra software is needed on the robot itself.
+The PC uses CycloneDDS in domain `9`; the robot uses domain `5`. Run the
+Zenoh ROS 2 bridge on both hosts and the RGB-D compressor/receiver in their ROS
+containers. See [robot–PC setup](robot_transport/README.md) for commands.
 
 ## 3. Start the perception and grasp servers
 

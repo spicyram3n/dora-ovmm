@@ -1,0 +1,58 @@
+{
+  "mode": "router",
+  "listen": {
+    "endpoints": []
+  },
+  "scouting": {
+    "multicast": {
+      "enabled": false
+    },
+    "gossip": {
+      "enabled": false
+    }
+  },
+  "plugins": {
+    "ros2dds": {
+      "domain": 9,
+      "allow": {
+        "publishers": [
+          "^/tf$",
+          "^/map$",
+          "^/initialpose$"
+        ],
+        "subscribers": [
+          "^/scan$",
+          "^/odom$",
+          "^/joint_states$",
+          "^/tf$",
+          "^/tf_static$",
+          "^/map$",
+          "^/clock$",
+          "^/head_rgbd_sensor/rgb/camera_info$",
+          "^/zenoh/rgbd/rgb/compressed$",
+          "^/zenoh/rgbd/depth/compressedDepth$"
+        ],
+        "action_servers": [],
+        "action_clients": [
+          "^/compute_path_to_pose$",
+          "^/navigate_to_pose$",
+          "^/head_trajectory_controller/follow_joint_trajectory$"
+        ],
+        "service_servers": [],
+        "service_clients": []
+      },
+      "pub_priorities": [
+        "/tf=1:express",
+        "/scan=2:express",
+        "/zenoh/rgbd/.*=6"
+      ],
+      "queries_timeout": {
+        "actions": {
+          "send_goal": 5.0,
+          "cancel_goal": 5.0,
+          "get_result": 3600.0
+        }
+      }
+    }
+  }
+}

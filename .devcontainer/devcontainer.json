@@ -30,10 +30,9 @@
     },
     "containerEnv": {
         "ROS_LOCALHOST_ONLY": "0",
-        "ROS_DOMAIN_ID": "42",
+        "ROS_DOMAIN_ID": "9",
         "NVIDIA_DRIVER_CAPABILITIES": "all",
-        // the real robot only ships rmw_cyclonedds_cpp, and cyclonedds/zenoh
-        // nodes cannot discover each other at all, so match the robot
+        // Local DDS stays CycloneDDS; robot_transport bridges robot domain 5 to PC 9.
         "RMW_IMPLEMENTATION": "rmw_cyclonedds_cpp",
         // tmc_gazebo_worlds' env hook only sets GAZEBO_MODEL_PATH (Gazebo
         // Classic); Ignition reads these, and without them every model:// URI
