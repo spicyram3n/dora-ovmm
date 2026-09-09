@@ -34,3 +34,6 @@ config/targets/
 bags/
 
 .image_fingerprint
+
+# generic files 
+data_hrl/

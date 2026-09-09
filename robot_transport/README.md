@@ -1,177 +1,144 @@
-# Robot–PC transport
+# Robot–PC communication with ZeroMQ
 
-## 1. Install
+Use the existing ROS Humble containers on the robot and PC. This gateway keeps
+CycloneDDS and sends only configured sensor topics through explicit TCP ports.
+The old transport launch/config files have been removed.
 
-Run inside each **existing ROS container**. No additional containers are needed.
-Copy `robot_transport/` to `/home/ws/robot_transport/` on both machines.
+## Tomorrow: install on both machines
+
+Copy `robot_transport/` into the workspace on both machines. Run these commands
+inside the ROS environment that can already see that machine's working topics,
+not inside the OpenYOLO3D container:
 
 ```bash
 sudo apt-get update
-sudo apt-get install -y curl unzip ros-humble-image-transport \
-  ros-humble-compressed-image-transport ros-humble-compressed-depth-image-transport
-uname -m
-```
-
-For **x86_64**, install the verified Zenoh bridge **1.6.2** binary. This avoids
-the glibc requirement that prevented APT installation on Ubuntu 22.04.
-
-```bash
-curl -fL --retry 3 \
-  https://github.com/eclipse-zenoh/zenoh-plugin-ros2dds/releases/download/1.6.2/zenoh-plugin-ros2dds-1.6.2-x86_64-unknown-linux-gnu-standalone.zip \
-  -o /tmp/zenoh-1.6.2.zip
-printf '%s\n' 'a3401fe963240e2c65b13db14e8c58529e84d79eb769fdfe45fb27bd5b7d0c44  /tmp/zenoh-1.6.2.zip' | sha256sum -c -
-```
-
-Continue only if the checksum reports `OK`:
-
-```bash
-unzip -o /tmp/zenoh-1.6.2.zip zenoh-bridge-ros2dds -d /tmp/zenoh-1.6.2
-sudo install -m 0755 /tmp/zenoh-1.6.2/zenoh-bridge-ros2dds \
-  /usr/local/bin/zenoh-bridge-ros2dds
-zenoh-bridge-ros2dds --version
-```
-
-For another architecture, use its matching asset from the
-[1.6.2 release](https://github.com/eclipse-zenoh/zenoh-plugin-ros2dds/releases/tag/1.6.2).
-Use the same bridge version on both machines. Installation must be repeated
-if the container is recreated unless included in its image.
-
-## 2. Robot setup — domain 5
-
-Start robot drivers and Nav2 using your normal bringup commands after setting:
-
-```bash
+sudo apt-get install -y python3-zmq python3-zstandard python3-opencv ros-humble-cv-bridge
 source /opt/ros/humble/setup.bash
-source /home/ws/ros2_ws/install/setup.bash
+# Source your existing robot/workspace overlay if your normal bringup needs it.
 export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
 export ROS_DOMAIN_ID=5
+/usr/bin/python3 -c 'import zmq, zstandard, cv2, rclpy; from cv_bridge import CvBridge; print("Gateway dependencies OK; ZeroMQ", zmq.zmq_version())'
 ```
 
-Restart any robot nodes previously started in another domain.
+Use `/usr/bin/python3` so the APT-installed modules and ROS use the same Python.
+No pip upgrade, new DDS implementation, broker or extra container is required.
+If your container runs as root, omit `sudo`. Installations disappear when a
+container is recreated unless included in its image.
 
-In a separate terminal inside the robot ROS container, start image compression:
+Use **domain 5 on both machines** for this test, including PC RViz/perception.
+This preserves ordinary direct DDS communication with the robot. Domain 9 on
+PC works for gateway sensors but does not preserve direct access to domain-5
+TF/actions. Leave the robot's working `CYCLONEDDS_URI` unchanged; do not globally
+set `ROS_LOCALHOST_ONLY=1` or copy another machine's interface XML.
 
-```bash
-source /opt/ros/humble/setup.bash
-ROS_DOMAIN_ID=5 RMW_IMPLEMENTATION=rmw_cyclonedds_cpp \
-  ros2 launch /home/ws/robot_transport/robot_images.launch.py
-```
+Stop previous sensor bridges and image republishers in their own terminals.
+Do not stop the camera driver, lidar, navigation or other working robot nodes.
+Removing files here does not stop previously launched processes.
 
-In another terminal inside that container, start the bridge:
+## Check the robot's local inputs first
 
-```bash
-cd /home/ws
-sh robot_transport/run_bridge.sh robot
-```
-
-## 3. PC setup — domain 9
-
-Inside the PC ROS container, replace `ROBOT_IP` with the robot host address:
+Run on the robot, with its normal bringup running:
 
 ```bash
-cd /home/ws
-sh robot_transport/run_bridge.sh pc ROBOT_IP
-```
-
-In a separate terminal, start image decompression:
-
-```bash
-source /opt/ros/humble/setup.bash
-ROS_DOMAIN_ID=9 RMW_IMPLEMENTATION=rmw_cyclonedds_cpp \
-  ros2 launch /home/ws/robot_transport/pc_images.launch.py
-```
-
-Set every PC application terminal to domain 9 and CycloneDDS. On hardware,
-use `Navigator(use_sim_time=False)` and `grab_rgbd(use_sim_time=False)`.
-
-**Same-machine simulation:** run the simulator and robot image launch in domain
-5, the PC image launch in domain 9, and both bridges. Use `127.0.0.1` for
-`ROBOT_IP`. Simulation consumers use simulation time and the bridged `/clock`.
-
-## Transferred interfaces
-
-These are the allowlists in `robot.json5` and `pc.json5`. Delivery requires a
-running publisher/server and a matching subscriber/client.
-
-| Topic | Direction | Purpose |
-| --- | --- | --- |
-| `/scan` | Robot → PC | Laser scan |
-| `/odom` | Robot → PC | Odometry |
-| `/joint_states` | Robot → PC | Joint state |
-| `/tf` | Both directions | Dynamic transforms |
-| `/tf_static` | Robot → PC | Static transforms |
-| `/map` | Both directions | Map from robot or PC SLAM |
-| `/clock` | Robot → PC | Simulation clock |
-| `/head_rgbd_sensor/rgb/camera_info` | Robot → PC | Camera calibration |
-| `/zenoh/rgbd/rgb/compressed` | Robot → PC | Compressed RGB |
-| `/zenoh/rgbd/depth/compressedDepth` | Robot → PC | Compressed registered depth |
-| `/initialpose` | PC → robot | Initial localization pose |
-
-| Action | Client → server |
-| --- | --- |
-| `/navigate_to_pose` | PC → robot |
-| `/compute_path_to_pose` | PC → robot |
-| `/head_trajectory_controller/follow_joint_trajectory` | PC → robot |
-
-Actions include goal requests, feedback, results, and cancellation. Other
-services/actions and PointCloud2 are excluded. Only one side should publish
-`map → odom` and the active map; stop robot AMCL if PC SLAM owns that transform.
-
-### Image topics and settings
-
-The robot encodes the raw topics below; the PC decodes back to the same names.
-Only the compressed topics in the table above cross Zenoh.
-
-| Raw topic on robot and PC | Encoding on the link |
-| --- | --- |
-| `/head_rgbd_sensor/rgb/image_rect_color` | JPEG quality 85 |
-| `/head_rgbd_sensor/depth_registered/image_rect_raw` | Humble compressedDepth: PNG level 3, 10 m cutoff, float quantization parameter 100 |
-
-`camera_ros2.py::grab_rgbd()` pairs the decoded images using their preserved
-capture timestamps (50 ms tolerance). The launch files do not synchronize.
-16UC1 depth preserves in-range integer values; 32FC1 is quantized. Validate depth
-accuracy before grasping. Republishers run continuously and do not set camera
-resolution/rate or enforce a maximum frame age.
-
-The bridge connects explicitly over TCP **7449**, with scouting disabled.
-TF and scan have higher publication priority than images. Action query timeouts
-are **5 s** for goal/cancel replies and **3600 s** for final results. These are
-maximum waits, not delays; application deadlines still apply. A bridge timeout
-alone does not cancel a goal. `run_bridge.sh` inherits `CYCLONEDDS_URI` if set.
-
-## 4. Verify
-
-In a PC ROS terminal:
-
-```bash
-source /opt/ros/humble/setup.bash
-source /home/ws/ros2_ws/install/setup.bash
-export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
-export ROS_DOMAIN_ID=9
+ros2 topic info /scan --verbose
 ros2 topic echo /scan --once --field header --qos-reliability best_effort
-ros2 topic hz /head_rgbd_sensor/rgb/image_rect_color --window 30
+ros2 topic info /head_rgbd_sensor/rgb/image_rect_color --verbose
+ros2 topic info /head_rgbd_sensor/depth_registered/image_rect_raw --verbose
+ros2 topic echo /head_rgbd_sensor/depth_registered/image_rect_raw --once --field header --qos-reliability best_effort
+ros2 topic echo /head_rgbd_sensor/rgb/camera_info --once --qos-reliability best_effort
 ```
 
-Ctrl+C, then check depth and navigation separately:
+If these cannot receive locally, the gateway cannot repair that source: check
+actual topic names, domain, publisher QoS, driver and CycloneDDS discovery.
+The gateway subscribes BEST_EFFORT, VOLATILE, depth 1. CameraInfo must publish
+periodically with this setup; one-shot transient-local calibration needs a QoS
+adjustment. Do not run raw-topic diagnostic subscribers on the PC during the
+bandwidth test: they can trigger duplicate raw DDS traffic across the network.
+
+## Start the gateway
+
+Find each host's reachable IP with `ip -br address`. Replace `ROBOT_IP` and
+`PC_IP` below with actual IPv4 addresses; they are placeholders. Both machines
+must use the same `gateway/routes.json`.
+
+From the repository root on the robot:
 
 ```bash
-ros2 topic hz /head_rgbd_sensor/depth_registered/image_rect_raw --window 30
-# Ctrl+C before the next commands.
-ros2 action list -t
-ros2 run tf2_ros tf2_echo map base_footprint
+ROS_DOMAIN_ID=5 /usr/bin/python3 robot_transport/gateway/gateway.py robot --bind ROBOT_IP --peer PC_IP
 ```
 
-Compare received image rates with the robot's raw-topic rates. The 20–30 Hz
-target requires the source to publish that fast. Test a short navigation goal
-and cancellation with images streaming. Real-robot performance remains unverified.
+From the repository root on the PC:
 
-If images are missing:
+```bash
+ROS_DOMAIN_ID=5 /usr/bin/python3 robot_transport/gateway/gateway.py pc --bind PC_IP --peer ROBOT_IP
+```
 
-- Check raw images in domain 5, compressed images in domain 5, compressed images
-  in domain 9, then decoded images in domain 9. This locates where delivery stops.
-- Use `ros2 topic info TOPIC --verbose` to check publisher QoS. Stock Humble
-  republishers require RELIABLE inputs; BEST_EFFORT needs a supported driver
-  setting change or a QoS-aware republisher.
-- Read both bridge and image-launch terminals. Humble's “subscribeImpl with five
-  arguments” message can fall back successfully; check actual frame delivery.
-  Local tests also encountered shutdown crashes, so clean shutdown is unverified.
+If using containers, run in your existing host-network ROS containers so these
+host IPs are available. The source binds TCP 17601–17604 on the selected interface
+and filters accepted connections to the peer IP. The PC connects to the robot;
+replies return on those connections. If a firewall blocks them, allow only the
+PC IP to those robot TCP ports. No firewall is disabled or changed by this code.
+
+## Test on the PC
+
+In another sourced PC terminal, use CycloneDDS and domain 5 as above:
+
+```bash
+ros2 topic echo /remote/scan --once --field header --qos-reliability best_effort
+ros2 topic echo /remote/head_rgbd_sensor/depth_registered/image_rect_raw --once --field header --qos-reliability best_effort
+ros2 topic echo /remote/head_rgbd_sensor/rgb/camera_info --once --qos-reliability best_effort
+ros2 topic hz /remote/scan
+# Ctrl+C, then:
+ros2 topic hz /remote/head_rgbd_sensor/rgb/image_rect_color
+# Ctrl+C, then:
+ros2 topic hz /remote/head_rgbd_sensor/depth_registered/image_rect_raw
+```
+
+Select `/remote/scan` and `/remote/head_rgbd_sensor/...` in RViz, with
+**BEST_EFFORT** reliability. Use an existing valid TF fixed frame. Ordinary TF
+continues through DDS; missing TF can hide valid scan data in RViz, which is why
+we first check the message header independently.
+
+Initial requested ceilings: RGB 20 Hz, depth 20 Hz, scan 30 Hz, CameraInfo 2 Hz.
+Actual delivery is limited by source rate, compression and request round trip.
+Read receiver logs for delivered rates, errors/timeouts and stale drops. Source
+logs report discovered publishers, total received samples and latest arrival age.
+
+Run all streams for five minutes. Check that images and scan stamps advance,
+RGB/depth pairs remain available to perception, and other working DDS topics
+remain responsive. Topic Hz alone does not establish low latency. Capture-age
+measurements require synchronized clocks; the gateway's transit-age checks use
+monotonic durations and do not require clock synchronization.
+
+While stationary, stop **only the robot gateway** with Ctrl+C, wait five seconds,
+then restart the same command. PC logs should show timeouts during the outage and
+resume fresh delivery afterward without restarting the camera or PC gateway.
+No old stream history should replay. Then restart the PC gateway and verify again.
+
+If depth reports stale drops, lower its `rate` in both copies of `routes.json`
+and retest. Zstd preserves all original depth bits but may send more bytes than
+PNG. If source delivery is healthy and network timeouts persist, check IPs,
+firewall and link quality; raising ROS queue sizes is not the first fix.
+
+## Consumers and scope
+
+Change PC perception subscriptions to the `/remote/...` topics. See
+[consumer remappings and design details](gateway/README.md).
+Other topics, actions and commands continue through ordinary CycloneDDS.
+The gateway is for latest-state sensor data, not one-shot command delivery.
+RGB/depth keep their capture timestamps but arrive independently; use your
+existing timestamp synchronizer. Reconstruct camera point clouds on the PC.
+
+## Optional local self-test
+
+After installing dependencies, run on either machine without changing the
+robot's running nodes:
+
+```bash
+ROS_DOMAIN_ID=73 /usr/bin/python3 robot_transport/gateway/test_gateway.py
+```
+
+The test uses localhost and domain 73 in its own processes. It checks actual
+ROS/ZeroMQ delivery, integer/float depth preservation, reverse direction, restart
+recovery and source stalls. These tests passed in the development environment;
+real-robot Wi-Fi rates remain to be measured.

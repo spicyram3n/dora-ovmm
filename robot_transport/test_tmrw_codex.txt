@@ -1,0 +1,358 @@
+I want you to replace my current ROS 2 ZeroMQ gateway with the simplest possible low-latency implementation for communication between a robot and a PC on the same Wi-Fi/LAN.
+
+Environment:
+
+* ROS 2 Humble
+* RMW: CycloneDDS
+* Robot and PC are on the same network
+* Current transport is Python + pyzmq
+* I already have a working ZeroMQ gateway, but it uses one REQ/REP connection per route
+* I want to replace REQ/REP because I want minimum latency and no request/response synchronization
+* I want one isolated ZeroMQ TCP connection per high-bandwidth stream
+* Keep the code very small, readable, and easy to debug
+* Do not build a generic middleware framework
+
+First, inspect the ZeroMQ versions installed on the PC using:
+
+```bash
+python3 -c "import zmq; print('pyzmq:', zmq.__version__); print('libzmq:', zmq.zmq_version())"
+python3 -m pip show pyzmq
+dpkg -l | grep -E 'zmq|zeromq'
+pkg-config --modversion libzmq
+```
+
+Then give me the exact commands needed to install a compatible/same version on the robot. Prefer Ubuntu packages if versions are compatible. Do not force identical versions unless required by ZeroMQ compatibility.
+
+The desired network architecture is:
+
+```text
+ROBOT ROS
+   ↓
+latest-sample slot
+   ↓
+compress
+   ↓
+ZeroMQ PUSH
+   ↓
+TCP/Wi-Fi
+   ↓
+ZeroMQ PULL
+   ↓
+decompress
+   ↓
+PC ROS
+```
+
+Do NOT use REQ/REP.
+
+For continuous sensor streams use PUSH/PULL with:
+
+* ZMQ_SNDHWM = 1
+* ZMQ_RCVHWM = 1
+* ZMQ_LINGER = 0
+* no growing queues
+* stale samples must be dropped
+* newest data is more important than guaranteed delivery
+
+Implement latest-sample semantics explicitly.
+
+The ROS callback must never wait for compression or networking.
+
+Desired behavior:
+
+```text
+ROS callback:
+new message arrives
+→ replace latest_message
+
+worker:
+take latest_message
+→ encode once
+→ send
+
+if frames arrive while encoding:
+discard older pending frames
+→ process newest one next
+```
+
+Do not append sensor messages to a normal queue.
+
+Also prevent ZeroMQ from accumulating stale packets. If PUSH/PULL cannot directly guarantee newest-only behavior, use non-blocking sends with HWM=1 and drop the sample when the socket cannot accept it. Do not block the producer waiting for the network.
+
+Use one worker process per route as in the existing architecture so a large RGB/depth/pointcloud send cannot block `/scan` or another stream.
+
+The routes I currently need are approximately:
+
+```json
+{
+  "rgb": {
+    "source": "robot",
+    "port": 17601,
+    "type": "sensor_msgs/msg/Image",
+    "input": "/head_rgbd_sensor/rgb/image_rect_color",
+    "output": "/remote/head_rgbd_sensor/rgb/image_rect_color",
+    "codec": "jpeg",
+    "rate": 20,
+    "max_age": 0.5
+  },
+
+  "depth": {
+    "source": "robot",
+    "port": 17602,
+    "type": "sensor_msgs/msg/Image",
+    "input": "/head_rgbd_sensor/depth_registered/image_rect_raw",
+    "output": "/remote/head_rgbd_sensor/depth_registered/image_rect_raw",
+    "codec": "zstd",
+    "rate": 20,
+    "max_age": 0.5
+  },
+
+  "scan": {
+    "source": "robot",
+    "port": 17603,
+    "type": "sensor_msgs/msg/LaserScan",
+    "input": "/scan",
+    "output": "/remote/scan",
+    "codec": "zstd",
+    "rate": 30,
+    "max_age": 0.3
+  },
+
+  "camera_info": {
+    "source": "robot",
+    "port": 17604,
+    "type": "sensor_msgs/msg/CameraInfo",
+    "input": "/head_rgbd_sensor/rgb/camera_info",
+    "output": "/remote/head_rgbd_sensor/rgb/camera_info",
+    "codec": "zstd",
+    "rate": 2,
+    "max_age": 10
+  }
+}
+```
+
+Add the PointCloud2 route:
+
+```json
+{
+  "points": {
+    "source": "robot",
+    "port": 17605,
+    "type": "sensor_msgs/msg/PointCloud2",
+    "input": "/head_rgbd_sensor/depth_registered/rectified_points",
+    "output": "/remote/head_rgbd_sensor/depth_registered/rectified_points",
+    "codec": "cloudini",
+    "rate": 10,
+    "max_age": 0.5
+  }
+}
+```
+
+Compression requirements:
+
+RGB:
+
+* JPEG
+* OpenCV
+* quality around 80
+* preserve ROS header
+* decode back to normal `sensor_msgs/msg/Image` on the PC
+
+Depth:
+
+* initially keep lossless compression
+* use Zstd level 1 unless `compressedDepth` is clearly simpler and better
+* never convert depth to BGR or JPEG
+* preserve original depth encoding such as `16UC1` or `32FC1`
+
+LaserScan:
+
+* ROS serialize using `rclpy.serialization.serialize_message`
+* optionally Zstd level 1
+* do not invent a custom LaserScan format
+
+CameraInfo:
+
+* serialize directly
+* Zstd optional because it is tiny
+
+PointCloud2:
+
+* do NOT simply Zstd-compress raw PointCloud2 if Cloudini or ROS point-cloud transport is available
+* install ROS 2 Humble point cloud transport tools/plugins first
+* investigate/install:
+
+  * `point_cloud_transport`
+  * `point_cloud_transport_plugins`
+  * Cloudini / `cloudini_ros`
+* prefer Cloudini for PointCloud2 compression
+* do not reimplement Cloudini
+* use the existing ROS codec/converter or its codec API
+
+Preferred PointCloud architecture:
+
+```text
+Robot PointCloud2
+   ↓
+Cloudini compression
+   ↓
+compressed point-cloud ROS message or encoded bytes
+   ↓
+ZeroMQ PUSH
+   ↓
+PC
+   ↓
+Cloudini decompression
+   ↓
+PointCloud2
+   ↓
+publish normal ROS topic
+```
+
+If the Python API for Cloudini is awkward or unavailable, use a small external ROS converter process:
+
+```text
+PointCloud2
+→ cloudini converter
+→ compressed ROS topic
+→ ZeroMQ gateway using CDR only
+```
+
+and reverse it on the PC.
+
+That is acceptable and preferable to implementing a codec ourselves.
+
+Before writing code, determine the exact ROS package/message type used by Cloudini on Humble and give installation commands.
+
+Networking rules:
+
+* bind only to the explicitly supplied robot/PC interface IP
+* do not bind to `0.0.0.0`
+* one TCP port per stream is fine
+* one ZeroMQ context per process is fine
+* each route runs in its own process
+* TCP is acceptable
+* use `ZMQ_IMMEDIATE` where useful
+* `LINGER=0`
+* keep HWM tiny
+* sensor sender must never block because the receiver/network is slow
+* drop instead of queue
+* reconnect automatically after temporary network failures
+* do not crash the entire gateway because one stream disconnects
+
+Wire format:
+Keep it minimal.
+
+Use ZeroMQ multipart:
+
+```text
+part 0 = small JSON metadata
+part 1 = payload bytes
+```
+
+Metadata only needs fields such as:
+
+```json
+{
+  "version": 1,
+  "sequence": 1234,
+  "codec": "jpeg",
+  "type": "sensor_msgs/msg/Image",
+  "source_age": 0.012
+}
+```
+
+Do not create a complicated protocol, CBOR framework, schema registry, heartbeat protocol, or RPC system.
+
+For messages where ROS serialization already preserves header/frame/timestamps, do not duplicate all ROS metadata in JSON.
+
+Stale data:
+
+* store monotonic arrival time when the ROS callback receives the message
+* if sample age exceeds `max_age`, do not send it
+* after receiving on PC, discard samples that have obviously exceeded the configured age budget
+* do not depend on synchronized PC/robot wall clocks
+* sequence numbers should allow duplicate detection
+
+Rate:
+
+* `rate` is a maximum transmit rate
+* if the source is slower, simply send source rate
+* if the source is faster, sample the newest available frame at the configured maximum rate
+* do not queue intermediate frames
+
+For example, with camera 30 Hz and route rate 20 Hz:
+
+```text
+camera: 1 2 3 4 5 6 ...
+sender: 1   3   5   ...
+```
+
+approximately, always preferring the newest available frame.
+
+ROS QoS:
+For these sensor topics use:
+
+```text
+BEST_EFFORT
+KEEP_LAST
+depth = 1
+VOLATILE
+```
+
+Do not use RELIABLE for continuous RGB/depth/cloud unless there is a compelling reason.
+
+The PC-side output must look like completely normal ROS 2 topics so downstream applications such as RViz, MoveIt, perception code, GraspGenX, etc. do not need to know ZeroMQ exists.
+
+I want the final result structured as:
+
+1. PC commands to check ZeroMQ versions.
+2. Robot commands to install compatible ZeroMQ/pyzmq.
+3. Commands to install required ROS image/depth/point-cloud compression packages.
+4. Exact Cloudini/point_cloud_transport setup.
+5. A cleaned-up `routes.json`.
+6. A replacement `gateway.py`.
+7. Robot launch command.
+8. PC launch command.
+9. Commands to verify:
+
+   * topic list
+   * topic type
+   * `ros2 topic hz`
+   * `ros2 topic bw`
+10. A very small troubleshooting section.
+
+Keep the implementation minimal.
+
+Avoid:
+
+* classes unless they genuinely simplify the code
+* complicated abstractions
+* asyncio
+* custom event loops
+* unnecessary protobuf
+* custom serialization formats
+* ROS services/actions inside the gateway
+* generic plugin systems
+* configuration inheritance
+* unnecessary logging
+* one giant shared connection for all sensor streams
+
+Most important design goal:
+
+```text
+LOW LATENCY > DELIVERY OF EVERY SENSOR SAMPLE
+```
+
+The system should always converge toward the newest RGB/depth/pointcloud/scan data instead of building backlog.
+
+Before modifying anything, inspect the existing gateway implementation and preserve useful features such as:
+
+* process isolation per route
+* configuration validation
+* max sample size
+* stale-sample rejection
+* reconnection
+* ROS message type loading from config
+
+But remove the REQ/REP polling architecture and replace it with the PUSH/PULL latest-sample streaming architecture described above.
