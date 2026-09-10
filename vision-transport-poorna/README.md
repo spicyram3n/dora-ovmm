@@ -1,6 +1,6 @@
 # Vision Transport
 
-Originally developed by my colleague Poorna and adapted for this project’s HSR/HSRC setup. This directory is maintained as part of the main repository.
+Originally developed by my colleague Sagar and adapted for this project’s HSR/HSRC setup. This directory is maintained as part of the main repository.
 
 Send ROS 2 images, depth, and point clouds over Zenoh. TX compresses data; RX restores ROS messages. The host only needs Docker.
 
