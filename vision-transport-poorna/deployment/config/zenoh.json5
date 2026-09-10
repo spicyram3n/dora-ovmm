@@ -1,0 +1,19 @@
+{
+  mode: "peer",
+  listen: {
+    endpoints: [],
+  },
+  connect: {
+    endpoints: [],
+  },
+  scouting: {
+    multicast: {
+      enabled: false,
+    },
+  },
+  transport: {
+    shared_memory: {
+      enabled: false,
+    },
+  },
+}

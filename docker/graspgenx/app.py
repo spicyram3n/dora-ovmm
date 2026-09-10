@@ -115,22 +115,10 @@ def _on_generate(query):
 def main():
     _load_model()
     _warmup()
-
-    # Cross-container SHM availability isn't guaranteed (separate /dev/shm,
-    # possibly no shared memlock headroom), and a single generate query is
-    # small/infrequent enough that plain networking is fine.
     cfg = zenoh.Config()
     cfg.insert_json5("transport/shared_memory/enabled", "false")
-    # A fixed listen port so a remote client (e.g. one on the robot, see
-    # ZENOH_CONNECT in core/utils/zenoh_rpc.py) can reach this server without
-    # relying on multicast scouting to find an ephemeral one.
-    listen = os.environ.get("ZENOH_LISTEN", "tcp/0.0.0.0:2003")
+    listen = os.environ.get("ZENOH_LISTEN", "tcp/0.0.0.0:7448")
     cfg.insert_json5("listen/endpoints", json.dumps([listen]))
-    # Multicast scouting binds a single shared UDP port (224.0.0.224:7446)
-    # host-wide; with multiple --net=host containers (or a stray leftover
-    # process) it fails with "Address already in use". Not needed since
-    # clients connect via the fixed listen port above.
-    cfg.insert_json5("scouting/multicast/enabled", "false")
 
     with zenoh.open(cfg) as session:
         session.declare_queryable("graspgenx/generate", _on_generate)

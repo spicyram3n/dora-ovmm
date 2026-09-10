@@ -1,126 +1,221 @@
-"""Drive the base with Nav2, and ask it what is reachable before driving.
-
-Goals go in the map frame, because bt_navigator's global_frame is map
-(nav2_params.yaml). amcl starts with its initial pose at the origin and odom
-starts wherever the robot spawned, so map and odom coincide at startup --
-which is what lets an odom-frame scene graph be used as a goal directly.
-
-Nav2 owns the base at all times. Nothing here plans arm motion, for the reason
-docs/navigation-and-grasping.md gives: MoveIt's whole_body groups drive the
-same base controller and the two fight.
-"""
+"""Map-frame Nav2 goals with path checks and cancellation before retrying."""
 
 import math
-
+import time
 import rclpy
 from action_msgs.msg import GoalStatus
+from control_msgs.action import FollowJointTrajectory
+from trajectory_msgs.msg import JointTrajectoryPoint
+from builtin_interfaces.msg import Duration
 from geometry_msgs.msg import PoseStamped
 from nav2_msgs.action import ComputePathToPose, NavigateToPose
+from rcl_interfaces.msg import Parameter as ParameterMsg, ParameterType
+from rcl_interfaces.srv import SetParameters
 from rclpy.action import ActionClient
 from rclpy.node import Node
+from rclpy.parameter import Parameter
 from rclpy.time import Time
-from tf2_ros import Buffer, TransformListener
+from tf2_ros import Buffer, TransformListener, TransformException
+from utils.transforms import matrix_from_transform
 
 FRAME = "map"
 BASE = "base_footprint"
-
-# How far from the commanded pose still counts as having arrived. Must stay
-# looser than nav2_params.yaml's own xy_goal_tolerance (0.10), since Nav2
-# legitimately declares success anywhere inside that -- a guard set equal to it
-# rejects honest arrivals, every candidate "fails", and a robot that parked
-# perfectly well reports that it cannot stand anywhere. This is here to catch
-# the robot wedged against a sofa a metre out, nothing finer.
-GOAL_TOLERANCE = 0.25
+# config/nav2_params.yaml keeps one goal checker on purpose: a second makes every
+# FollowPath abort, because the stock behaviour tree sends an empty checker id.
+# Both its tolerances are dynamic, so a precise leg tightens them and puts them back.
+CONTROLLER = "/controller_server"
+GOAL_CHECKER = "general_goal_checker"
 
 
 def _pose(x, y, yaw):
+    if not all(math.isfinite(value) for value in (x, y, yaw)):
+        raise ValueError("Navigation goals must be finite")
     pose = PoseStamped()
     pose.header.frame_id = FRAME
-    pose.pose.position.x, pose.pose.position.y = float(x), float(y)
+    pose.pose.position.x, pose.pose.position.y = (float(x), float(y))
     pose.pose.orientation.z = math.sin(yaw / 2)
     pose.pose.orientation.w = math.cos(yaw / 2)
     return pose
 
 
 class Navigator(Node):
-    def __init__(self):
-        super().__init__("scene_graph_navigator")
+
+    def __init__(self, use_sim_time=True):
+        super().__init__(
+            "scene_graph_navigator",
+            parameter_overrides=[Parameter("use_sim_time", value=use_sim_time)],
+        )
         self.planner = ActionClient(self, ComputePathToPose, "compute_path_to_pose")
         self.driver = ActionClient(self, NavigateToPose, "navigate_to_pose")
         self.tf_buffer = Buffer()
-        TransformListener(self.tf_buffer, self)
+        self.listener = TransformListener(self.tf_buffer, self)
 
     def _run(self, client, goal, timeout):
-        """Send one action goal and block until it finishes. Returns the
-        result wrapper, or None if it was rejected or ran out of time."""
-        if not client.wait_for_server(timeout_sec=10.0):
-            raise RuntimeError(f"nav2 action server '{client._action_name}' not up")
+        if not client.wait_for_server(timeout_sec=10):
+            raise RuntimeError("Nav2 action server is unavailable")
         sent = client.send_goal_async(goal)
-        rclpy.spin_until_future_complete(self, sent)
+        rclpy.spin_until_future_complete(self, sent, timeout_sec=10)
+        if not sent.done():
+
+            def cancel_late(future):
+                handle = future.result()
+                if handle is not None and handle.accepted:
+                    handle.cancel_goal_async()
+
+            # A delayed acceptance must not leave an untracked goal running.
+            sent.add_done_callback(cancel_late)
+            rclpy.spin_until_future_complete(self, sent, timeout_sec=10)
+            raise RuntimeError("Goal acceptance timed out; stop Nav2 before retrying")
         handle = sent.result()
+        if handle is None:
+            raise RuntimeError("Nav2 returned no goal acknowledgement")
         if not handle.accepted:
             return None
         finished = handle.get_result_async()
-        rclpy.spin_until_future_complete(self, finished, timeout_sec=timeout)
-        return finished.result() if finished.done() else None
+        try:
+            rclpy.spin_until_future_complete(self, finished, timeout_sec=timeout)
+        except KeyboardInterrupt:
+            self._cancel(handle, finished)
+            raise
+        if not finished.done():
+            self._cancel(handle, finished)
+            return None
+        return finished.result()
 
-    def robot_xy(self, timeout=10.0):
-        """The robot's (x, y) in the map frame."""
-        deadline = self.get_clock().now().nanoseconds + timeout * 1e9
-        while not self.tf_buffer.can_transform(FRAME, BASE, Time()):
-            if self.get_clock().now().nanoseconds > deadline:
-                raise RuntimeError(f"no tf {FRAME} <- {BASE}; is localisation up?")
-            rclpy.spin_once(self, timeout_sec=0.1)
-        translation = self.tf_buffer.lookup_transform(FRAME, BASE, Time()).transform.translation
-        return translation.x, translation.y
+    def _cancel(self, handle, finished):
+        cancelled = handle.cancel_goal_async()
+        rclpy.spin_until_future_complete(self, cancelled, timeout_sec=5)
+        rclpy.spin_until_future_complete(self, finished, timeout_sec=5)
+        # Do not send another goal until the previous motion has ended. A cancelled
+        # goal still completes its result future, carrying STATUS_CANCELED.
+        if not finished.done() or finished.exception() is not None:
+            raise RuntimeError(
+                "Navigation cancellation unconfirmed; refusing another goal"
+            )
 
-    def robot_pose(self, timeout=10.0):
-        """(x, y, yaw) in the map frame. The head needs the yaw as well, since
-        pan is measured from wherever the base happens to be facing."""
-        deadline = self.get_clock().now().nanoseconds + timeout * 1e9
-        while not self.tf_buffer.can_transform(FRAME, BASE, Time()):
-            if self.get_clock().now().nanoseconds > deadline:
-                raise RuntimeError(f"no tf {FRAME} <- {BASE}; is localisation up?")
+    def robot_pose(self, timeout=10, max_age=2.0):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
             rclpy.spin_once(self, timeout_sec=0.1)
-        transform = self.tf_buffer.lookup_transform(FRAME, BASE, Time()).transform
-        t, q = transform.translation, transform.rotation
-        return t.x, t.y, math.atan2(2.0 * (q.w * q.z + q.x * q.y),
-                                    1.0 - 2.0 * (q.y * q.y + q.z * q.z))
+            if not self.tf_buffer.can_transform(FRAME, BASE, Time()):
+                continue
+            try:
+                stamped = self.tf_buffer.lookup_transform(FRAME, BASE, Time())
+            except TransformException:
+                continue
+            age = (self.get_clock().now() - Time.from_msg(stamped.header.stamp)).nanoseconds / 1e9
+            # A cached pose after a connection loss is not an arrival measurement.
+            # A stamp slightly ahead of our clock is fresh, not stale: sim time and
+            # the TF publisher tick separately, so allow the same slack either way.
+            if abs(age) <= max_age:
+                transform = stamped.transform
+                break
+        else:
+            raise RuntimeError("No fresh map-to-base TF; check localization and clocks")
+        translation, quaternion = (transform.translation, transform.rotation)
+        yaw = math.atan2(
+            2 * (quaternion.w * quaternion.z + quaternion.x * quaternion.y),
+            1 - 2 * (quaternion.y * quaternion.y + quaternion.z * quaternion.z),
+        )
+        return (translation.x, translation.y, yaw)
+
+    def robot_xy(self):
+        return self.robot_pose()[:2]
+
+    def frame_transform(self, target_frame, source_frame, timeout=10):
+        """(4, 4) target_from_source, waited for rather than assumed published."""
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            rclpy.spin_once(self, timeout_sec=0.1)
+            if not self.tf_buffer.can_transform(target_frame, source_frame, Time()):
+                continue
+            try:
+                stamped = self.tf_buffer.lookup_transform(
+                    target_frame, source_frame, Time()
+                )
+            except TransformException:
+                continue
+            return matrix_from_transform(stamped.transform)
+        raise RuntimeError(
+            f"No {target_frame} <- {source_frame} TF; check localization and clocks"
+        )
 
     def reachable(self, x, y, yaw):
-        """Does the global planner find a path to this pose? Far cheaper than
-        driving there to find out, and it is what rules out the side of a
-        shelf that faces a wall."""
         goal = ComputePathToPose.Goal()
         goal.goal = _pose(x, y, yaw)
-        goal.use_start = False          # plan from wherever the robot is now
-        outcome = self._run(self.planner, goal, timeout=15.0)
-        return (outcome is not None
-                and outcome.status == GoalStatus.STATUS_SUCCEEDED
-                and len(outcome.result.path.poses) > 0)
+        goal.goal.header.stamp = self.get_clock().now().to_msg()
+        goal.use_start = False
+        outcome = self._run(self.planner, goal, 15)
+        if outcome is None or outcome.status != GoalStatus.STATUS_SUCCEEDED:
+            return False
+        path = outcome.result.path
+        if not path.poses or path.header.frame_id != FRAME:
+            return False
+        end = path.poses[-1].pose.position
+        return math.hypot(end.x - x, end.y - y) <= 0.1
 
-    def drive_to(self, x, y, yaw, timeout=180.0):
+    def drive_to(self, x, y, yaw, timeout=180, tolerance=0.3, yaw_tolerance=0.3):
+        """Drive and verify. Tolerances must stay at or above the goal checker's."""
         goal = NavigateToPose.Goal()
         goal.pose = _pose(x, y, yaw)
+        goal.pose.header.stamp = self.get_clock().now().to_msg()
         outcome = self._run(self.driver, goal, timeout)
         if outcome is None or outcome.status != GoalStatus.STATUS_SUCCEEDED:
             return False
-        here = self.robot_xy()
-        off = math.hypot(here[0] - x, here[1] - y)
-        if off > GOAL_TOLERANCE:
-            print(f"    nav2 reported success but stopped {off:.2f} m short")
-            return False
-        return True
+        offset, error = self.residual(x, y, yaw)
+        return offset <= tolerance and error <= yaw_tolerance
 
-    def go_to_first_reachable(self, poses):
-        """Drive to the first of `poses` the planner accepts. Returns the pose
-        reached, or None if every candidate failed."""
-        for index, (x, y, yaw) in enumerate(poses, 1):
-            if not self.reachable(x, y, yaw):
-                print(f"  candidate {index}/{len(poses)} ({x:.2f}, {y:.2f}): no path")
-                continue
-            print(f"  candidate {index}/{len(poses)} ({x:.2f}, {y:.2f}): driving")
-            if self.drive_to(x, y, yaw):
-                return x, y, yaw
-            print("    navigation failed, trying the next one")
-        return None
+    def residual(self, x, y, yaw):
+        """How far the base actually is from a goal, as (metres, radians)."""
+        current_x, current_y, heading = self.robot_pose()
+        error = abs(math.atan2(math.sin(heading - yaw), math.cos(heading - yaw)))
+        return (math.hypot(current_x - x, current_y - y), error)
+
+    def set_goal_tolerance(self, xy, yaw, timeout=10):
+        """Retune the running goal checker; both tolerances are dynamic parameters."""
+        client = self.create_client(SetParameters, f"{CONTROLLER}/set_parameters")
+        try:
+            if not client.wait_for_service(timeout_sec=timeout):
+                raise RuntimeError(f"{CONTROLLER} parameter service is unavailable")
+            request = SetParameters.Request()
+            for name, value in (("xy_goal_tolerance", xy), ("yaw_goal_tolerance", yaw)):
+                parameter = ParameterMsg(name=f"{GOAL_CHECKER}.{name}")
+                parameter.value.type = ParameterType.PARAMETER_DOUBLE
+                parameter.value.double_value = float(value)
+                request.parameters.append(parameter)
+            future = client.call_async(request)
+            rclpy.spin_until_future_complete(self, future, timeout_sec=timeout)
+            if not future.done():
+                raise RuntimeError("Setting the goal tolerance timed out")
+            for result in future.result().results:
+                # Driving on with an unknown tolerance would make arrival meaningless.
+                if not result.successful:
+                    raise RuntimeError(f"Goal tolerance rejected: {result.reason}")
+        finally:
+            self.destroy_client(client)
+
+    def look_at(self, point):
+        """Aim the HSRC head approximately at a map-frame point."""
+        x, y, yaw = self.robot_pose()
+        if not self.tf_buffer.can_transform(FRAME, "head_pan_link", Time()):
+            raise RuntimeError("No head TF available")
+        pivot = self.tf_buffer.lookup_transform(FRAME, "head_pan_link", Time()).transform.translation
+        bearing = math.atan2(point[1] - pivot.y, point[0] - pivot.x) - yaw
+        pan = math.atan2(math.sin(bearing), math.cos(bearing))
+        # HSRC RGB-D camera sits roughly 0.25 m above the head pivot.
+        distance = math.hypot(point[0] - pivot.x, point[1] - pivot.y)
+        tilt = math.atan2(point[2] - pivot.z - 0.248, distance)
+        if not (-3.84 <= pan <= 1.75 and -1.57 <= tilt <= 0.52):
+            return False
+        goal = FollowJointTrajectory.Goal()
+        goal.trajectory.joint_names = ["head_pan_joint", "head_tilt_joint"]
+        goal.trajectory.points = [JointTrajectoryPoint(
+            positions=[pan, tilt], time_from_start=Duration(sec=5))]
+        client = ActionClient(self, FollowJointTrajectory,
+                              "/head_trajectory_controller/follow_joint_trajectory")
+        try:
+            result = self._run(client, goal, 15)
+            return (result is not None and result.status == GoalStatus.STATUS_SUCCEEDED
+                    and result.result.error_code == 0)
+        finally:
+            client.destroy()

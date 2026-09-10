@@ -1,60 +1,84 @@
-# scene_graph
+# Scene graph
 
-Turns a scene into a graph the robot can reason over: every object and piece
-of furniture is a node, and every movable object has one edge to the furniture
-it is **in**, **on** or **near**.
+Store objects and furniture in map coordinates, then choose where to search.
 
-Pure geometry and networkx. No LLM, no ROS, no API keys, so all of it can be
-run and tested on a laptop.
+## Build the apartment graph
 
-The graph is a forest rooted at the furniture, so "where is the apple" is one
-hop. Node attributes stay JSON-native, which is why saving needs no encoder
-and the LLM prompt is a slice of the same structure.
-
-## Files
-
-| File | Purpose |
-|---|---|
-| `instance.py` | The contract every source produces: a labelled blob of points. Also the furniture/structure vocabulary |
-| `relations.py` | Decides in / on / near between an object and the furniture, from convex hull footprints |
-| `graph.py` | Builds the graph, looks objects up, records new ones, saves and loads JSON |
-| `gazebo.py` | Source: reads a Gazebo `.world` and its models into Instances |
-| `test_gazebo.py` | Checks the apartment world against the placements the world file states |
-
-A second source for Mask3D on real scans slots in beside `gazebo.py`: it only
-has to return `list[Instance]`, and nothing downstream can tell the two apart.
-
-## Running
-
-Nothing here is a program except the test. Everything else is imported, most
-often through `core/build_scene_graph.py`.
+From the repository root, with a measured world-to-map registration:
 
 ```bash
-cd core
-python3 -m tests.test_gazebo                                 # prints the graph, then asserts
-python3 -m pytest tests/test_gazebo.py -p no:anyio
+python3 core/build_scene_graph.py --transform /path/to/world_to_map.json
 ```
 
-Typical use:
+For registration commands, use the [navigation quick start](../navigation/README.md). Set `DEEPSEEK_API_KEY` and add `--rooms` to assign room names.
+
+The builder reads initial Gazebo world geometry, not objects moved during simulation. Walls stay in navigation costmaps, not semantic nodes.
+
+## Search from Python
+
+With `core` on Python's import path and the robot's map position in `robot_x, robot_y`:
 
 ```python
-from scene_graph import gazebo, graph as sg
+from scene_graph import graph as sg
+from reasoner.query import search_order
 
-scene = sg.build(gazebo.load_world("…/apartment.world"))
-sg.save(scene, "graph.json")
-
-node = sg.find_object(scene, "pringles", near=(0.0, 0.0))   # nearest of several
-furniture_id, relation = sg.location_of(scene, node)
+scene = sg.load('outputs/scene_graph/apartment.json')
+locations = search_order(scene, 'pringles can', top_k=3, near=(robot_x, robot_y))
+first = next(locations)
 ```
 
-## Things worth knowing
+Known objects use memory first. Unknown objects and failed-location fallback use DeepSeek. Iterate only after an observation fails; stop after detection. Calling `list(locations)` triggers fallback too early.
 
-- **Coordinates are in the robot's odom frame**, not Gazebo's world frame.
-  `gazebo.load_world` subtracts the robot's spawn point (5.0, 6.6 in the
-  apartment). Getting this wrong puts every goal about 8 m out.
-- **Furniture is decided by name**, via the vocabulary in `instance.py`. A
-  source that knows better should pass `movable=` explicitly instead.
-- **Walls, floors and doors are dropped** by `build`, so the LLM cannot send
-  the robot at a wall.
-- **Meshes are scaled by their own COLLADA unit.** Some models are authored in
-  decimetres and come out 10x too large otherwise.
+Returned centroids are object or furniture positions, **not base navigation goals**. Navigation chooses a reachable viewing pose. Invalid API answers raise an error.
+
+## Frame rules
+
+- Use metres. All instances in one build must share a source frame.
+- Supply `source_frame` and a measured rigid 4×4 `map_from_source` transform. Scale and shear are rejected.
+- `map`, `odom`, and Gazebo world are different frames. The occupancy YAML's `origin` is not world-to-map registration.
+- Verify registration against the map in RViz. Matrix validation cannot prove alignment is accurate.
+- Transform camera observations with timestamped TF before storing them in map. Transform separately to odom for grasping.
+
+Registration JSON contains `source_frame: "gazebo_world"` and `map_from_source`. At the same instant, using the same physical base frame:
+
+```text
+T_map_world = T_map_base @ inverse(T_world_base)
+```
+
+Use a trusted localized pose and account for any robot-origin/base-frame offset. Keep this scene transform fixed instead of recalculating it from noisy localization.
+
+## Build from a scan
+
+Run segmentation and register the scan first. Given `segments` and `registered_transform`:
+
+```python
+from scene_graph.instance import Instance
+from scene_graph import graph as sg
+
+instances = [Instance(label, points, confidence=score, name=segment_id)
+             for label, points, score, segment_id in segments]
+scene = sg.build(instances, source_frame='ipad_scan',
+                 map_from_source=registered_transform)
+sg.save(scene, 'scan_graph.json')
+```
+
+This module does not run Mask3D or estimate registration. For OpenYOLO3D input, see the [scan workflow](../../docker/openyolo3d/README.md).
+
+## Update objects
+
+`record_object(..., frame_id="map")` takes a box centre and dimensions. Supply `node_id` to update; omit it to create. Labels alone never merge objects.
+
+IDs survive save/load but may change on rebuild. Nodes store centroids and separate axis-aligned bounds. `on`, `in`, and `near` are geometry estimates; they do not prove support, visibility, or reachability.
+
+## Code map
+
+| File | Purpose |
+| --- | --- |
+| [instance.py](instance.py) | Labelled source-frame points |
+| [graph.py](graph.py) | Build, update, validate, and save graphs |
+| [gazebo.py](gazebo.py) | Read initial world collision geometry |
+| [relations.py](relations.py) | Estimate object–furniture relations |
+| [query.py](../reasoner/query.py) | Choose search locations |
+| [deepseek.py](../reasoner/deepseek.py) | API calls and room assignments |
+
+Dependencies: numpy, scipy, trimesh, networkx ≥ 3.4, pydantic ≥ 2, openai; pycollada for COLLADA meshes.

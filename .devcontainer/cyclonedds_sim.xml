@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Simulation profile: identical to cyclonedds_profile.xml except that the
+     robot is not a peer, so nothing on this host ever addresses 10.7.3.185.
+     Pair it with a ROS_DOMAIN_ID other than 5 (the robot's) when someone else
+     is using the real robot. -->
+<CycloneDDS xmlns="https://cdds.io/config">
+  <Domain id="any">
+
+    <General>
+      <Interfaces>
+        <NetworkInterface name="enp5s0" autodetermine="false" multicast="true"/>
+      </Interfaces>
+
+      <AllowMulticast>spdp</AllowMulticast>
+      <EnableMulticastLoopback>true</EnableMulticastLoopback>
+
+      <FragmentSize>8000B</FragmentSize>
+      <MaxMessageSize>8500B</MaxMessageSize>
+    </General>
+
+    <Discovery>
+      <ParticipantIndex>auto</ParticipantIndex>
+      <MaxAutoParticipantIndex>100</MaxAutoParticipantIndex>
+      <Peers>
+        <!-- This host only. Interface is pinned to enp5s0, so participants
+             advertise 131.220.7.198 and never listen on loopback: a
+             "localhost" entry here would never match. -->
+        <Peer Address="131.220.7.198"/>
+      </Peers>
+    </Discovery>
+
+    <Internal>
+      <SocketReceiveBufferSize min="32MB"/>
+      <SocketSendBufferSize min="32MB"/>
+      <MaxSampleSize>100MB</MaxSampleSize>
+
+      <DefragUnreliableMaxSamples>64</DefragUnreliableMaxSamples>
+      <DefragReliableMaxSamples>64</DefragReliableMaxSamples>
+      <PrimaryReorderMaxSamples>1024</PrimaryReorderMaxSamples>
+      <DeliveryQueueMaxSamples>1024</DeliveryQueueMaxSamples>
+
+      <Watermarks>
+        <WhcHigh>64MB</WhcHigh>
+      </Watermarks>
+      <MaxQueuedRexmitBytes>64MB</MaxQueuedRexmitBytes>
+      <MaxQueuedRexmitMessages>1024</MaxQueuedRexmitMessages>
+    </Internal>
+
+  </Domain>
+</CycloneDDS>

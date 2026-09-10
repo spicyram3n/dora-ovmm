@@ -1,0 +1,18 @@
+<package format="3">
+  <name>grasp_execution</name>
+  <version>0.0.1</version>
+  <description>Sends a grasp pose (from core/run_pipeline.py) to MoveIt as a pose goal.</description>
+  <maintainer email="you@example.com">hsr</maintainer>
+  <license>BSD 3-clause Clear License</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>moveit_ros_planning_interface</depend>
+  <depend>rclcpp</depend>
+
+  <exec_depend>ros2launch</exec_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

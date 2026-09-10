@@ -1,86 +1,98 @@
-"""The one ROS 2-dependent piece of the pipeline: grabs a single RGB frame,
-depth frame and intrinsics from the HSRC head camera, plus the transform from
-the camera into the robot's base frame. Everything else in core/ speaks only
-zenoh and numpy, so this module is all there is to swap to move middleware."""
+"""Capture synchronized RGB-D and transform it at the depth image timestamp."""
 
+import time
+import message_filters
 import numpy as np
 import rclpy
 from cv_bridge import CvBridge
 from rclpy.node import Node
+from rclpy.parameter import Parameter
+from rclpy.qos import qos_profile_sensor_data
 from rclpy.time import Time
-from scipy.spatial.transform import Rotation
+from utils.transforms import matrix_from_transform
 from sensor_msgs.msg import CameraInfo, Image
 from tf2_ros import Buffer, TransformListener
 
 RGB_TOPIC = "/head_rgbd_sensor/rgb/image_rect_color"
 DEPTH_TOPIC = "/head_rgbd_sensor/depth_registered/image_rect_raw"
-# Depth is registered to the rgb frame, so the rgb intrinsics apply to it too.
 CAMERA_INFO_TOPIC = "/head_rgbd_sensor/rgb/camera_info"
-# What robot_description.py attaches the virtual base joints to, and what
-# MoveIt's "whole_body" group plans in.
 BASE_FRAME = "odom"
 
 
-def _matrix(transform):
-    translation, rotation = transform.translation, transform.rotation
-    matrix = np.eye(4)
-    matrix[:3, :3] = Rotation.from_quat([rotation.x, rotation.y, rotation.z, rotation.w]).as_matrix()
-    matrix[:3, 3] = [translation.x, translation.y, translation.z]
-    return matrix
-
-
-def grab_rgbd(target_frame=BASE_FRAME):
-    """Wait for one message on each camera topic, then look up where the
-    camera is in the robot's base frame.
-
-    `target_frame` is what the camera is resolved into: BASE_FRAME for grasps,
-    which MoveIt plans in, but "map" for anything handed to Nav2. The two only
-    coincide at startup and drift apart as amcl corrects.
-
-    Returns (rgb, depth_m, k, base_from_camera):
-        rgb:              (H, W, 3) uint8 bgr8
-        depth_m:          (H, W) float32 meters, 0 where there was no return
-        k:                (3, 3) intrinsic matrix
-        base_from_camera: (4, 4) mapping camera-frame points into target_frame
-    """
-    # A caller that already runs ROS (search_object holds a Navigator) keeps
-    # ownership of the context; tearing it down here would kill their node.
+def grab_rgbd(target_frame=BASE_FRAME, timeout=15, use_sim_time=True):
+    """Return BGR, depth in metres, intrinsics, and T_target_camera."""
     owns_context = not rclpy.ok()
     if owns_context:
         rclpy.init()
-    node = Node("grasp_pipeline_camera")
-    bridge = CvBridge()
-    tf_buffer = Buffer()
-    TransformListener(tf_buffer, node)
-    frame = {}
+    node = Node(
+        "grasp_pipeline_camera",
+        parameter_overrides=[Parameter("use_sim_time", value=use_sim_time)],
+    )
+    try:
+        bridge = CvBridge()
+        buffer = Buffer()
+        listener = TransformListener(buffer, node)
+        frames = {}
+        capture_start = node.get_clock().now().nanoseconds
+        rgb_sub = message_filters.Subscriber(
+            node, Image, RGB_TOPIC, qos_profile=qos_profile_sensor_data
+        )
+        depth_sub = message_filters.Subscriber(
+            node, Image, DEPTH_TOPIC, qos_profile=qos_profile_sensor_data
+        )
+        sync = message_filters.ApproximateTimeSynchronizer(
+            [rgb_sub, depth_sub], 10, 0.05
+        )
 
-    def on_rgb(msg):
-        frame["rgb"] = bridge.imgmsg_to_cv2(msg, desired_encoding="bgr8")
+        def receive_images(rgb, depth):
+            frames["rgb"] = rgb
+            frames["depth"] = depth
 
-    def on_depth(msg):
-        raw = bridge.imgmsg_to_cv2(msg, desired_encoding="passthrough").astype(np.float32)
-        # The real HSR driver publishes 16UC1 millimeters; Gazebo publishes
-        # 32FC1 meters already.
-        frame["depth"] = raw / 1000.0 if msg.encoding == "16UC1" else raw
+        def receive_info(message):
+            frames["info"] = message
 
-    def on_info(msg):
-        frame["k"] = np.array(msg.k, dtype=np.float64).reshape(3, 3)
-        frame["camera_frame"] = msg.header.frame_id
-
-    node.create_subscription(Image, RGB_TOPIC, on_rgb, 1)
-    node.create_subscription(Image, DEPTH_TOPIC, on_depth, 1)
-    node.create_subscription(CameraInfo, CAMERA_INFO_TOPIC, on_info, 1)
-
-    print("waiting for rgb + depth + camera_info...")
-    while not {"rgb", "depth", "k"} <= frame.keys():
-        rclpy.spin_once(node)
-
-    print(f"waiting for tf {target_frame} <- {frame['camera_frame']}...")
-    while not tf_buffer.can_transform(target_frame, frame["camera_frame"], Time()):
-        rclpy.spin_once(node, timeout_sec=0.1)
-    transform = tf_buffer.lookup_transform(target_frame, frame["camera_frame"], Time())
-
-    node.destroy_node()
-    if owns_context:
-        rclpy.shutdown()
-    return frame["rgb"], frame["depth"], frame["k"], _matrix(transform.transform)
+        sync.registerCallback(receive_images)
+        info_sub = node.create_subscription(
+            CameraInfo, CAMERA_INFO_TOPIC, receive_info, qos_profile_sensor_data
+        )
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            rclpy.spin_once(node, timeout_sec=0.1)
+            if not {"rgb", "depth", "info"} <= frames.keys():
+                continue
+            rgb, depth, info = (frames["rgb"], frames["depth"], frames["info"])
+            # Reject queued images from before this capture began.
+            rgb_time = Time.from_msg(rgb.header.stamp).nanoseconds
+            depth_time = Time.from_msg(depth.header.stamp).nanoseconds
+            if min(rgb_time, depth_time) <= capture_start:
+                continue
+            # Use the camera pose when the image was captured, not its pose now.
+            stamp = Time.from_msg(depth.header.stamp)
+            frame = depth.header.frame_id
+            if not buffer.can_transform(target_frame, frame, stamp):
+                continue
+            if rgb.header.frame_id != frame or info.header.frame_id != frame:
+                raise ValueError("Expected depth registered into the RGB optical frame")
+            image = bridge.imgmsg_to_cv2(rgb, desired_encoding="bgr8")
+            depth_values = bridge.imgmsg_to_cv2(
+                depth, desired_encoding="passthrough"
+            ).astype(np.float32)
+            if depth.encoding not in ("16UC1", "32FC1"):
+                raise ValueError(f"Unsupported depth encoding: {depth.encoding}")
+            if depth_values.shape != image.shape[:2]:
+                raise ValueError("RGB and registered depth dimensions differ")
+            # Integer depth is millimetres; floating-point depth is metres.
+            if depth.encoding == "16UC1":
+                depth_meters = depth_values / 1000
+            else:
+                depth_meters = depth_values
+            intrinsics = np.array(info.k).reshape(3, 3)
+            transform = buffer.lookup_transform(target_frame, frame, stamp).transform
+            return (image, depth_meters, intrinsics, matrix_from_transform(transform))
+        raise RuntimeError(
+            f"No synchronized RGB-D with TF to {target_frame} within {timeout}s"
+        )
+    finally:
+        node.destroy_node()
+        if owns_context and rclpy.ok():
+            rclpy.shutdown()

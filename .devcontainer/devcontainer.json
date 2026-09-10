@@ -24,14 +24,23 @@
                 "eamodio.gitlens",
                 "ms-iot.vscode-ros",
                 "ms-python.black-formatter",
-                "anthropic.claude-code"
+                "anthropic.claude-code",
+                "openai.chatgpt"
             ]
         }
     },
     "containerEnv": {
         "ROS_LOCALHOST_ONLY": "0",
-        "ROS_DOMAIN_ID": "0",
-        "NVIDIA_DRIVER_CAPABILITIES": "all"
+        "ROS_DOMAIN_ID": "25",
+        "NVIDIA_DRIVER_CAPABILITIES": "all",
+        // Domain 5 matches the robot. vision-transport carries images and
+        // point clouds over Zenoh, so heavy data does not cross as raw DDS.
+        "RMW_IMPLEMENTATION": "rmw_cyclonedds_cpp",
+        // tmc_gazebo_worlds' env hook only sets GAZEBO_MODEL_PATH (Gazebo
+        // Classic); Ignition reads these, and without them every model:// URI
+        // in the world fails to resolve
+        "GZ_SIM_RESOURCE_PATH": "/home/ws/ros2_ws/install/tmc_gazebo_worlds/share/tmc_gazebo_worlds/models",
+        "IGN_GAZEBO_RESOURCE_PATH": "/home/ws/ros2_ws/install/tmc_gazebo_worlds/share/tmc_gazebo_worlds/models"
     },
     "hostRequirements": {
         "gpu": "optional"

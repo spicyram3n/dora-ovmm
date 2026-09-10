@@ -1,0 +1,46 @@
+streams:
+  rgb:
+    type: image
+    input_topic: /head_rgbd_sensor/rgb/image_rect_color
+    output_topic: /remote/head_rgbd_sensor/rgb/image_rect_color
+    zenoh_key: poorna/head_rgbd_sensor/rgb
+    max_rate_hz: 30.0
+    queue_depth: 1
+    resize_scale: 1.0
+    codec:
+      type: jpeg
+      quality: 80
+
+  depth:
+    type: depth
+    input_topic: /head_rgbd_sensor/depth_registered/image_rect_raw
+    output_topic: /remote/head_rgbd_sensor/depth_registered/image_rect_raw
+    zenoh_key: poorna/head_rgbd_sensor/depth
+    max_rate_hz: 30.0
+    queue_depth: 1
+    resize_scale: 1.0
+    codec:
+      type: compressed_depth
+      png_level: 3
+
+  # cloud_draco:
+  #   type: pointcloud
+  #   input_topic: /head_rgbd_sensor/depth_registered/rectified_points
+  #   output_topic: /remote/head_rgbd_sensor/depth_registered/rectified_points
+  #   zenoh_key: poorna/head_rgbd_sensor/points
+  #   max_rate_hz: 10.0
+  #   queue_depth: 1
+  #   voxel_size: 0.02
+  #   codec:
+  #     type: draco
+
+  cloud_cloudini_candidate:
+    type: pointcloud
+    input_topic: /head_rgbd_sensor/depth_registered/rectified_points
+    output_topic: /remote/head_rgbd_sensor/depth_registered/rectified_points
+    zenoh_key: poorna/head_rgbd_sensor/points_cloudini
+    max_rate_hz: 10.0
+    queue_depth: 1
+    codec:
+      type: cloudini
+      cloudini_resolution: 0.001

@@ -1,165 +1,322 @@
-"""Drive the robot to where a queried object should be.
-
-Usage:
-  python3 search_object.py "pringles"                  # scene graph first, then the LLM
-  python3 search_object.py "pringles" --dry-run        # print the plan, touch no robot
-  python3 search_object.py --furniture high_shelf01    # skip the query, just drive there
-
-Scenario B is tried first: if the graph already holds the object, its recorded
-furniture is the first place to go and no LLM call is made. Only when that
-comes back empty is the model asked, and its answer is cached per object under
-outputs/scene_graph/<name>/locations/.
-
-This ends where docs/navigation-and-grasping.md picks up: the robot is parked
-in front of the right furniture, facing it. Detection and grasping are not
-wired in here yet.
-"""
+"""Search remembered or LLM-ranked locations with Nav2 and SAM3, then park the
+base where the arm can reach what was found. The mission ends before grasping."""
 
 import argparse
 from pathlib import Path
-
 import numpy as np
-
-from navigation import reach, standoff
+from navigation import standoff
 from scene_graph import graph as sg
-from spatial_reasoning import query_sg
-from spatial_reasoning.query_sg import Location
+from reasoner.query import Location, search_order
 
-REPO = Path(__file__).resolve().parent.parent
-OUTPUTS = REPO / "outputs" / "scene_graph"
+ROOT = Path(__file__).resolve().parent.parent
+# Mission outcomes, from the object never being seen to standing ready to grasp.
+NOT_FOUND = "not_found"
+ARRIVED = "arrived"
+FOUND = "found"
+NOT_GRASPABLE = "not_graspable"
+READY = "ready"
+EXIT_CODES = {NOT_FOUND: 1, ARRIVED: 0, FOUND: 0, NOT_GRASPABLE: 2, READY: 0}
+# A same-label detection further than this from a remembered one is another instance.
+SAME_INSTANCE = 1.0
+# Nothing the HSR gripper can pick up measures more than this across.
+MAX_SPAN = 0.6
 
 
-def furniture_named(scene, name):
-    for node, data in sg.furniture(scene).items():
-        if data["name"] == name or data["label"] == name:
-            return node
-    raise SystemExit(f"no furniture called {name!r}; have: "
-                     f"{sorted(d['name'] for d in sg.furniture(scene).values())}")
+def box(data):
+    """The box centre differs from a segmented cloud's mean; prefer saved bounds."""
+    lower, upper = np.asarray(data["bounds"])
+    return ((lower + upper) / 2, upper - lower)
 
 
-def targets(scene, obj, furniture, cache, robot_xy, top_k):
-    """Places to try, in order, produced lazily.
-
-    Lazily is the whole point. In scenario B the graph already knows where the
-    object is and the LLM must not be called at all, so this must not be
-    collected into a list -- doing that pulls the next item, which is the
-    model, and waits a minute for an answer nobody needed.
-    """
+def targets(scene, obj, furniture=None, robot_xy=None, top_k=3):
     if furniture:
-        node = furniture_named(scene, furniture)
-        data = scene.nodes[node]
-        yield Location(node, data["label"], data["room"], "at", "--furniture")
-        return
-    yield from query_sg.search_order(scene, obj, top_k=top_k, cache=cache, near=robot_xy)
+        matches = []
+        for node_id, data in sg.furniture(scene).items():
+            if furniture in (data["name"], data["label"], str(node_id)):
+                matches.append((node_id, data))
+        if len(matches) != 1:
+            raise ValueError("Use a unique furniture instance name or node ID")
+        node, data = matches[0]
+        yield Location(
+            furniture_id=node,
+            label=data["label"],
+            room=data["room"],
+            relation="near",
+            source="furniture",
+            centroid=data["centroid"],
+        )
+    else:
+        yield from search_order(scene, obj, near=robot_xy, top_k=top_k)
 
 
-def plan(scene, location, robot_xy):
-    data = scene.nodes[location.furniture_id]
-    # Every other piece is something the base cannot stand inside -- a coffee
-    # table's own sofas are the case that matters.
-    blockers = [(f["centroid"], f["dimensions"]) for node, f in sg.furniture(scene).items()
-                if node != location.furniture_id]
-    poses = standoff.candidates(data["centroid"], data["dimensions"],
-                                robot_xy=robot_xy, blockers=blockers)
-    print(f"target: {data['name']} ({data['label']}) at "
-          f"{[round(v, 2) for v in data['centroid'][:2]]}, room {data['room']} "
-          f"-- from {location.source}")
+def plan(scene, location, robot_xy=None):
+    pieces = sg.furniture(scene)
+    blockers = []
+    for data in pieces.values():
+        blockers.append(box(data))
+    if location.furniture_id is None:
+        centre, dimensions = (location.centroid, [0, 0, 0])
+    else:
+        centre, dimensions = box(pieces[location.furniture_id])
+    sg.require_map(scene)
+    if location.frame_id != "map":
+        raise ValueError("Search locations must be in map")
+    poses = standoff.candidates(
+        centre, dimensions, robot_xy=robot_xy, blockers=blockers
+    )
+    if location.object_id is not None:
+        # Stand outside the furniture, but face the remembered object itself.
+        aimed = []
+        for x, y, yaw in poses:
+            yaw = float(np.arctan2(location.centroid[1] - y, location.centroid[0] - x))
+            aimed.append((x, y, yaw))
+        poses = aimed
+    print(
+        f"{location.source}: {location.label}, room={location.room}, {len(poses)} observation poses"
+    )
     if location.reason:
-        print(f"  because: {location.reason}")
-    if not poses:
-        print("  no standoff clear of the surrounding furniture")
-        return poses
-    reach = np.hypot(poses[0][0] - data["centroid"][0], poses[0][1] - data["centroid"][1])
-    print(f"  {len(poses)} candidates, best stands {reach:.2f} m from the centroid")
+        print(f"  {location.reason}")
     return poses
 
 
-def locate(obj):
-    """Where `obj` actually is, in the map frame, or None if it is not in
-    view from here.
+def look_point(scene, location):
+    if location.object_id is not None or location.furniture_id is None:
+        return location.centroid
+    data = scene.nodes[location.furniture_id]
+    centre, dimensions = box(data)
+    # Tables expose their top; storage furniture is first inspected at mid-height.
+    if any(word in data["label"].lower() for word in ("table", "desk", "counter")):
+        centre[2] = data["bounds"][1][2] + 0.1
+    return centre
 
-    Perception, not the scene graph, even when the graph claims to know: a
-    remembered centroid is where the object was last seen, and the whole point
-    of driving somewhere is to find out whether it is still there.
-    """
-    # Imported here, not at the top: --dry-run must not need ROS or the
-    # SAM3 server, and neither must the tests.
-    from navigation import nav2_client
+
+def observed_furniture(scene, points):
+    from scene_graph.instance import Instance, from_box
+    from scene_graph.relations import classify
+
+    ids = []
+    pieces = []
+    for node, data in sg.furniture(scene).items():
+        centre, dimensions = box(data)
+        ids.append(node)
+        pieces.append(from_box(data["label"], centre, dimensions))
+    index, relation = classify(Instance("target", points), pieces, near_limit=0.5)
+    if index is None:
+        return None, "near"
+    return ids[index], relation
+
+
+def locate(obj):
     from perception import pointcloud, sam3_client
     from perception.camera_ros2 import grab_rgbd
 
-    rgb, depth_m, k, map_from_camera = grab_rgbd(target_frame=nav2_client.FRAME)
+    rgb, depth, intrinsics, transform = grab_rgbd(target_frame="map")
     try:
         mask, score = sam3_client.detect(rgb, obj)
-    except RuntimeError as error:
-        print(f"  {error}")
+    except sam3_client.ObjectNotFound:
         return None
-    points = pointcloud.deproject(depth_m, k, mask)
-    if len(points) == 0:
-        print("  found it, but no valid depth inside the mask")
+    # The segmentation edge straddles object and background, so its pixels carry
+    # the background's depth. Deprojected, they stretch the box down the view ray.
+    core = pointcloud.shrink(mask)
+    points = pointcloud.deproject(depth, intrinsics, core)
+    if len(points) < 100 or len(points) < 0.25 * np.count_nonzero(core):
+        print("Object detected, but depth is insufficient; trying another view.")
         return None
-    print(f"  detected (score {score:.2f}), {len(points)} points")
-    return pointcloud.transform_points(map_from_camera, points).mean(axis=0)
+    points = pointcloud.largest_cluster(points)
+    if points is None or len(points) < 100:
+        print("Detection did not form one solid body; trying another view.")
+        return None
+    print(f"Detected {obj}, score={score:.2f}, {len(points)} points")
+    return pointcloud.transform_points(transform, points)
 
 
-def main(obj, furniture, name, dry_run, top_k):
-    scene = sg.load(OUTPUTS / name / "graph.json")
+def make_graspable(scene, node_id, navigator, obstacles="--costmap", bearings=6):
+    """Refine the observation pose into one the IK solver certifies for the arm."""
+    from navigation import graspable
 
-    navigator = None
-    robot_xy = None
-    if not dry_run:
-        import rclpy
-        from navigation.nav2_client import Navigator
-        rclpy.init()
-        navigator = Navigator()
-        robot_xy = navigator.robot_xy()
-        print(f"robot at {robot_xy[0]:.2f}, {robot_xy[1]:.2f}")
+    centre, dimensions = box(scene.nodes[node_id])
+    blockers = []
+    for data in sg.furniture(scene).values():
+        blockers.append(box(data))
+    outcome = graspable.reposition(
+        navigator, centre, dimensions, obstacles=obstacles, bearings=bearings,
+        blockers=blockers,
+    )
+    if outcome is None:
+        print(
+            "No clear, navigable IK base pose was reached within position and yaw "
+            "tolerances. The detected object remains saved in the scene graph."
+        )
+        return NOT_GRASPABLE
+    pose, offset = outcome
+    if offset > graspable.PRECISE_TOLERANCE:
+        print(
+            f"Parked {offset:.3f} m from the certified pose, outside the"
+            f" {graspable.PRECISE_TOLERANCE:.2f} m the solver certifies. The object is"
+            " recorded, but the arm is not proven to reach it from here."
+        )
+        return NOT_GRASPABLE
+    # Keep the object in view so grasp generation can capture it from here.
+    if not navigator.look_at(centre):
+        print("Warning: the head cannot aim at the object from this pose.")
+    print(
+        f"Ready to grasp from ({pose[0]:.2f}, {pose[1]:.2f}, yaw {pose[2]:.2f}),"
+        f" parked {offset:.3f} m from it. Mission complete; grasp generation and"
+        " execution are separate commands."
+    )
+    return READY
 
+
+def search(scene, obj, navigator, furniture=None, top_k=3, observe=locate, views=2):
+    """Try bounded viewpoints per location. Perception/server errors stop the run.
+
+    Returns (status, recorded object node), the node being None when nothing was seen."""
+    if views < 1:
+        raise ValueError("views must be positive")
+    # Advancing this iterator requests LLM fallback only when needed.
+    for location in targets(scene, obj, furniture, navigator.robot_xy(), top_k):
+        poses = plan(scene, location, navigator.robot_xy())
+        observations = 0
+        for pose in poses:
+            if not navigator.reachable(*pose) or not navigator.drive_to(*pose):
+                continue
+            if not obj:
+                return (ARRIVED, None)
+            # A spent view is spent whether the head or the detector failed;
+            # otherwise an unaimable target burns every candidate pose.
+            observations += 1
+            if not navigator.look_at(look_point(scene, location)):
+                print("The head cannot aim at the target from this pose.")
+                points = None
+            else:
+                # A missed detection allows retry; communication errors still stop us.
+                points = observe(obj)
+            if points is not None:
+                points = np.asarray(points, dtype=float)
+                if points.ndim != 2 or points.shape[1] != 3 or not len(points) or not np.isfinite(points).all():
+                    raise ValueError("Detection must contain finite map-frame 3D points")
+                lower, upper = (points.min(axis=0), points.max(axis=0))
+                span = float((upper - lower).max())
+                if span > MAX_SPAN:
+                    # Recording this would corrupt the remembered box and every
+                    # standoff and probe pose later derived from it.
+                    print(
+                        f"Detection spans {span:.2f} m, beyond the {MAX_SPAN:.2f} m"
+                        " a graspable object can measure; discarding this view."
+                    )
+                    if observations >= views:
+                        break
+                    continue
+                # A fallback detection updates the remembered object, not a duplicate.
+                # Past the limit it is a different instance and deserves its own node.
+                object_id = location.object_id
+                if object_id is not None and np.linalg.norm(
+                    points.mean(axis=0)[:2]
+                    - np.asarray(scene.nodes[object_id]["centroid"])[:2]
+                ) > SAME_INSTANCE:
+                    object_id = None
+                if object_id is None:
+                    object_id = sg.find_object(
+                        scene, obj, near=points.mean(axis=0)[:2], limit=SAME_INSTANCE
+                    )
+                label, name = (obj, "")
+                if object_id is not None:
+                    # Keep the asset label. Renaming it to the query splits the label
+                    # space, and sibling instances stop matching each other.
+                    label = scene.nodes[object_id]["label"]
+                    name = scene.nodes[object_id]["name"]
+                furniture_id, relation = observed_furniture(scene, points)
+                object_id = sg.record_object(
+                    scene,
+                    label,
+                    (lower + upper) / 2,
+                    upper - lower,
+                    furniture_id,
+                    frame_id="map",
+                    node_id=object_id,
+                    relation=relation,
+                    name=name,
+                )
+                print(f"Found {obj} in map at {points.mean(axis=0).round(3).tolist()}")
+                return (FOUND, object_id)
+            if observations >= views:
+                break
+        if observations == 0:
+            print("Location could not be observed: navigation failed; trying the next location.")
+        else:
+            print("Object not detected in completed views; trying the next location.")
+    return (NOT_FOUND, None)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("object", nargs="?", default="")
+    parser.add_argument(
+        "--graph", type=Path, default=ROOT / "outputs/scene_graph/apartment.json"
+    )
+    parser.add_argument("--furniture", help="unique furniture instance name or node ID")
+    parser.add_argument("--top-k", type=int, default=3)
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="show first location; unknown objects still call DeepSeek",
+    )
+    parser.add_argument(
+        "--no-refine",
+        action="store_true",
+        help="stop at detection instead of parking where the arm can reach",
+    )
+    parser.add_argument(
+        "--bearings",
+        type=int,
+        default=6,
+        help="horizontal probe directions asked of the IK solver",
+    )
+    obstacles = parser.add_mutually_exclusive_group()
+    obstacles.add_argument("--map", action="store_const", const="--map", dest="source")
+    obstacles.add_argument(
+        "--costmap", action="store_const", const="--costmap", dest="source"
+    )
+    parser.set_defaults(source="--costmap")
+    args = parser.parse_args()
+    if not args.object and (not args.furniture):
+        parser.error("give an object or --furniture")
+    if args.top_k < 1:
+        parser.error("--top-k must be positive")
+    if args.bearings < 1:
+        parser.error("--bearings must be positive")
+    scene = sg.load(args.graph)
+    if args.dry_run:
+        first = next(
+            targets(scene, args.object, args.furniture, top_k=args.top_k), None
+        )
+        if first is None:
+            return 1
+        for pose in plan(scene, first)[:3]:
+            print(" ", pose)
+        return 0
+    import rclpy
+    from navigation.nav2_client import Navigator
+
+    rclpy.init()
+    navigator = Navigator()
     try:
-        for location in targets(scene, obj, furniture, OUTPUTS / name / "locations",
-                                robot_xy, top_k):
-            poses = plan(scene, location, robot_xy)
-            if dry_run:
-                for x, y, yaw in poses[:3]:
-                    print(f"    ({x:6.2f}, {y:6.2f}) facing {yaw:5.2f} rad")
-                return          # stop here too, or the next location is pulled
-                                # from the generator and that costs an LLM call
-            if not navigator.go_to_first_reachable(poses):
-                print("  no reachable pose here, trying the next location")
-                continue
-            if not obj:                       # --furniture with nothing to find
-                print("arrived.")
-                return
-            centroid = locate(obj)
-            if centroid is None:
-                print("  not here, trying the next location")
-                continue
-            furniture = [(f["centroid"], f["dimensions"])
-                         for f in sg.furniture(scene).values()]
-            if reach.move_into_reach(navigator, reach.hand_pose(centroid), furniture):
-                print(f"in reach of {obj} at {[round(v, 2) for v in centroid]}. Ready to grasp.")
-                return
-            print("  found it but cannot stand anywhere that reaches it")
-            robot_xy = navigator.robot_xy()   # it has moved; rank the next one from here
-        if not dry_run:
-            print("no location worked out")
+        status, object_id = search(
+            scene, args.object, navigator, args.furniture, args.top_k
+        )
+        # Save what was seen before asking for IK: a solver fault must not lose it.
+        if object_id is not None:
+            sg.save(scene, args.graph)
+        if status == FOUND and not args.no_refine:
+            status = make_graspable(
+                scene, object_id, navigator, args.source, args.bearings
+            )
+        return EXIT_CODES[status]
     finally:
-        if navigator is not None:
-            import rclpy
-            navigator.destroy_node()
-            if rclpy.ok():          # Ctrl-C: rclpy's own handler got there first
-                rclpy.shutdown()
+        navigator.destroy_node()
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Navigate to where an object should be.")
-    parser.add_argument("object", nargs="?", default="", help='what to look for, e.g. "pringles"')
-    parser.add_argument("--furniture", help="go straight to this furniture, no LLM")
-    parser.add_argument("--name", default="apartment", help="which saved scene graph to use")
-    parser.add_argument("--dry-run", action="store_true", help="print the plan, do not drive")
-    parser.add_argument("--top-k", type=int, default=3)
-    arguments = parser.parse_args()
-    if not arguments.object and not arguments.furniture:
-        parser.error("give an object to search for, or --furniture")
-    main(arguments.object, arguments.furniture, arguments.name,
-         arguments.dry_run, arguments.top_k)
+    raise SystemExit(main())

@@ -1,0 +1,35 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>vision_transport</name>
+  <version>0.1.0</version>
+  <description>Bandwidth-aware ROS 2 Humble vision transport over native Zenoh.</description>
+  <maintainer email="sagar@example.com">Sagar</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>rclcpp</depend>
+  <depend>sensor_msgs</depend>
+  <depend>std_msgs</depend>
+  <depend>compressed_depth_image_transport</depend>
+  <depend>cv_bridge</depend>
+  <depend>opencv</depend>
+  <depend>point_cloud_transport</depend>
+  <depend>pluginlib</depend>
+  <exec_depend>cloudini_ros</exec_depend>
+  <exec_depend>draco_point_cloud_transport</exec_depend>
+  <exec_depend>zstd_point_cloud_transport</exec_depend>
+  <build_depend>yaml-cpp</build_depend>
+  <build_depend>nlohmann-json3-dev</build_depend>
+  <build_depend>libzenohc-dev</build_depend>
+  <exec_depend>yaml-cpp</exec_depend>
+  <exec_depend>nlohmann-json3-dev</exec_depend>
+  <exec_depend>libzenohc</exec_depend>
+
+  <test_depend>ament_cmake_gtest</test_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>
