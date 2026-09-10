@@ -9,6 +9,26 @@ Open this folder in VS Code and reopen it in the container
 (`.devcontainer/`). First run clones the ROS 2 packages, builds the
 workspace, and installs cyclonedds and zenoh.
 
+Setup fetches only missing vendor repositories. The workspace is bind-mounted,
+so `ros2_ws/src`, `build`, and `install` survive container rebuilds. After a
+successful setup, later container rebuilds reuse the ROS build while checking
+and installing system dependencies in the new container. Existing builds from
+before this change get one incremental build to record successful completion;
+partial builds are resumed without deleting their artifacts.
+
+After changing ROS package sources, run this inside the container:
+
+```bash
+ROS2_REBUILD=1 bash /home/ws/.devcontainer/postCreate.sh
+```
+
+A plain `docker build` only creates the base environment; VS Code runs
+`postCreate.sh` separately. If using Docker directly, mount this clone at
+`/home/ws` and run `bash /home/ws/.devcontainer/postCreate.sh` inside the
+container before launching ROS. Keep that mount to retain the workspace.
+Reuse compiled artifacts with the same ROS distro, architecture and compatible
+system libraries; changing those may require a clean build.
+
 ## 2. Launch ROS 2
 
 **Simulation:**
