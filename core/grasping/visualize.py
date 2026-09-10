@@ -2,7 +2,6 @@
 and the real gripper mesh at the best one. Matplotlib only, so no display
 server is needed."""
 
-import json
 from pathlib import Path
 
 import numpy as np
@@ -29,12 +28,10 @@ def _axis_lines(poses):
 
 def _gripper_mesh_at(gripper, pose):
     """Load the gripper's visual mesh and place it at `pose`. GraspGenX poses
-    live in a canonical grasp frame (+Z = approach), and config.json's
-    base_rotation maps the mesh's own URDF frame into that one."""
+    live in a canonical grasp frame (+Z = approach). The registration wizard
+    already applies base_rotation when exporting vis_mesh.obj."""
     gripper_dir = GRIPPERS_DIR / gripper
-    base_rotation = json.loads((gripper_dir / "config.json").read_text())["base_rotation"]
     mesh = trimesh.load(gripper_dir / "vis_mesh.obj", force="mesh")
-    mesh.apply_transform(np.asarray(base_rotation, dtype=np.float64))
     mesh.apply_transform(pose)
     return mesh
 

@@ -1,51 +1,39 @@
 {
     "open": {
-        "hand_motor_joint": 1.24,
-        "hand_l_proximal_joint": 1.24,
-        "hand_l_spring_proximal_joint": 0.688,
-        "hand_l_mimic_distal_joint": 0.0,
-        "hand_l_distal_joint": 0.798,
-        "hand_r_proximal_joint": 1.24,
-        "hand_r_spring_proximal_joint": 0.698,
-        "hand_r_mimic_distal_joint": 0.0,
-        "hand_r_distal_joint": 0.798
+        "hand_motor_joint": 1.1,
+        "hand_l_spring_proximal_joint": 0.0,
+        "hand_r_spring_proximal_joint": 0.0
     },
     "close": {
-        "hand_motor_joint": 0.033,
-        "hand_l_proximal_joint": -0.798,
+        "hand_motor_joint": 0.0,
         "hand_l_spring_proximal_joint": 0.0,
-        "hand_l_mimic_distal_joint": -0.698,
-        "hand_l_distal_joint": -1.24,
-        "hand_r_proximal_joint": -0.798,
-        "hand_r_spring_proximal_joint": 0.0,
-        "hand_r_mimic_distal_joint": -0.698,
-        "hand_r_distal_joint": -1.24
+        "hand_r_spring_proximal_joint": 0.0
     },
     "fingertip": [
-        -0.008965771325700395,
-        0.012500230797224706,
-        -0.024435480414581413
+        3.8542034627497834e-05,
+        0.012762750457861016,
+        0.0465866239275739
     ],
     "sweep_volume": {
         "extents": [
-            0.1455329506987858,
-            0.038999512423513474,
-            0.04704201005630382
+            0.12198828765830524,
+            0.03499269006098871,
+            0.009100678173926964
         ],
         "offset": [
-            -0.008965771325700395,
-            0.012500230797224706,
-            -0.024435480414581413
+            3.8542034627497834e-05,
+            0.012762750457861016,
+            0.0465866239275739
         ],
         "extents2": [
-            0.0727664753493929,
-            0.038999512423513474,
-            0.04704201005630382
+            0.0703954692999966,
+            0.03499269006098871,
+            0.009100678173926957
         ],
         "offset2": [
-            -0.008965771325700395,
-            0.012500230797224706,
-            -0.024435480414581413
+            3.8542034627497834e-05,
+            0.012762750457861002,
+            0.0745116119719489
         ]
     },
     "links": [
@@ -68,20 +56,20 @@
     ],
     "standoff": [
         0.0,
-        0.02352100502815191
+        0.004550339086963482
     ],
     "symmetric": true,
     "type": "parallel_2f",
     "bbox": [
         [
-            -0.1013573427059152,
+            -0.0981603813077555,
             -0.043499434890691184,
             -0.05194864687222145
         ],
         [
-            0.09483201773573341,
+            0.0918830903550002,
             0.03199998700898144,
-            -6.394297261525655e-05
+            0.055313158135258854
         ]
     ],
     "base_rotation": [

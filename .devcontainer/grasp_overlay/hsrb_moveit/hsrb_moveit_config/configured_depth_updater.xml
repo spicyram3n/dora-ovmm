@@ -1,0 +1,5 @@
+<library path="hsr_configured_depth_updater">
+  <class name="hsr_rgbd/ConfiguredDepthUpdater" type="hsr_rgbd::ConfiguredDepthUpdater" base_class_type="occupancy_map_monitor::OccupancyMapUpdater">
+    <description>Native depth-image octomap updater with configured clipping and self-filter parameters.</description>
+  </class>
+</library>

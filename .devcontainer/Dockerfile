@@ -25,7 +25,7 @@ RUN groupadd --gid $USER_GID $USERNAME \
 # Install some system stuff    
 RUN apt-get update && apt-get upgrade -y && \
     apt-get install -y --no-install-recommends \
-    python3-pip python-is-python3 ssh neovim git wget unzip \
+    python3-pip python-is-python3 ssh neovim git wget unzip freeglut3-dev \
     ros-humble-control-msgs \
     ros-humble-navigation2 \
     ros-humble-nav2-bringup \

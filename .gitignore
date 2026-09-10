@@ -29,3 +29,15 @@ docker/graspgenx/checkpoints/
 config/targets/
 
 .image_fingerprint
+
+# Local runs, workstation graphics libraries, and large experiment archives
+.runtime/
+.vscode/
+config/diagnostics/
+config/*.png
+config/codex_*
+recordings/
+snapshots/
+core.[0-9]*
+*.log
+.~lock.*#

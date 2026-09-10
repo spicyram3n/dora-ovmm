@@ -23,24 +23,26 @@ ROS2_WS=/home/ws/ros2_ws
 mkdir -p "$ROS2_WS/src"
 
 # hsr_ros2 package list per hsr-project/hsr_ros2_doc, humble, setup_sim_en.md
-if [ -z "$(ls -A "$ROS2_WS/src")" ]; then
-    echo "ros2_ws/src is empty - cloning hsr_ros2 packages"
-    cd "$ROS2_WS/src"
-    for repo in \
-        hsrb_controllers hsrb_common hsrb_drivers hsrb_launch hsrb_manipulation \
-        hsrb_rosnav hsrb_simulator hsr_common hsrb_teleop tmc_gazebo tmc_teleop \
-        tmc_common tmc_common_msgs tmc_drivers tmc_database tmc_manipulation \
-        tmc_manipulation_base tmc_manipulation_planner tmc_point_cloud \
-        tmc_realtime_control tmc_voice tmc_navigation; do
+# grasp_execution is tracked, so src is nonempty even on a fresh clone.
+# Clone each missing vendor repository independently.
+cd "$ROS2_WS/src"
+for repo in \
+    hsrb_controllers hsrb_common hsrb_drivers hsrb_launch hsrb_manipulation \
+    hsrb_rosnav hsrb_simulator hsr_common hsrb_teleop tmc_gazebo tmc_teleop \
+    tmc_common tmc_common_msgs tmc_drivers tmc_database tmc_manipulation \
+    tmc_manipulation_base tmc_manipulation_planner tmc_point_cloud \
+    tmc_realtime_control tmc_voice tmc_navigation hsrb_moveit; do
+    if [ ! -d "$repo/.git" ]; then
         git clone -b humble "https://github.com/hsr-project/${repo}.git"
-    done
-    rm -rf hsrb_launch/hsrb_robot_launch hsrb_simulator/hsrb_rviz_simulator tmc_drivers/tmc_pgr_camera
-
-    # not in the doc's list; move_group comes from hsrb_moveit_config
-    git clone -b humble "https://github.com/hsr-project/hsrb_moveit.git"
-
-    "$SCRIPT_DIR/bug_fixes.sh" "$ROS2_WS"
-fi
+        case "$repo" in
+            hsrb_launch) rm -rf hsrb_launch/hsrb_robot_launch ;;
+            hsrb_simulator) rm -rf hsrb_simulator/hsrb_rviz_simulator ;;
+            tmc_drivers) rm -rf tmc_drivers/tmc_pgr_camera ;;
+        esac
+    fi
+done
+"$SCRIPT_DIR/bug_fixes.sh" "$ROS2_WS"
+python3 "$SCRIPT_DIR/apply_grasp_overlay.py" "$ROS2_WS"
 
 # the Dockerfile clears /var/lib/apt/lists, so apt has no index until refreshed
 sudo apt-get update
