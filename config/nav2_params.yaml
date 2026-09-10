@@ -62,7 +62,9 @@ bt_navigator:
     enable_groot_monitoring: True
     groot_zmq_publisher_port: 1666
     groot_zmq_server_port: 1667
-    default_bt_xml_filename: "navigate_w_replanning_and_recovery.xml"
+    default_nav_to_pose_bt_xml: "/home/ws/config/navigate_no_reverse.xml"
+    # Humble activates both navigators, even when the mission uses only one.
+    default_nav_through_poses_bt_xml: "/home/ws/config/navigate_through_no_reverse.xml"
     plugin_lib_names:
     - nav2_compute_path_to_pose_action_bt_node
     - nav2_compute_path_through_poses_action_bt_node
@@ -110,10 +112,14 @@ controller_server:
     min_theta_velocity_threshold: 0.001
     progress_checker_plugin: "progress_checker"
     goal_checker_plugin: "goal_checker"
-    # Keep to one. A second checker makes every FollowPath abort, because the
-    # stock behaviour tree sends an empty goal_checker_id.
+    # Keep each list to one entry. The server only falls back to a default when
+    # exactly one plugin is loaded -- "Server will use only plugin loaded %s".
+    # With two, the stock behaviour tree's empty id hits the "does not exist"
+    # branch and every FollowPath aborts. This applies to controllers as well as
+    # goal checkers. To load both, run a behaviour tree carrying ControllerSelector
+    # and GoalCheckerSelector; no stock nav2 tree does.
     goal_checker_plugins: ["general_goal_checker"]
-    controller_plugins: ["FollowPath", "ViewpointPath"]
+    controller_plugins: ["FollowPath"]
 
     # Progress checker parameters
     progress_checker:
@@ -131,22 +137,11 @@ controller_server:
     # precision:
     #   ros2 param set /controller_server general_goal_checker.xy_goal_tolerance 0.08
 
-    # Shim + MPPI, replacing DWB. DWB rotated 4.99 rad for a 1 m sideways move
-    # because forward is faster than strafing under its progress critics; MPPI
-    # does the same move in 0.55 rad. The shim then turns the robot to face the
-    # path before handing over, which halved a 5.8 m run from 58 s to 30 s.
+    # Direct Omni MPPI permits lateral approaches without a mandatory initial
+    # turn toward the path. PathAngleCritic still encourages forward-facing
+    # transit; GoalAngleCritic and the goal checker enforce the requested yaw.
     FollowPath:
-      plugin: "nav2_rotation_shim_controller::RotationShimController"
-      primary_controller: "nav2_mppi_controller::MPPIController"
-      # 29 deg. Lowered with PreferForwardCritic: if the robot is going to
-      # travel forward anyway, align up front rather than make MPPI work it out.
-      angular_dist_threshold: 0.5
-      forward_sampling_distance: 0.5
-      rotate_to_heading_angular_vel: 0.8
-      max_angular_accel: 3.2
-      simulate_ahead_time: 1.0
-
-      # MPPI reads everything below from this same namespace.
+      plugin: "nav2_mppi_controller::MPPIController"
       time_steps: 56
       model_dt: 0.05
       batch_size: 2000
@@ -158,7 +153,7 @@ controller_server:
       vx_min: 0.0
       vy_max: 0.2
       wz_max: 0.8
-      # Lateral sampling reduced, since PreferForwardCritic penalises using it.
+      # Lateral sampling spread; PreferForwardCritic only penalises reverse vx.
       vx_std: 0.2
       vy_std: 0.15
       wz_std: 0.3
@@ -215,9 +210,8 @@ controller_server:
         threshold_to_consider: 0.5
         max_angle_to_furthest: 1.0
         forward_preference: true
-      # Penalises non-forward velocity. PathAngleCritic only aligns heading to
-      # the path; without this, diagonal travel is faster (0.36 vs 0.30 m/s) so
-      # the robot kept drifting 36 deg off. Off within 0.5 m of the goal.
+      # Penalises negative vx only, not strafing or diagonal travel.
+      # With vx_min=0 this critic has no reverse motion to penalise.
       PreferForwardCritic:
         enabled: true
         cost_power: 1
@@ -239,9 +233,8 @@ controller_server:
         collision_margin_distance: 0.05
         near_goal_distance: 0.5
 
-    # Select this from the BT's /controller_selector topic for a final
-    # viewpoint / manipulation approach. It permits deliberate lateral motion
-    # and uses lower speed limits to keep the target in the sensor view.
+    # Inactive tuning template: not in controller_plugins and not selectable
+    # by the current BT. Final placement currently uses FollowPath.
     ViewpointPath:
       plugin: "nav2_mppi_controller::MPPIController"
       time_steps: 56
@@ -451,7 +444,7 @@ behavior_server:
     cycle_frequency: 10.0
     # No reverse recovery: the base's laser has an unsensed rear sector.
     # The custom default BT also contains no BackUp node.
-    recovery_plugins: ["spin", "wait"]
+    behavior_plugins: ["spin", "wait"]
     spin:
       plugin: "nav2_behaviors/Spin"
     wait:

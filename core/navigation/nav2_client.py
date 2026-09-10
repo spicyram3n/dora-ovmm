@@ -9,14 +9,22 @@ from trajectory_msgs.msg import JointTrajectoryPoint
 from builtin_interfaces.msg import Duration
 from geometry_msgs.msg import PoseStamped
 from nav2_msgs.action import ComputePathToPose, NavigateToPose
+from rcl_interfaces.msg import Parameter as ParameterMsg, ParameterType
+from rcl_interfaces.srv import SetParameters
 from rclpy.action import ActionClient
 from rclpy.node import Node
 from rclpy.parameter import Parameter
 from rclpy.time import Time
 from tf2_ros import Buffer, TransformListener, TransformException
+from utils.transforms import matrix_from_transform
 
 FRAME = "map"
 BASE = "base_footprint"
+# config/nav2_params.yaml keeps one goal checker on purpose: a second makes every
+# FollowPath abort, because the stock behaviour tree sends an empty checker id.
+# Both its tolerances are dynamic, so a precise leg tightens them and puts them back.
+CONTROLLER = "/controller_server"
+GOAL_CHECKER = "general_goal_checker"
 
 
 def _pose(x, y, yaw):
@@ -78,8 +86,9 @@ class Navigator(Node):
         cancelled = handle.cancel_goal_async()
         rclpy.spin_until_future_complete(self, cancelled, timeout_sec=5)
         rclpy.spin_until_future_complete(self, finished, timeout_sec=5)
-        # Do not send another goal until the previous motion has ended.
-        if not finished.done() or finished.cancelled() or finished.exception() is not None:
+        # Do not send another goal until the previous motion has ended. A cancelled
+        # goal still completes its result future, carrying STATUS_CANCELED.
+        if not finished.done() or finished.exception() is not None:
             raise RuntimeError(
                 "Navigation cancellation unconfirmed; refusing another goal"
             )
@@ -96,7 +105,9 @@ class Navigator(Node):
                 continue
             age = (self.get_clock().now() - Time.from_msg(stamped.header.stamp)).nanoseconds / 1e9
             # A cached pose after a connection loss is not an arrival measurement.
-            if 0 <= age <= max_age:
+            # A stamp slightly ahead of our clock is fresh, not stale: sim time and
+            # the TF publisher tick separately, so allow the same slack either way.
+            if abs(age) <= max_age:
                 transform = stamped.transform
                 break
         else:
@@ -110,6 +121,24 @@ class Navigator(Node):
 
     def robot_xy(self):
         return self.robot_pose()[:2]
+
+    def frame_transform(self, target_frame, source_frame, timeout=10):
+        """(4, 4) target_from_source, waited for rather than assumed published."""
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            rclpy.spin_once(self, timeout_sec=0.1)
+            if not self.tf_buffer.can_transform(target_frame, source_frame, Time()):
+                continue
+            try:
+                stamped = self.tf_buffer.lookup_transform(
+                    target_frame, source_frame, Time()
+                )
+            except TransformException:
+                continue
+            return matrix_from_transform(stamped.transform)
+        raise RuntimeError(
+            f"No {target_frame} <- {source_frame} TF; check localization and clocks"
+        )
 
     def reachable(self, x, y, yaw):
         goal = ComputePathToPose.Goal()
@@ -125,16 +154,45 @@ class Navigator(Node):
         end = path.poses[-1].pose.position
         return math.hypot(end.x - x, end.y - y) <= 0.1
 
-    def drive_to(self, x, y, yaw, timeout=180):
+    def drive_to(self, x, y, yaw, timeout=180, tolerance=0.3, yaw_tolerance=0.3):
+        """Drive and verify. Tolerances must stay at or above the goal checker's."""
         goal = NavigateToPose.Goal()
         goal.pose = _pose(x, y, yaw)
         goal.pose.header.stamp = self.get_clock().now().to_msg()
         outcome = self._run(self.driver, goal, timeout)
         if outcome is None or outcome.status != GoalStatus.STATUS_SUCCEEDED:
             return False
+        offset, error = self.residual(x, y, yaw)
+        return offset <= tolerance and error <= yaw_tolerance
+
+    def residual(self, x, y, yaw):
+        """How far the base actually is from a goal, as (metres, radians)."""
         current_x, current_y, heading = self.robot_pose()
         error = abs(math.atan2(math.sin(heading - yaw), math.cos(heading - yaw)))
-        return math.hypot(current_x - x, current_y - y) <= 0.3 and error <= 0.3
+        return (math.hypot(current_x - x, current_y - y), error)
+
+    def set_goal_tolerance(self, xy, yaw, timeout=10):
+        """Retune the running goal checker; both tolerances are dynamic parameters."""
+        client = self.create_client(SetParameters, f"{CONTROLLER}/set_parameters")
+        try:
+            if not client.wait_for_service(timeout_sec=timeout):
+                raise RuntimeError(f"{CONTROLLER} parameter service is unavailable")
+            request = SetParameters.Request()
+            for name, value in (("xy_goal_tolerance", xy), ("yaw_goal_tolerance", yaw)):
+                parameter = ParameterMsg(name=f"{GOAL_CHECKER}.{name}")
+                parameter.value.type = ParameterType.PARAMETER_DOUBLE
+                parameter.value.double_value = float(value)
+                request.parameters.append(parameter)
+            future = client.call_async(request)
+            rclpy.spin_until_future_complete(self, future, timeout_sec=timeout)
+            if not future.done():
+                raise RuntimeError("Setting the goal tolerance timed out")
+            for result in future.result().results:
+                # Driving on with an unknown tolerance would make arrival meaningless.
+                if not result.successful:
+                    raise RuntimeError(f"Goal tolerance rejected: {result.reason}")
+        finally:
+            self.destroy_client(client)
 
     def look_at(self, point):
         """Aim the HSRC head approximately at a map-frame point."""
@@ -161,10 +219,3 @@ class Navigator(Node):
                     and result.result.error_code == 0)
         finally:
             client.destroy()
-
-    def go_to_first_reachable(self, poses):
-        for index, pose in enumerate(poses, 1):
-            print(f"  candidate {index}/{len(poses)}: {pose}")
-            if self.reachable(*pose) and self.drive_to(*pose):
-                return pose
-        return None

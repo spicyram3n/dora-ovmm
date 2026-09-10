@@ -1,26 +1,66 @@
-# Navigation from scene-graph search
+# Search for an object
 
-Ported from dora-ovmm: `standoff.py`, `nav2_client.py`, and the analytical
-`tools/experiments/reach.py` helper. `base_placement.py` was moved from `core/placement` with its
-existing edits preserved. Production navigation/placement stays here; the analytical reach experiment lives under `tools/experiments`.
+Search scene-graph memory, drive to a viewing position, detect with SAM3, and park within arm reach. Search does not generate or execute grasps.
 
-`search_object.py` connects the new reasoner to Nav2 and SAM3. It uses map-frame
-bounds, checks paths before driving, verifies position and yaw after arrival,
-and cancels timed-out goals before trying another candidate. Cancellation that
-cannot be confirmed stops the run. Watch for the explicit goal-acceptance timeout
-error: if the server never acknowledges a goal, its state is unknown; stop Nav2
-before retrying. Observation tolerances are 0.30 m/rad, slightly wider than the
-current Nav2 0.25 m/rad thresholds. These are NOT precision grasp tolerances.
+## Single launch: simulation to ready for grasping
 
-The search tries up to two reachable views per location. A camera/server error
-stops the run; a successful SAM3 reply with no instance tries another view.
-Successful detection updates the graph. Failed observations do not prove absence
-or remove a remembered object. The current head pose must see the target surface;
-automatic head scanning is not part of this port.
+Prepare and check the registered scene graph using steps 1–2 below once. Start
+SAM3 on the **host** (`bash docker/sam3/run_sam3.sh`); the ROS dev container does
+not manage that GPU container. Set `DEEPSEEK_API_KEY` in the ROS terminal when
+LLM predictions are needed.
 
-## Run in simulation
+With the ROS and workspace setup sourced, run:
 
-In each ROS terminal, from the repository root:
+```bash
+ros2 launch /home/ws/launch/search.launch.py target:=pringles top_k:=3
+```
+
+This starts simulation, Nav2 with `config/nav2_params.yaml`, and IK. The search
+worker waits for active Nav2 lifecycle nodes, navigation/head actions, IK,
+fresh localization, synchronized RGB-D with TF, and an actual SAM3 response.
+The startup SAM3 result is discarded; the search takes fresh observations after
+moving. Startup has a shared 180-second deadline; override with
+`startup_timeout:=300` for slower startup. No motion is requested before these
+checks pass. Readiness does not validate the accuracy of your map registration.
+
+After readiness checks, every launch sends the arm to home positions
+`[0.0, 0.0, -1.57, -1.57, 0.0]` for lift, flex, roll, wrist flex, and wrist roll,
+with a 3-second trajectory. It waits for successful completion before searching;
+rejection, failure, or a 30-second execution timeout stops the mission. This also
+runs when attaching to existing simulation with the start flags set to false.
+Logs show `[HOME]` followed by `[READY] arm home pose reached`.
+
+The worker searches memory or LLM-ranked furniture, visits viewpoints, detects
+the target, saves its updated graph entry, and refines the base position. It
+stops before grasp generation and arm execution.
+
+If simulation, Nav2 and IK are already running, avoid launching duplicates:
+
+```bash
+ros2 launch /home/ws/launch/search.launch.py target:="red cup" \
+  start_simulation:=false start_navigation:=false start_ik:=false
+```
+
+Each start flag can be used independently. Other arguments are `graph`, `map`,
+`params_file`, and `bearings`. Use a separate prepared `graph:=/path/to/scenario.json`
+for each demo scenario: detections update that file, and the launcher does not
+rebuild it or change room assignments.
+
+Output is labelled by process (`simulation`, `navigation`, `ik`, `search`), with
+individual ROS node names inside their logs. The worker prints `[WAIT]`,
+`[READY]`, `[SEARCH]`, `[APPROACH]`, and `[RESULT]`, alongside existing per-location
+and per-pose output. Launch also saves logs in its printed log directory.
+These are readiness/stage messages, not a percentage-complete dashboard.
+
+After the search exits, simulation stays open for inspection. The final mission
+message reports ready (0), not found (1), placement failed (2), or error (3).
+This is the **worker** exit status; the interactive ROS launch stays running.
+Press Ctrl+C to shut down launched processes; separately started services remain
+yours to stop. Rerun with the appropriate start flags to search again.
+
+## 1. Launch simulation and Nav2
+
+Run this setup in **each ROS terminal**:
 
 ```bash
 cd /home/ws
@@ -28,7 +68,7 @@ source /opt/ros/humble/setup.bash
 source ros2_ws/install/setup.bash
 ```
 
-Terminal 1:
+**ROS terminal 1 — simulation:**
 
 ```bash
 ros2 launch hsrb_gazebo_launch hsrb_apartment_world.launch.py \
@@ -36,20 +76,25 @@ ros2 launch hsrb_gazebo_launch hsrb_apartment_world.launch.py \
   description_package:=hsrc_description description_file:=hsrc1s.urdf.xacro
 ```
 
-Terminal 2 (only one Nav2 launch; do not also run launch_nav2.py):
+**ROS terminal 2 — Nav2:**
 
 ```bash
 ros2 launch hsrb_rosnav_config navigation_launch.py \
   map:=/home/ws/config/map/apartment_world_map.yaml \
-  params_file:=/home/ws/ros2_ws/src/hsrb_rosnav/hsrb_rosnav_config/config/nav2_params.yaml \
+  params_file:=/home/ws/config/nav2_params.yaml \
   use_sim_time:=true
 ```
 
-This navigation launch reads the initial AMCL pose from its parameter YAML.
-It does not declare `initial_orientation_xyzw`; the current YAML sets yaw to zero.
-Verify localization by checking the laser against the map in RViz.
+The loaded controller is direct Omni MPPI, without a rotation shim. It can
+strafe during approaches without first aligning to the path. Path-heading costs
+still encourage forward-facing travel, and the goal checker requires final yaw.
+Restart Nav2 after changing controller plugins.
 
-Terminal 3, once localization is correct, BEFORE moving the freshly spawned robot:
+Run only one Nav2 launch. Check that the laser scan lines up with the map in RViz before continuing. The initial AMCL pose comes from the parameter YAML.
+
+## 2. Register and build the scene graph
+
+In **ROS terminal 3**, before moving the freshly spawned robot:
 
 ```bash
 python3 core/build_scene_graph.py register \
@@ -58,132 +103,94 @@ python3 core/build_scene_graph.py --transform config/map/world_to_map.json
 python3 core/search_object.py 'pringles' --dry-run
 ```
 
-The world-base values above apply only to the default fresh apartment spawn,
-with the base footprint at that XY and yaw. If it has moved, supply its CURRENT
-Gazebo base-footprint X/Y/yaw. Registration combines that pose with current TF
-map-to-base; it cannot fix incorrect AMCL localization. Check graph furniture
-positions against the map. Rebuild the graph after changing the registration.
+`5.0 6.6 0.0` is only for the default fresh apartment spawn. If the robot has moved, use its current Gazebo base-footprint X/Y/yaw. Registration needs correct AMCL localization; check graph furniture against the map and rebuild after changing the transform.
 
-For LLM room assignment and unknown-object queries, set DEEPSEEK_API_KEY in this
-terminal (do not put the key in source files), then:
+Set `DEEPSEEK_API_KEY` in this terminal for unknown-object searches or fallback after a remembered location fails. Unknown-object dry runs also call the API, but send no motion commands.
+
+To assign room names, rebuild with:
 
 ```bash
 python3 core/build_scene_graph.py --transform config/map/world_to_map.json --rooms
 ```
 
-A direct navigation test needs neither DeepSeek nor SAM3:
+## 3. Start perception and IK
 
-```bash
-python3 core/search_object.py --furniture high_table01
-```
-
-Start SAM3 on the host using its existing script (another terminal):
+In a **host terminal**, from the repository root:
 
 ```bash
 bash docker/sam3/run_sam3.sh
 ```
 
-Then search, navigate and detect with one command:
+In another **ROS terminal**:
+
+```bash
+ros2 launch grasp_execution ik_solver.launch.py
+```
+
+## 4. Search
+
+In ROS terminal 3:
 
 ```bash
 python3 core/search_object.py 'pringles' --top-k 3
 ```
 
-Known objects use memory first; unknown objects call DeepSeek immediately. If a
-remembered location fails, the next location is requested from DeepSeek, so set
-the API key for that fallback even when the initial lookup is known. A dry-run
-also calls DeepSeek for an unknown object, but sends no ROS motion commands.
+| Option | Use it to |
+| --- | --- |
+| `--dry-run` | Print search choices without moving |
+| `--no-refine` | Stop after detection; no IK solver needed |
+| `--furniture high_table01` | Test navigation without SAM3 or DeepSeek |
+| `--graph /path/to/graph.json` | Use a different scene graph |
+| `--bearings 6` | Set horizontal reach-probe directions |
 
-To demonstrate scenario A with an object physically present, copy the graph and
-remove that object's nodes from the COPY, leaving the Gazebo world untouched:
+Exit codes: **0** ready/arrived, **1** not found, **2** found but not graspable — either no probe direction is reachable, or the base could not park inside the cluster the IK solver certified.
 
-```bash
-PYTHONPATH="/home/ws/core:$PYTHONPATH" python3 - <<'PY'
-from scene_graph import graph as sg
-scene = sg.load('outputs/scene_graph/apartment.json')
-ids = [n for n, d in sg.objects(scene).items() if 'pringles' in d['label']]
-scene.remove_nodes_from(ids)
-sg.save(scene, 'outputs/scene_graph/apartment_unknown.json')
-PY
-python3 core/search_object.py 'pringles' --graph outputs/scene_graph/apartment_unknown.json --top-k 3
-```
+## Preview the viewpoints
 
-A successful search records the detected object, so recreate the copy to repeat
-scenario A. Multiple same-named instances are resolved approximately by label and
-proximity; search success means a matching object, not guaranteed instance identity.
-
-## Grasping boundary
-
-The search stops at detection; it does not execute a grasp or claim the base can
-reach one. `tools/experiments/reach.py` is an analytical prefilter, not full IK: it does not check
-wrist limits, arm collisions or the approach path. It is not used to move the
-robot automatically by the search command. Its optional `move_into_reach` helper
-is experimental; do not interpret its radial check as grasp feasibility.
-
-MoveIt can be launched with your existing command:
+No robot, no ROS. Draws what the query selects, using the same `plan()` call the mission drives:
 
 ```bash
-ros2 launch hsrb_moveit_config demo.py description_package:=hsrc_description \
-  description_file:=hsrc1s.urdf.xacro use_sim_time:=true
+python3 core/navigation/visualize.py 'pringles' --output outputs/viewpoints.png
 ```
 
-After detection, the existing grasp-generation command remains:
+| Option | Use it to |
+| --- | --- |
+| `--index 1` | Plot the next search location; past the remembered ones this calls DeepSeek |
+| `--robot X Y` | Order candidates as if the robot were there (default `0 0`) |
+| `--furniture high_table01` | Plot a furniture target instead of an object |
 
-```bash
-python3 core/run_pipeline.py 'pringles'
-```
+Left panel is the 3D scene with the IK reach probes at the object; right panel is the plan view, where the circles are the base radius the standoff filter uses. Red crosses are ring candidates dropped for hitting furniture. The filter checks the **base footprint only** — a pose it keeps can still be sighting through another piece of furniture, which is visible in the shelf case.
 
-It also requires the GraspGenX server (`bash docker/graspgenx/run_graspgenx.sh`
-on the host). It generates grasp files; it does not itself execute them.
-Final collision-aware base selection and grasp execution remain to be connected.
-The moved IK helper can still be called as:
+## What success means
+
+- Search tries up to two reachable views per location and aims the head before capture. Check head aiming in Gazebo before hardware use.
+- Detection needs fresh RGB-D, at least 100 valid masked depth points, and 25% valid masked depth. Bad depth tries another view.
+- Search tries every remembered instance of the object, nearest first, before asking DeepSeek to guess furniture. Without an API key it searches memory only and reports not found, rather than failing.
+- Successful detection saves map-frame bounds before IK runs. Failed observations leave memory unchanged. Matching uses label and proximity, so instance identity is approximate; a same-label detection more than 1 m from a remembered one becomes a new node instead of overwriting it.
+- Base placement uses hand-pose probes. A reachable probe does not prove a stable grasp. The head aims at the object again after placement.
+- **Arm–furniture collisions are not checked:** the IK environment is empty. Base costmap and self-collision checks still apply.
+- Nav2's standing 25 cm tolerance is larger than the IK robustness neighborhood of about 7.5 cm, so the final approach tightens `general_goal_checker` to 0.08 m at runtime and restores it afterwards. Arrival is then re-measured against the certified pose: past 0.08 m the run reports **2**, not ready. See [IK settings](../../ros2_ws/src/grasp_execution/README.md#ik-settings).
+
+## If it stops
+
+| Problem | Next step |
+| --- | --- |
+| Goal acceptance times out | Stop Nav2 before retrying; the goal state is unknown |
+| Cancellation cannot be confirmed | Resolve the active goal before restarting search |
+| Camera, SAM3, or IK error | Restore the service; an error does not mean the object is absent or unreachable |
+| Old map-to-base TF | Check localization and clock alignment; TF must be within 2 seconds |
+| No reachable view | Check localization, furniture bounds, and the costmap |
+
+Planning or driving failures try another candidate. Observation tolerances are 0.30 m/rad, not grasp tolerances.
+
+## Use saved grasps for base placement
+
+With the IK solver running and saved grasps available:
 
 ```bash
 python3 core/navigation/base_placement.py pringles --costmap
 ```
 
-This needs `ros2 launch grasp_execution ik_solver.launch.py` and generated grasps.
-Its default grasp frame remains odom; navigation goals are map and must be
-transformed explicitly when this helper is connected to the search coordinator.
+Saved grasps must be in `odom`. Search handles map/odom transforms for its probes. The CLI uses the live costmap by default; `--map` selects the saved trinary map and blocks unknown cells. Candidate base poses still need Nav2 path checks before driving.
 
-## Navigation failure checks
-
-Search retries other candidate poses when planning or driving fails. It reports
-an inaccessible location separately from a completed observation with no detection.
-Known targets are faced directly, and fallback detections update an existing
-object instead of creating another copy. Nav2 requires map-to-base TF no older
-than two seconds; align clocks and keep localization publishing on the real robot.
-A missing server or unconfirmed cancellation stops the mission.
-
-Base-placement CLI uses `--costmap` by default. `--map` retains offline trinary
-map loading, with unknown pixels blocked and origin yaw preserved. Other map
-modes are rejected explicitly. Saved grasp input must be in `odom`; the command
-rejects other frames instead of silently treating them as odom. IK timeout is an
-error, not evidence that a grasp is unreachable. IK candidates still require
-Nav2 path checks and a populated collision environment before arm execution.
-
-Offline regression checks (no robot or paid API calls):
-
-```bash
-PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest -q tools/test_navigation.py
-```
-
-## Observation before grasp planning
-
-Object search now commands the HSRC head trajectory controller before capture.
-The look-at calculation uses the head pivot TF and an approximate camera offset;
-it is not a visibility or collision-aware head planner. Known objects supply the
-look-at point. Tables/desks/counters use a point above their top; other furniture
-uses its centre. Head joint limits are from the HSRC description. Verify aiming
-in Gazebo before real hardware use.
-
-Capture accepts only image pairs stamped after capture starts. A detected mask
-needs at least 100 valid depth points and 25 percent valid masked depth; otherwise
-search tries another viewpoint. These are initial quality thresholds. The second
-candidate is on a distant side of the furniture, subject to Nav2 reachability.
-
-Successful detections update the object's map-frame bounds and position. The
-on/in/near edge is inferred from observed geometry, with a 0.5 m near limit;
-unassociated detections retain no furniture edge. This is a geometric estimate,
-not proof of support or containment. Search saves the graph only after success.
-No detection or bad depth leaves graph memory unchanged.
+For execution, see [grasp execution](../../ros2_ws/src/grasp_execution/README.md). The former `core/run_pipeline.py` entry point is absent from this checkout.

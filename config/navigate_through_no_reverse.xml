@@ -1,0 +1,24 @@
+<!-- Humble NavigateThroughPoses: bounded replanning and costmap/wait recovery. -->
+<root main_tree_to_execute="MainTree">
+  <BehaviorTree ID="MainTree">
+    <RecoveryNode number_of_retries="3" name="NavigateRecovery">
+      <PipelineSequence>
+        <RateController hz="1.0">
+          <ReactiveSequence>
+            <RemovePassedGoals input_goals="{goals}" output_goals="{goals}" radius="0.7"/>
+            <ComputePathThroughPoses goals="{goals}" path="{path}" planner_id="GridBased"/>
+          </ReactiveSequence>
+        </RateController>
+        <FollowPath path="{path}" controller_id="FollowPath"/>
+      </PipelineSequence>
+      <ReactiveFallback>
+        <GoalUpdated/>
+        <Sequence>
+          <ClearEntireCostmap service_name="local_costmap/clear_entirely_local_costmap"/>
+          <ClearEntireCostmap service_name="global_costmap/clear_entirely_global_costmap"/>
+          <Wait wait_duration="2"/>
+        </Sequence>
+      </ReactiveFallback>
+    </RecoveryNode>
+  </BehaviorTree>
+</root>

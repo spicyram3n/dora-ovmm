@@ -22,12 +22,12 @@ and millimetre depth. They do not establish perfect alignment for every pixel.
 Extra ground/ICP transform compositions tested much worse: do not apply them
 again to the numbered poses or use them as a robot-map registration.
 
-## 1. Prepare input (already done in this workspace)
+## 1. Prepare input (skip if data/hrl already exists)
 
 From the repository root:
 
 ```bash
-python docker/openyolo3d/prepare_hrl.py
+python3 docker/openyolo3d/prepare_hrl.py --stride 10
 ```
 
 This creates `docker/openyolo3d/data/hrl/` with corrected intrinsics, `scene.ply`,
@@ -52,6 +52,7 @@ point-to-frame projection arrays. No changes to the cloud point ordering are mad
 
 ```bash
 bash docker/openyolo3d/run_openyolo3d.sh --download-checkpoints
+bash docker/openyolo3d/run_hrl.sh --check-only
 bash docker/openyolo3d/run_hrl.sh
 ```
 
@@ -94,3 +95,36 @@ saves the graph. Bounds, centroids, furniture/object classification and geometri
 relations come from our existing code. Room assignment is a separate optional
 reasoner step. No graph has been generated yet: predicted instances and a verified
 HRL-to-map registration are still missing.
+
+## Inspect test results in Rerun (no map or ROS needed)
+
+On the PC host, from the repository root, create a separate viewer environment:
+
+```bash
+sudo apt-get install -y python3-venv
+python3 -m venv .venv-rerun
+.venv-rerun/bin/python -m pip install 'rerun-sdk==0.22.1' 'numpy<2' 'networkx>=3.4,<4' scipy
+PYTHONPATH=core .venv-rerun/bin/python -m scene_graph.visualize \
+  --instances docker/openyolo3d/output/hrl/instances.json \
+  --output outputs/scene_graph/hrl_preview
+```
+
+This opens the native Rerun desktop viewer with colored point clouds, labelled
+bounding boxes and object-to-furniture arrows. Toggle entities under
+`scene/instances` and `scene/relations` in the viewer to inspect individual objects.
+Labels include instance IDs and model scores. Coordinates remain in `hrl_scan`.
+Edges are nearest-furniture `near` hypotheses, not confirmed support/containment.
+
+The command saves `graph.json` and `scene.rrd`, replacing these two files on each
+run. To export inside a container without a display, add `--save-only`. Open the
+recording later on the PC host:
+
+```bash
+.venv-rerun/bin/python -m rerun outputs/scene_graph/hrl_preview/scene.rrd
+```
+
+Up to 30,000 points per instance are displayed; all points build the graph.
+Optional `--scene docker/openyolo3d/data/hrl/scene.ply` adds gray context (install
+trimesh in the viewer environment). No inference rebuild, ROS, browser or map
+registration is needed. `--transform` remains available for a future measured
+registration using the existing map graph builder.

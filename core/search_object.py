@@ -1,4 +1,5 @@
-"""Search remembered or LLM-ranked locations using Nav2 and SAM3."""
+"""Search remembered or LLM-ranked locations with Nav2 and SAM3, then park the
+base where the arm can reach what was found. The mission ends before grasping."""
 
 import argparse
 from pathlib import Path
@@ -8,6 +9,17 @@ from scene_graph import graph as sg
 from reasoner.query import Location, search_order
 
 ROOT = Path(__file__).resolve().parent.parent
+# Mission outcomes, from the object never being seen to standing ready to grasp.
+NOT_FOUND = "not_found"
+ARRIVED = "arrived"
+FOUND = "found"
+NOT_GRASPABLE = "not_graspable"
+READY = "ready"
+EXIT_CODES = {NOT_FOUND: 1, ARRIVED: 0, FOUND: 0, NOT_GRASPABLE: 2, READY: 0}
+# A same-label detection further than this from a remembered one is another instance.
+SAME_INSTANCE = 1.0
+# Nothing the HSR gripper can pick up measures more than this across.
+MAX_SPAN = 0.6
 
 
 def box(data):
@@ -103,16 +115,62 @@ def locate(obj):
         mask, score = sam3_client.detect(rgb, obj)
     except sam3_client.ObjectNotFound:
         return None
-    points = pointcloud.deproject(depth, intrinsics, mask)
-    if len(points) < 100 or len(points) < 0.25 * np.count_nonzero(mask):
+    # The segmentation edge straddles object and background, so its pixels carry
+    # the background's depth. Deprojected, they stretch the box down the view ray.
+    core = pointcloud.shrink(mask)
+    points = pointcloud.deproject(depth, intrinsics, core)
+    if len(points) < 100 or len(points) < 0.25 * np.count_nonzero(core):
         print("Object detected, but depth is insufficient; trying another view.")
         return None
-    print(f"Detected {obj}, score={score:.2f}")
+    points = pointcloud.largest_cluster(points)
+    if points is None or len(points) < 100:
+        print("Detection did not form one solid body; trying another view.")
+        return None
+    print(f"Detected {obj}, score={score:.2f}, {len(points)} points")
     return pointcloud.transform_points(transform, points)
 
 
+def make_graspable(scene, node_id, navigator, obstacles="--costmap", bearings=6):
+    """Refine the observation pose into one the IK solver certifies for the arm."""
+    from navigation import graspable
+
+    centre, dimensions = box(scene.nodes[node_id])
+    blockers = []
+    for data in sg.furniture(scene).values():
+        blockers.append(box(data))
+    outcome = graspable.reposition(
+        navigator, centre, dimensions, obstacles=obstacles, bearings=bearings,
+        blockers=blockers,
+    )
+    if outcome is None:
+        print(
+            "No clear, navigable IK base pose was reached within position and yaw "
+            "tolerances. The detected object remains saved in the scene graph."
+        )
+        return NOT_GRASPABLE
+    pose, offset = outcome
+    if offset > graspable.PRECISE_TOLERANCE:
+        print(
+            f"Parked {offset:.3f} m from the certified pose, outside the"
+            f" {graspable.PRECISE_TOLERANCE:.2f} m the solver certifies. The object is"
+            " recorded, but the arm is not proven to reach it from here."
+        )
+        return NOT_GRASPABLE
+    # Keep the object in view so grasp generation can capture it from here.
+    if not navigator.look_at(centre):
+        print("Warning: the head cannot aim at the object from this pose.")
+    print(
+        f"Ready to grasp from ({pose[0]:.2f}, {pose[1]:.2f}, yaw {pose[2]:.2f}),"
+        f" parked {offset:.3f} m from it. Mission complete; grasp generation and"
+        " execution are separate commands."
+    )
+    return READY
+
+
 def search(scene, obj, navigator, furniture=None, top_k=3, observe=locate, views=2):
-    """Try bounded viewpoints per location. Perception/server errors stop the run."""
+    """Try bounded viewpoints per location. Perception/server errors stop the run.
+
+    Returns (status, recorded object node), the node being None when nothing was seen."""
     if views < 1:
         raise ValueError("views must be positive")
     # Advancing this iterator requests LLM fallback only when needed.
@@ -123,41 +181,71 @@ def search(scene, obj, navigator, furniture=None, top_k=3, observe=locate, views
             if not navigator.reachable(*pose) or not navigator.drive_to(*pose):
                 continue
             if not obj:
-                return True
-            if not navigator.look_at(look_point(scene, location)):
-                continue
-            # A missed detection allows retry; communication errors still stop us.
-            points = observe(obj)
+                return (ARRIVED, None)
+            # A spent view is spent whether the head or the detector failed;
+            # otherwise an unaimable target burns every candidate pose.
             observations += 1
+            if not navigator.look_at(look_point(scene, location)):
+                print("The head cannot aim at the target from this pose.")
+                points = None
+            else:
+                # A missed detection allows retry; communication errors still stop us.
+                points = observe(obj)
             if points is not None:
                 points = np.asarray(points, dtype=float)
                 if points.ndim != 2 or points.shape[1] != 3 or not len(points) or not np.isfinite(points).all():
                     raise ValueError("Detection must contain finite map-frame 3D points")
                 lower, upper = (points.min(axis=0), points.max(axis=0))
+                span = float((upper - lower).max())
+                if span > MAX_SPAN:
+                    # Recording this would corrupt the remembered box and every
+                    # standoff and probe pose later derived from it.
+                    print(
+                        f"Detection spans {span:.2f} m, beyond the {MAX_SPAN:.2f} m"
+                        " a graspable object can measure; discarding this view."
+                    )
+                    if observations >= views:
+                        break
+                    continue
                 # A fallback detection updates the remembered object, not a duplicate.
+                # Past the limit it is a different instance and deserves its own node.
                 object_id = location.object_id
+                if object_id is not None and np.linalg.norm(
+                    points.mean(axis=0)[:2]
+                    - np.asarray(scene.nodes[object_id]["centroid"])[:2]
+                ) > SAME_INSTANCE:
+                    object_id = None
                 if object_id is None:
-                    object_id = sg.find_object(scene, obj, near=points.mean(axis=0)[:2])
+                    object_id = sg.find_object(
+                        scene, obj, near=points.mean(axis=0)[:2], limit=SAME_INSTANCE
+                    )
+                label, name = (obj, "")
+                if object_id is not None:
+                    # Keep the asset label. Renaming it to the query splits the label
+                    # space, and sibling instances stop matching each other.
+                    label = scene.nodes[object_id]["label"]
+                    name = scene.nodes[object_id]["name"]
                 furniture_id, relation = observed_furniture(scene, points)
-                sg.record_object(
+                object_id = sg.record_object(
                     scene,
-                    obj,
+                    label,
                     (lower + upper) / 2,
                     upper - lower,
                     furniture_id,
                     frame_id="map",
                     node_id=object_id,
                     relation=relation,
+                    name=name,
                 )
                 print(f"Found {obj} in map at {points.mean(axis=0).round(3).tolist()}")
-                return True
+                return (FOUND, object_id)
             if observations >= views:
                 break
         if observations == 0:
             print("Location could not be observed: navigation failed; trying the next location.")
         else:
             print("Object not detected in completed views; trying the next location.")
-    return False
+    return (NOT_FOUND, None)
 
 
 def main():
@@ -173,11 +261,30 @@ def main():
         action="store_true",
         help="show first location; unknown objects still call DeepSeek",
     )
+    parser.add_argument(
+        "--no-refine",
+        action="store_true",
+        help="stop at detection instead of parking where the arm can reach",
+    )
+    parser.add_argument(
+        "--bearings",
+        type=int,
+        default=6,
+        help="horizontal probe directions asked of the IK solver",
+    )
+    obstacles = parser.add_mutually_exclusive_group()
+    obstacles.add_argument("--map", action="store_const", const="--map", dest="source")
+    obstacles.add_argument(
+        "--costmap", action="store_const", const="--costmap", dest="source"
+    )
+    parser.set_defaults(source="--costmap")
     args = parser.parse_args()
     if not args.object and (not args.furniture):
         parser.error("give an object or --furniture")
     if args.top_k < 1:
         parser.error("--top-k must be positive")
+    if args.bearings < 1:
+        parser.error("--bearings must be positive")
     scene = sg.load(args.graph)
     if args.dry_run:
         first = next(
@@ -194,13 +301,17 @@ def main():
     rclpy.init()
     navigator = Navigator()
     try:
-        found = search(scene, args.object, navigator, args.furniture, args.top_k)
-        if found and args.object:
+        status, object_id = search(
+            scene, args.object, navigator, args.furniture, args.top_k
+        )
+        # Save what was seen before asking for IK: a solver fault must not lose it.
+        if object_id is not None:
             sg.save(scene, args.graph)
-        if found:
-            return 0
-        else:
-            return 1
+        if status == FOUND and not args.no_refine:
+            status = make_graspable(
+                scene, object_id, navigator, args.source, args.bearings
+            )
+        return EXIT_CODES[status]
     finally:
         navigator.destroy_node()
         if rclpy.ok():

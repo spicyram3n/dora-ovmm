@@ -2,8 +2,20 @@
 set -e
 sudo chown -R "$(whoami)" /home/ws
 
+# Absolute path to this script's directory: the CYCLONEDDS_URI line below
+# bakes it into ~/.bashrc, where a relative path would not resolve.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 WS=/home/ws/ros2_ws
 mkdir -p "$WS/src"
+
+bashrc_line() {
+    grep -qxF "$1" ~/.bashrc || echo "$1" >> ~/.bashrc
+}
+
+bashrc_line 'export PYTHONPATH=$PYTHONPATH:/home/ws'
+bashrc_line 'export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp'  # matches the real robot
+bashrc_line "export CYCLONEDDS_URI=file://$SCRIPT_DIR/cyclonedds_sim.xml"
 
 # hsr_ros2 package list per hsr-project/hsr_ros2_doc, humble, setup_sim_en.md
 # (plus hsrb_moveit, which is not in that list but is where move_group lives)

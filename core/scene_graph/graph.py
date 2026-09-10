@@ -141,8 +141,8 @@ def objects(graph):
     return results
 
 
-def find_object(graph, label, near=None):
-    """Choose the best label match, then break ties by confidence or distance."""
+def find_objects(graph, label, near=None):
+    """Every best-label match, nearest `near` first, or most confident first without it."""
     scored_objects = []
     best_score = 0.0
     for node_id, data in objects(graph).items():
@@ -150,7 +150,7 @@ def find_object(graph, label, near=None):
         scored_objects.append((score, node_id))
         best_score = max(best_score, score)
     if best_score == 0.0:
-        return None
+        return []
     matches = []
     for score, node_id in scored_objects:
         if score == best_score:
@@ -158,16 +158,33 @@ def find_object(graph, label, near=None):
     if near is None:
 
         def confidence(node_id):
-            return graph.nodes[node_id]["confidence"]
+            return -graph.nodes[node_id]["confidence"]
 
-        return max(matches, key=confidence)
-    robot_xy = np.asarray(near, float)[:2]
+        return sorted(matches, key=confidence)
 
     def distance(node_id):
-        object_xy = np.array(graph.nodes[node_id]["centroid"][:2])
-        return np.linalg.norm(object_xy - robot_xy)
+        return _distance_to(graph, node_id, near)
 
-    return min(matches, key=distance)
+    return sorted(matches, key=distance)
+
+
+def _distance_to(graph, node_id, near):
+    origin = np.asarray(near, float)[:2]
+    object_xy = np.array(graph.nodes[node_id]["centroid"][:2])
+    return float(np.linalg.norm(object_xy - origin))
+
+
+def find_object(graph, label, near=None, limit=None):
+    """The best label match, or None. `limit` rejects a match that far from `near`."""
+    if limit is not None and near is None:
+        raise ValueError("limit needs a position to measure the match against")
+    matches = find_objects(graph, label, near)
+    if not matches:
+        return None
+    # Beyond the limit this is a different instance, not the remembered one.
+    if limit is not None and _distance_to(graph, matches[0], near) > limit:
+        return None
+    return matches[0]
 
 
 def location_of(graph, node_id):

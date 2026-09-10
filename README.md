@@ -1,117 +1,59 @@
-# HSR Grasping Pipeline
+# HSR object search and grasping
 
-Prompt driven grasping on the HSR robot. SAM3 finds the object in an image,
-GraspGenX generates grasp poses for it, and MoveIt executes the grasp.
+Find objects with SAM3, move within reach with Nav2, and generate grasp poses with GraspGenX.
 
-## 1. Open the dev container
+## Start here
 
-Open this folder in VS Code and reopen it in the container
-(`.devcontainer/`). First run clones the ROS 2 packages, builds the
-workspace, and installs cyclonedds and zenoh.
+1. Open this folder in VS Code and choose **Reopen in Container**. First setup downloads ROS packages and builds the workspace.
+2. Follow the [navigation quick start](core/navigation/README.md) to launch simulation, build the scene graph, and search for an object.
+3. For grasp generation, complete the [GraspGenX setup](docker/graspgenx/README.md).
+4. With a saved `grasps.yaml` and MoveIt running, use [grasp execution](ros2_ws/src/grasp_execution/README.md).
 
-Setup fetches only missing vendor repositories. The workspace is bind-mounted,
-so `ros2_ws/src`, `build`, and `install` survive container rebuilds. After a
-successful setup, later container rebuilds reuse the ROS build while checking
-and installing system dependencies in the new container. Existing builds from
-before this change get one incremental build to record successful completion;
-partial builds are resumed without deleting their artifacts.
+For one launch from simulation startup through search and base placement, see the
+[single-launch instructions](core/navigation/README.md#single-launch-simulation-to-ready-for-grasping).
 
-After changing ROS package sources, run this inside the container:
+**Current limit:** search stops after base placement. This checkout has no `core/run_pipeline.py`; the combined grasp-generation command shown in older docs is unavailable.
 
-```bash
-ROS2_REBUILD=1 bash /home/ws/.devcontainer/postCreate.sh
-```
+## Start the model servers
 
-A plain `docker build` only creates the base environment; VS Code runs
-`postCreate.sh` separately. If using Docker directly, mount this clone at
-`/home/ws` and run `bash /home/ws/.devcontainer/postCreate.sh` inside the
-container before launching ROS. Keep that mount to retain the workspace.
-Reuse compiled artifacts with the same ROS distro, architecture and compatible
-system libraries; changing those may require a clean build.
-
-## 2. Launch ROS 2
-
-**Simulation:**
-
-```bash
-ros2 launch hsrb_gazebo_launch hsrc_apartment_world.launch.py
-```
-
-**Real robot:**
-
-The PC uses CycloneDDS in domain `9`; the robot uses domain `5`. Run the
-Zenoh ROS 2 bridge on both hosts and the RGB-D compressor/receiver in their ROS
-containers. See [robot–PC setup](robot_transport/README.md) for commands.
-
-## 3. Start the perception and grasp servers
-
-Run these on the host machine, not inside the dev container. Each builds its
-own Docker image on first run.
+Run each command in a separate **host terminal**, from the repository root:
 
 ```bash
 bash docker/sam3/run_sam3.sh
 bash docker/graspgenx/run_graspgenx.sh
 ```
 
-GraspGenX needs the HSRC gripper registered once before its first real run.
-See `docker/graspgenx/README.md` for that one time setup.
+The scripts build their Docker images on first use. Register the HSRC gripper before using GraspGenX.
 
-## 4. Run the pipeline
+## Other tasks
 
-With ROS 2 launched and both servers running:
+| Task | Instructions |
+| --- | --- |
+| Build or query object memory | [Scene graph](core/scene_graph/README.md) |
+| Extract objects from a recorded scan | [OpenYOLO3D](docker/openyolo3d/README.md) |
+| Send camera data between machines | [Vision transport](vision-transport-poorna/README.md) |
+
+Vision transport covers camera data. The old `robot_transport/` bridge setup is absent from this checkout.
+
+## Rebuild ROS packages
+
+After changing ROS sources, run inside the dev container:
 
 ```bash
-python3 core/run_pipeline.py "pringles can" "red cup" --gripper hsrc_hand
+ROS2_REBUILD=1 bash /home/ws/.devcontainer/postCreate.sh
 ```
 
-This grabs one camera frame, finds each prompt in it, and saves grasps under
-`config/targets/<slug>/`.
+Container rebuilds reuse the mounted workspace. A ROS distro, architecture, or system-library change may require a clean build.
 
-## 5. Execute a grasp
+Using Docker without VS Code? Mount this repository at `/home/ws`, then run `bash /home/ws/.devcontainer/postCreate.sh` inside the container. A plain image build does not run that setup.
 
-```bash
-ros2 launch grasp_execution move_to_grasp.launch.py
-```
+## Connect model servers across machines
 
-Uses the newest saved grasp file by default. Pass `grasp_file:=<path>` to
-pick a specific one.
-
-## About zenoh
-
-SAM3 and GraspGenX are reached over zenoh instead of ROS 2 topics, since
-they run in their own Docker containers with their own CUDA and Python
-versions, kept separate from the ROS 2 workspace on purpose.
-
-**No router needed.** Each server opens a plain zenoh session and starts
-listening as soon as it starts up, no separate router process required. The
-client side (`core/utils/zenoh_rpc.py`) does the same. Discovery between
-them happens automatically over local network scouting, since every
-container runs with `--net=host` and shares the machine's network directly.
-
-This is independent of whichever ROS 2 RMW is active. Switching between
-`rmw_cyclonedds_cpp` and `rmw_zenoh_cpp` for ROS 2 topics has no effect on
-the SAM3/GraspGenX zenoh connection, since that connection never goes
-through the RMW at all.
-
-Note that scouting relies on multicast reaching all containers, which holds
-on one machine but is not guaranteed across separate hosts on a locked down
-network. This matters once the ROS 2 side runs on the robot and SAM3/
-GraspGenX run on your PC.
-
-**Cross host setup.** Each server listens on a fixed port instead of an
-ephemeral one, so it can be reached directly without scouting:
-
-- SAM3: `tcp/0.0.0.0:7447` (override with the `ZENOH_LISTEN` env var)
-- GraspGenX: `tcp/0.0.0.0:7448` (same)
-
-On the client side (robot side) (`core/utils/zenoh_rpc.py`, running wherever the ROS 2
-workspace runs), set `ZENOH_CONNECT` to a comma separated list of those
-endpoints using the PC's real address, for example:
+On one machine, Zenoh discovers the servers automatically; no router is needed.
+Across machines, set this in the **client terminal**, replacing the IP with the server PC's address:
 
 ```bash
 export ZENOH_CONNECT="tcp/192.168.1.50:7447,tcp/192.168.1.50:7448"
 ```
 
-With this set, the client connects to both servers directly and does not
-depend on scouting at all. Leave it unset for local, same-machine use, it
-falls back to scouting as before.
+SAM3 uses port `7447`; GraspGenX uses `7448`. Server endpoints can be changed with `ZENOH_LISTEN`. These connections are separate from ROS 2 DDS and its RMW setting.

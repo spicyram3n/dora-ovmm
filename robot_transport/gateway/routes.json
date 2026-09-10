@@ -1,6 +1,0 @@
-{
-  "rgb": {"source": "robot", "port": 17601, "type": "sensor_msgs/msg/Image", "input": "/head_rgbd_sensor/rgb/image_rect_color", "output": "/remote/head_rgbd_sensor/rgb/image_rect_color", "codec": "jpeg", "rate": 20, "max_age": 0.5},
-  "depth": {"source": "robot", "port": 17602, "type": "sensor_msgs/msg/Image", "input": "/head_rgbd_sensor/depth_registered/image_rect_raw", "output": "/remote/head_rgbd_sensor/depth_registered/image_rect_raw", "codec": "zstd", "rate": 20, "max_age": 0.5},
-  "scan": {"source": "robot", "port": 17603, "type": "sensor_msgs/msg/LaserScan", "input": "/scan", "output": "/remote/scan", "codec": "zstd", "rate": 30, "max_age": 0.3},
-  "camera_info": {"source": "robot", "port": 17604, "type": "sensor_msgs/msg/CameraInfo", "input": "/head_rgbd_sensor/rgb/camera_info", "output": "/remote/head_rgbd_sensor/rgb/camera_info", "codec": "zstd", "rate": 2, "max_age": 10}
-}

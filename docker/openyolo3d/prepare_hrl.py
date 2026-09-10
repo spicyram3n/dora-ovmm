@@ -48,6 +48,11 @@ def main():
     src, out = args.source.resolve(), args.output.resolve()
     if out.exists():
         parser.error(f"Output already exists: {out}; choose a new --output")
+    if not src.is_dir():
+        parser.error(f"Source directory does not exist: {src}. Use --source /path/to/data_hrl")
+    for folder in ("color", "depth", "pose"):
+        if not (src / folder).is_dir():
+            parser.error(f"Missing input directory: {src / folder}. Expected the original HRL scan, with color/, depth/, pose/.")
     ids = {}
     for folder, extension in [("color", ".jpg"), ("depth", ".png"), ("pose", ".txt")]:
         ids[folder] = {
@@ -56,7 +61,14 @@ def main():
             if f.stem.isdigit()
         }
     if not ids["color"] or not ids["color"] == ids["depth"] == ids["pose"]:
-        raise ValueError("RGB, depth and numbered pose IDs must match")
+        all_ids = set().union(*ids.values())
+        details = []
+        for folder, found in ids.items():
+            missing = sorted(all_ids - found)
+            details.append(f"{folder}: {len(found)} numbered files; missing IDs (first 10): {missing[:10]}")
+        parser.error(f"RGB, depth and numbered pose IDs must match at {src}. "
+                     + "; ".join(details)
+                     + ". Expected color/<id>.jpg, depth/<id>.png, pose/<id>.txt")
     ordered = sorted(ids["color"])
     for i in ordered:
         with Image.open(src / "color" / f"{i}.jpg") as rgb, Image.open(

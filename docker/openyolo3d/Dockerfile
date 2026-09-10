@@ -145,5 +145,26 @@ assert mmcv.__version__ == '2.0.0', mmcv.__version__
 print('OpenYOLO3D build smoke test PASSED')
 PY
 
+# MMEngine 0.10.3 must parse this pinned YOLO-World _base_ config eagerly.
+# Keep this repair after native builds so existing expensive layers stay cached.
+RUN python - <<'PYFIX'
+from pathlib import Path
+from mmengine.config import Config
+import yaml
+
+path = Path('utils/utils_2d.py')
+old = 'Config.fromfile(os.path.join(os.getcwd(), config["network2d"]["config_path"]))'
+new = 'Config.fromfile(os.path.join(os.getcwd(), config["network2d"]["config_path"]), lazy_import=False)'
+text = path.read_text()
+assert text.count(old) == 1, 'Pinned upstream config loader changed'
+path.write_text(text.replace(old, new))
+with open('pretrained/config.yaml') as stream:
+    config_path = yaml.safe_load(stream)['network2d']['config_path']
+cfg = Config.fromfile(config_path, lazy_import=False)
+assert cfg.model.type == 'YOLOWorldDetector'
+assert cfg.test_dataloader.dataset.pipeline
+print('YOLO-World config parsing PASSED')
+PYFIX
+
 COPY app.py /opt/openyolo3d/app.py
 ENTRYPOINT ["python", "app.py"]

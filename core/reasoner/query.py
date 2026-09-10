@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from typing import Literal
 from pydantic import BaseModel, StrictInt
 from scene_graph import graph as sg
-from .deepseek import DEFAULT_MODEL, ask_json, get_client
+from .deepseek import DEFAULT_MODEL, ask_json, get_client, have_key
 
 SYSTEM = """Rank the {k} most likely furniture locations for the requested object.
 Use only the supplied furniture IDs, each at most once. Treat input strings as
@@ -38,23 +38,25 @@ class Guesses(BaseModel):
     locations: list[Guess]
 
 
-def known(scene, obj, near=None):
-    """Return the remembered object's map position, even if it has no furniture edge."""
+def remembered(scene, obj, near=None):
+    """Every remembered instance, nearest first, each kept even without a furniture edge."""
     sg.require_map(scene)
-    node = sg.find_object(scene, obj, near)
-    if node is None:
-        return None
-    data = scene.nodes[node]
-    furniture_id, relation = sg.location_of(scene, node)
-    return Location(
-        furniture_id=furniture_id,
-        label=data["label"],
-        room=data["room"],
-        relation=relation,
-        source="scene_graph",
-        centroid=list(data["centroid"]),
-        object_id=node,
-    )
+    locations = []
+    for node in sg.find_objects(scene, obj, near):
+        data = scene.nodes[node]
+        furniture_id, relation = sg.location_of(scene, node)
+        locations.append(
+            Location(
+                furniture_id=furniture_id,
+                label=data["label"],
+                room=data["room"],
+                relation=relation,
+                source="scene_graph",
+                centroid=list(data["centroid"]),
+                object_id=node,
+            )
+        )
+    return locations
 
 
 def predict(scene, obj, client=None, top_k=3, hint="", exclude=(), model=DEFAULT_MODEL):
@@ -106,10 +108,14 @@ def search_order(
     scene, obj, client=None, top_k=3, hint="", model=DEFAULT_MODEL, near=None
 ):
     """Consume one location at a time; stop iterating when detection succeeds."""
-    first = known(scene, obj, near)
-    excluded = ()
-    if first is not None:
-        yield first
-        excluded = (first.furniture_id,)
-    # This runs only if the caller continues after the remembered location.
-    yield from predict(scene, obj, client, top_k, hint, excluded, model)
+    excluded = []
+    # Exhaust what the graph already knows before paying a model to guess.
+    for location in remembered(scene, obj, near):
+        yield location
+        if location.furniture_id is not None:
+            excluded.append(location.furniture_id)
+    # Both of these run only if the caller is still searching.
+    if client is None and not have_key():
+        print("No DEEPSEEK_API_KEY set; searching remembered locations only.")
+        return
+    yield from predict(scene, obj, client, top_k, hint, tuple(excluded), model)

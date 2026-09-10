@@ -9,6 +9,11 @@ from openai import OpenAI
 DEFAULT_MODEL = "deepseek-v4-flash"
 
 
+def have_key():
+    """Whether a fallback guess is possible at all, so callers can skip it cleanly."""
+    return bool(os.getenv("DEEPSEEK_API_KEY"))
+
+
 def get_client():
     key = os.getenv("DEEPSEEK_API_KEY")
     if not key:
