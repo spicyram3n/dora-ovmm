@@ -1,0 +1,25 @@
+{
+  // poorna instance -- isolated from the shared team gateway.
+  // Connects to the poorna TX on the robot (10.7.3.185:7450).
+  // Listen is pinned to 7451 so a peer-mode RX can never grab 7447,
+  // which SAM3 binds on this PC.
+  //
+  // PC port map: 7447 SAM3, 7448 GraspGenX, 7450 TX, 7451 RX.
+  mode: "peer",
+  listen: {
+    endpoints: ["tcp/0.0.0.0:7451"],
+  },
+  connect: {
+    endpoints: ["tcp/10.7.3.185:7450"],
+  },
+  scouting: {
+    multicast: {
+      enabled: false,
+    },
+  },
+  transport: {
+    shared_memory: {
+      enabled: false,
+    },
+  },
+}

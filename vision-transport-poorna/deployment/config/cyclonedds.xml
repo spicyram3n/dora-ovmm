@@ -1,0 +1,70 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CycloneDDS xmlns="https://cdds.io/config">
+  <Domain id="any">
+
+    <General>
+      <Interfaces>
+        <NetworkInterface
+            name="enp5s0"
+            autodetermine="false"
+            multicast="true"/>
+      </Interfaces>
+
+      <AllowMulticast>true</AllowMulticast>
+      <EnableMulticastLoopback>true</EnableMulticastLoopback>
+
+      <FragmentSize>8000B</FragmentSize>
+      <MaxMessageSize>8500B</MaxMessageSize>
+      <MaxRexmitMessageSize>8500B</MaxRexmitMessageSize>
+    </General>
+
+    <Discovery>
+      <ParticipantIndex>auto</ParticipantIndex>
+      <MaxAutoParticipantIndex>99</MaxAutoParticipantIndex>
+
+      <Peers>
+        <!-- Multicast is enabled above so ROS tools using stock CycloneDDS
+             defaults (rviz2, ros2 topic, the devcontainer) discover this
+             node without needing this config file. The unicast peer below
+             is this host's own enp5s0 address, kept as a fallback if
+             multicast is later disabled again. The upstream "localhost"
+             entry could never work: the interface is pinned to enp5s0, so
+             participants advertise on 131.220.7.198 and never listen on
+             loopback. -->
+        <Peer Address="131.220.7.198"/>
+      </Peers>
+    </Discovery>
+
+    <Internal>
+
+      <SocketReceiveBufferSize min="32MB"/>
+  <SocketSendBufferSize min="32MB"/>
+<MaxSampleSize>100MB</MaxSampleSize>
+  <DefragReliableMaxSamples>64</DefragReliableMaxSamples>
+  <DefragUnreliableMaxSamples>64</DefragUnreliableMaxSamples>
+
+  <PrimaryReorderMaxSamples>1024</PrimaryReorderMaxSamples>
+  <DeliveryQueueMaxSamples>1024</DeliveryQueueMaxSamples>
+
+  <MaxQueuedRexmitBytes>64MB</MaxQueuedRexmitBytes>
+  <MaxQueuedRexmitMessages>1024</MaxQueuedRexmitMessages>
+
+  <Watermarks>
+    <WhcHigh>64MB</WhcHigh>
+  </Watermarks>
+
+      <!-- <SocketReceiveBufferSize min="16MB"/>
+      <SocketSendBufferSize min="16MB"/>
+
+      <Watermarks>
+        <WhcHigh>32MB</WhcHigh>
+      </Watermarks> -->
+    </Internal>
+
+    <Tracing>
+      <Verbosity>config</Verbosity>
+      <OutputFile>/tmp/cdds.log.${CYCLONEDDS_PID}</OutputFile>
+    </Tracing>
+
+  </Domain>
+</CycloneDDS>

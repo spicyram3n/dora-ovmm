@@ -1,0 +1,18 @@
+{
+  // poorna instance -- isolated from the shared team gateway.
+  // Shared team TX listens on 7447; this one uses 7450.
+  mode: "peer",
+  listen: {
+    endpoints: ["tcp/0.0.0.0:7450"],
+  },
+  scouting: {
+    multicast: {
+      enabled: false,
+    },
+  },
+  transport: {
+    shared_memory: {
+      enabled: false,
+    },
+  },
+}

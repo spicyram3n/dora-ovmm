@@ -1,0 +1,51 @@
+FROM ros:humble-ros-base
+
+ENV DEBIAN_FRONTEND=noninteractive
+SHELL ["/bin/bash", "-c"]
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    cmake \
+    curl \
+    git \
+    pkg-config \
+    unzip \
+    python3-colcon-common-extensions \
+    python3-rosdep \
+    ros-humble-ament-cmake \
+    ros-humble-cv-bridge \
+    ros-humble-image-transport \
+    ros-humble-compressed-image-transport \
+    ros-humble-compressed-depth-image-transport \
+    ros-humble-point-cloud-transport \
+    ros-humble-draco-point-cloud-transport \
+    ros-humble-zstd-point-cloud-transport \
+    ros-humble-rmw-cyclonedds-cpp \
+    ros-humble-sensor-msgs \
+    libopencv-dev \
+    libyaml-cpp-dev \
+    nlohmann-json3-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Cloudini is released for Humble but may not be present in all ROS apt mirrors.
+# Install it opportunistically so the Docker image still builds on mirrors that lag.
+RUN apt-get update && \
+    (apt-get install -y --no-install-recommends ros-humble-cloudini-ros ros-humble-cloudini-lib || true) && \
+    rm -rf /var/lib/apt/lists/*
+
+ARG ZENOHC_VERSION=1.7.2
+RUN curl -fsSL \
+    "https://download.eclipse.org/zenoh/zenoh-c/${ZENOHC_VERSION}/libzenohc-${ZENOHC_VERSION}-x86_64-unknown-linux-gnu-debian.zip" \
+    -o /tmp/libzenohc.zip && \
+    unzip -q /tmp/libzenohc.zip -d /tmp/libzenohc && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends /tmp/libzenohc/*.deb && \
+    ldconfig && \
+    rm -rf /tmp/libzenohc /tmp/libzenohc.zip /var/lib/apt/lists/*
+
+WORKDIR /workspace
+
+RUN echo "source /opt/ros/humble/setup.bash" >> /root/.bashrc && \
+    echo "if [ -f /workspace/install/setup.bash ]; then source /workspace/install/setup.bash; fi" >> /root/.bashrc
+
+CMD ["bash"]

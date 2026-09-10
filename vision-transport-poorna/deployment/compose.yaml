@@ -1,0 +1,73 @@
+name: poorna-vision
+
+services:
+  dev:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.humble
+    image: vision_transport:poorna
+    network_mode: host
+    ipc: host
+    environment:
+      RMW_IMPLEMENTATION: rmw_cyclonedds_cpp
+      CYCLONEDDS_URI: file:///config/cyclonedds.xml
+      ROS_DOMAIN_ID: ${ROS_DOMAIN_ID:-5}
+    volumes:
+      - ..:/workspace/src/vision_transport
+      - colcon_build:/workspace/build
+      - colcon_install:/workspace/install
+      - colcon_log:/workspace/log
+      - ./config:/config:ro
+    working_dir: /workspace
+    command: bash
+
+  vision_tx:
+    image: vision_transport:poorna
+    network_mode: host
+    ipc: host
+    restart: unless-stopped
+    environment:
+      RMW_IMPLEMENTATION: rmw_cyclonedds_cpp
+      CYCLONEDDS_URI: file:///config/cyclonedds.xml
+      ROS_DOMAIN_ID: ${ROS_DOMAIN_ID:-5}
+    volumes:
+      - ..:/workspace/src/vision_transport
+      - colcon_build:/workspace/build
+      - colcon_install:/workspace/install
+      - colcon_log:/workspace/log
+      - ./config:/config:ro
+    working_dir: /workspace
+    command: >
+      bash -lc "colcon build --symlink-install &&
+      source /workspace/install/setup.bash &&
+      ros2 run vision_transport vision_transport_tx --ros-args
+      -p config_path:=/config/tx.yaml
+      -p zenoh_config_path:=/config/zenoh_tx.json5"
+
+  vision_rx:
+    image: vision_transport:poorna
+    network_mode: host
+    ipc: host
+    restart: unless-stopped
+    environment:
+      RMW_IMPLEMENTATION: rmw_cyclonedds_cpp
+      CYCLONEDDS_URI: file:///config/cyclonedds.xml
+      ROS_DOMAIN_ID: ${ROS_DOMAIN_ID:-5}
+    volumes:
+      - ..:/workspace/src/vision_transport
+      - colcon_build:/workspace/build
+      - colcon_install:/workspace/install
+      - colcon_log:/workspace/log
+      - ./config:/config:ro
+    working_dir: /workspace
+    command: >
+      bash -lc "colcon build --symlink-install &&
+      source /workspace/install/setup.bash &&
+      ros2 run vision_transport vision_transport_rx --ros-args
+      -p config_path:=/config/rx.yaml
+      -p zenoh_config_path:=/config/zenoh_rx.json5"
+
+volumes:
+  colcon_build:
+  colcon_install:
+  colcon_log:
