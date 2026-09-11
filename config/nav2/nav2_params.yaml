@@ -62,9 +62,9 @@ bt_navigator:
     enable_groot_monitoring: True
     groot_zmq_publisher_port: 1666
     groot_zmq_server_port: 1667
-    default_nav_to_pose_bt_xml: "/home/ws/config/navigate_no_reverse.xml"
+    default_nav_to_pose_bt_xml: "/home/ws/config/nav2/navigate_no_reverse.xml"
     # Humble activates both navigators, even when the mission uses only one.
-    default_nav_through_poses_bt_xml: "/home/ws/config/navigate_through_no_reverse.xml"
+    default_nav_through_poses_bt_xml: "/home/ws/config/nav2/navigate_through_no_reverse.xml"
     plugin_lib_names:
     - nav2_compute_path_to_pose_action_bt_node
     - nav2_compute_path_through_poses_action_bt_node

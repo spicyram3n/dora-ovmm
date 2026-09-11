@@ -46,7 +46,7 @@ ros2 launch hsrb_gazebo_launch hsrb_apartment_world.launch.py \
 ```bash
 ros2 launch hsrb_rosnav_config navigation_launch.py \
   map:=/home/ws/config/map/apartment_world_map.yaml \
-  params_file:=/home/ws/config/nav2_params.yaml use_sim_time:=true
+  params_file:=/home/ws/config/nav2/nav2_params.yaml use_sim_time:=true
 ```
 
 Check that the laser scan lines up with the map in RViz. Keep the freshly spawned robot stationary.
@@ -265,7 +265,7 @@ Open RViz without starting another MoveIt instance:
 ros2 launch /home/ws/launch/move_group.launch.py rviz_only:=true use_rviz:=true
 ```
 
-The repository preset `config/moveit/scene.rviz` selects `odom`,
+The repository preset `config/rviz/moveit.rviz` selects `odom`,
 `/monitored_planning_scene`, occupied octomap voxels, and `whole_body` automatically.
 The octomap is part of the planning scene, separate from Nav2's 2D costmap.
 

@@ -17,6 +17,8 @@ install(TARGETS go_to_pose RUNTIME DESTINATION lib/${PROJECT_NAME})
 # Python. The first line installs nbv/ as an importable module, the second
 # installs the runnable scripts so `ros2 run` can find them.
 ament_python_install_package(${PROJECT_NAME})
-install(PROGRAMS scripts/where_am_i.py DESTINATION lib/${PROJECT_NAME})
+install(PROGRAMS scripts/where_am_i.py scripts/build_octomap.py scripts/save_occupied.py
+        scripts/plot_octomap.py
+        DESTINATION lib/${PROJECT_NAME})
 
 ament_package()

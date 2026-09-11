@@ -5,7 +5,7 @@
 
     <General>
       <Interfaces>
-        <NetworkInterface name="enp5s0" autodetermine="false" multicast="true"/>
+        <NetworkInterface name="lo" autodetermine="false" multicast="true"/>
       </Interfaces>
 
       <AllowMulticast>spdp</AllowMulticast>
@@ -19,7 +19,7 @@
       <ParticipantIndex>auto</ParticipantIndex>
       <MaxAutoParticipantIndex>100</MaxAutoParticipantIndex>
       <Peers>
-        <Peer Address="131.220.7.198"/>
+        <Peer Address="localhost"/>
       </Peers>
     </Discovery>
 

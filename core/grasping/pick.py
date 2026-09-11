@@ -100,9 +100,10 @@ def perceive(prompt):
     points = solid(points)
     # GraspGenX stops with the object at the fingertips. Slide each grasp along
     # its approach axis (palm z) until the object's centre is between the pads.
-    grasps, approach = poses[best], poses[best][:, :3, 2]
-    depth = np.einsum("ij,ij->i", points.mean(axis=0) - grasps[:, :3, 3], approach)
-    grasps[:, :3, 3] += (depth - PAD_DEPTH)[:, None] * approach
+    grasps = poses[best]
+    approach = grasps[:, :3, 2]
+    to_centre = np.einsum("ij,ij->i", points.mean(axis=0) - grasps[:, :3, 3], approach)
+    grasps[:, :3, 3] += (to_centre - PAD_DEPTH)[:, None] * approach
     return (
         pointcloud.transform_points(odom_from_camera, points),
         pointcloud.transform_poses(odom_from_camera, grasps),
@@ -376,10 +377,10 @@ def pick(prompt):
     try:
         points, grasps = perceive(prompt)
         model_target(node, points)
-        pick = Pick(mtc_node())
-        execute(node, pick.reach(grasps, joint_positions(node)))
+        planner = Pick(mtc_node())
+        execute(node, planner.reach(grasps, joint_positions(node)))
         close_hand(node)
-        execute(node, pick.lift())
+        execute(node, planner.lift())
         gap = fingertip_gap(node)
         hand = joint_positions(node)["hand_motor_joint"]
         print(f"fingertips {gap * 100:.1f} cm apart, hand_motor_joint {hand:.2f}")

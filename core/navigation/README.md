@@ -15,7 +15,7 @@ With the ROS and workspace setup sourced, run:
 ros2 launch /home/ws/launch/search.launch.py target:=pringles top_k:=3
 ```
 
-This starts simulation, Nav2 with `config/nav2_params.yaml`, and IK. The search
+This starts simulation, Nav2 with `config/nav2/nav2_params.yaml`, and IK. The search
 worker waits for active Nav2 lifecycle nodes, navigation/head actions, IK,
 fresh localization, synchronized RGB-D with TF, and an actual SAM3 response.
 The startup SAM3 result is discarded; the search takes fresh observations after
@@ -81,7 +81,7 @@ ros2 launch hsrb_gazebo_launch hsrb_apartment_world.launch.py \
 ```bash
 ros2 launch hsrb_rosnav_config navigation_launch.py \
   map:=/home/ws/config/map/apartment_world_map.yaml \
-  params_file:=/home/ws/config/nav2_params.yaml \
+  params_file:=/home/ws/config/nav2/nav2_params.yaml \
   use_sim_time:=true
 ```
 

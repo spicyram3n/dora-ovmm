@@ -21,7 +21,7 @@ def generate_launch_description():
         DeclareLaunchArgument('bearings', default_value='6'),
         DeclareLaunchArgument('startup_timeout', default_value='180'),
         DeclareLaunchArgument('map', default_value=str(ROOT / 'config/map/apartment_world_map.yaml')),
-        DeclareLaunchArgument('params_file', default_value=str(ROOT / 'config/nav2_params.yaml')),
+        DeclareLaunchArgument('params_file', default_value=str(ROOT / 'config/nav2/nav2_params.yaml')),
         DeclareLaunchArgument('grasp', default_value='true', choices=['true', 'false'],
                               description='Generate grasps and pick the object up once parked.'),
     ]

@@ -20,7 +20,7 @@ from core.utils.transforms import matrix_from_transform
 
 FRAME = "map"
 BASE = "base_footprint"
-# config/nav2_params.yaml keeps one goal checker on purpose: a second makes every
+# config/nav2/nav2_params.yaml keeps one goal checker on purpose: a second makes every
 # FollowPath abort, because the stock behaviour tree sends an empty checker id.
 # Both its tolerances are dynamic, so a precise leg tightens them and puts them back.
 CONTROLLER = "/controller_server"

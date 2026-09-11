@@ -28,41 +28,22 @@ def largest_cluster(points, gap=0.03, minimum=20):
     from the object's own points. Distance separates them; the mask cannot.
     Linkage runs over voxels rather than points, because a mask covering a sofa
     carries hundreds of thousands of them and neighbour search would not scale."""
-    from scipy.sparse import coo_matrix
-    from scipy.sparse.csgraph import connected_components
+    from scipy.ndimage import label
 
     points = np.asarray(points, dtype=float)
     if len(points) < minimum:
         return None
-    voxels, inverse = np.unique(
-        np.floor(points / gap).astype(np.int64), axis=0, return_inverse=True
-    )
-    inverse = inverse.ravel()
-    index = {}
-    for position, voxel in enumerate(voxels):
-        index[tuple(voxel)] = position
-    # Half of the 26-neighbourhood: each adjacency is undirected, so once is enough.
-    offsets = []
-    for dx in (-1, 0, 1):
-        for dy in (-1, 0, 1):
-            for dz in (-1, 0, 1):
-                if (dx, dy, dz) > (0, 0, 0):
-                    offsets.append((dx, dy, dz))
-    rows, columns = ([], [])
-    for position, voxel in enumerate(voxels):
-        for dx, dy, dz in offsets:
-            neighbour = index.get((voxel[0] + dx, voxel[1] + dy, voxel[2] + dz))
-            if neighbour is not None:
-                rows.append(position)
-                columns.append(neighbour)
-    linkage = coo_matrix(
-        (np.ones(len(rows)), (rows, columns)), shape=(len(voxels), len(voxels))
-    )
-    count, labels = connected_components(linkage, directed=False)
-    if count > 1:
-        per_point = labels[inverse]
+    voxels = np.floor(points / gap).astype(np.int64)
+    voxels -= voxels.min(axis=0)
+    occupied = np.zeros(voxels.max(axis=0) + 1, dtype=bool)
+    occupied[tuple(voxels.T)] = True
+    # A 3x3x3 structure joins voxels touching at a corner too, which is the same
+    # surface seen at an angle.
+    labels, groups = label(occupied, structure=np.ones((3, 3, 3)))
+    if groups > 1:
         # Biggest by point count, not by voxel count: density is the evidence.
-        points = points[per_point == int(np.bincount(per_point).argmax())]
+        per_point = labels[tuple(voxels.T)]
+        points = points[per_point == np.bincount(per_point).argmax()]
     if len(points) < minimum:
         return None
     return points

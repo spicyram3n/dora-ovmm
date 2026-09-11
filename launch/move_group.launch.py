@@ -22,7 +22,7 @@ from launch_ros.actions import Node
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import planning_model  # noqa: E402
-from planning_model import CONFIG_DIR, ours, theirs  # noqa: E402
+from planning_model import RVIZ_DIR, ours, theirs  # noqa: E402
 
 
 def generate_launch_description():
@@ -81,7 +81,7 @@ def generate_launch_description():
     ]
     rviz = Node(package="rviz2", executable="rviz2", name="rviz2", output="log",
              parameters=model + [{"use_sim_time": sim_time}],
-             arguments=["-d", os.path.join(CONFIG_DIR, "scene.rviz")],
+             arguments=["-d", os.path.join(RVIZ_DIR, "moveit.rviz")],
              condition=IfCondition(LaunchConfiguration("use_rviz")))
     return LaunchDescription(arguments + [
         GroupAction(actions=stack, condition=UnlessCondition(LaunchConfiguration("rviz_only"))),

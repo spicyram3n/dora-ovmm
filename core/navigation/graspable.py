@@ -12,7 +12,7 @@ from core.navigation import standoff
 # hand_palm_link: +z leaves the palm along the approach, +y is the finger axis.
 FINGER_LENGTH = 0.094
 APPROACH_DEPTH = 0.07
-# nav2_params.yaml xy_goal_tolerance; the solver certifies a much tighter cluster.
+# config/nav2/nav2_params.yaml xy_goal_tolerance; the solver certifies a much tighter cluster.
 NAV_TOLERANCE = 0.25
 NAV_YAW_TOLERANCE = 0.25
 # The solver's robustness radius is 1.5 cells x 0.05 m, so parking inside 0.08 m
