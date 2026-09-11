@@ -24,6 +24,8 @@ ARG HF_TOKEN=""
 ENV HF_TOKEN=$HF_TOKEN
 
 WORKDIR /app
-COPY app.py /app/app.py
+COPY docker/sam3/app.py /app/app.py
 
 CMD ["python3", "app.py"]
+
+COPY core/utils/zenoh_rpc.py ./zenoh_rpc.py

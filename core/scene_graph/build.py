@@ -5,9 +5,9 @@ import json
 import sys
 import numpy as np
 from pathlib import Path
-from scene_graph import gazebo, graph as sg
+from core.scene_graph import gazebo, graph as sg
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parents[2]
 WORLD = ROOT / "ros2_ws/src/tmc_gazebo/tmc_gazebo_worlds/worlds/apartment.world"
 
 
@@ -18,7 +18,7 @@ def planar_pose(x, y, yaw):
 
 def register(argv):
     import rclpy
-    from navigation.nav2_client import Navigator
+    from core.navigation.nav2_client import Navigator
 
     parser = argparse.ArgumentParser(description="Save Gazebo-to-map calibration")
     parser.add_argument(
@@ -87,8 +87,8 @@ def main():
     scene.graph["source"] = str(args.world.resolve())
     scene.graph["snapshot"] = "initial_world_file"
     if args.rooms:
-        from reasoner import deepseek
-        from reasoner.deepseek import get_client
+        from core.reasoner import deepseek
+        from core.reasoner.deepseek import get_client
 
         deepseek.assign(scene, get_client())
     args.output.parent.mkdir(parents=True, exist_ok=True)

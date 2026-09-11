@@ -24,12 +24,10 @@ Reply payload: raw bytes = grasps.tobytes() + scores.tobytes()
 Reply attachment: json {"num_grasps": M, "gripper_name": "..."}
 """
 
-import json
 import os
-import time
 
 import numpy as np
-import zenoh
+from zenoh_rpc import serve, unquote
 
 ASSETS_DIR = "/opt/graspgenx/assets"
 DEFAULT_GRIPPER = os.environ.get("GRASPGENX_DEFAULT_GRIPPER", "hsrc_hand")
@@ -75,14 +73,7 @@ def _warmup():
     from graspgenx.grasp_server import GraspGenXSampler
 
     print(f"[graspgenx] warming up with default gripper '{DEFAULT_GRIPPER}'...")
-    try:
-        sampler = _get_sampler(DEFAULT_GRIPPER)
-    except ValueError as exc:
-        # Most likely the wizard hasn't been run yet for this gripper name -
-        # see run_wizard.sh. Not fatal: the server still starts, and a real
-        # request naming an existing gripper will work fine.
-        print(f"[graspgenx] skipping warmup: {exc}")
-        return
+    sampler = _get_sampler(DEFAULT_GRIPPER)
 
     dummy_pc = np.random.uniform(-0.05, 0.05, size=(1024, 3)).astype(np.float32)
     GraspGenXSampler.run_inference(dummy_pc, sampler)
@@ -94,13 +85,14 @@ def _on_generate(query):
 
     payload = query.payload.to_bytes()
     if not payload:
-        query.reply_err(b"no point cloud provided")
-        return
+        raise ValueError("no point cloud provided")
 
     pc = np.frombuffer(payload, dtype=np.float32).reshape(-1, 3)
-    gripper_name = query.parameters.get("gripper_name", DEFAULT_GRIPPER)
+    gripper_name = unquote(query.parameters.get("gripper_name", DEFAULT_GRIPPER))
     num_grasps = int(query.parameters.get("num_grasps", "200"))
 
+    if not np.isfinite(pc).all() or not 1 <= num_grasps <= 2000:
+        raise ValueError("points must be finite and num_grasps must be 1..2000")
     sampler = _get_sampler(gripper_name)
     grasps, scores = GraspGenXSampler.run_inference(pc, sampler, num_grasps=num_grasps)
     grasps = grasps.detach().cpu().numpy().astype(np.float32) if len(grasps) else np.zeros((0, 4, 4), np.float32)
@@ -108,23 +100,14 @@ def _on_generate(query):
 
     print(f"[graspgenx] '{gripper_name}': {pc.shape[0]} input points -> {len(scores)} grasp(s)")
     body = grasps.tobytes() + scores.tobytes()
-    meta = json.dumps({"num_grasps": len(scores), "gripper_name": gripper_name})
-    query.reply(query.key_expr, payload=body, attachment=meta.encode())
+    meta = {"num_grasps": len(scores), "gripper_name": gripper_name}
+    return meta, body
 
 
 def main():
     _load_model()
     _warmup()
-    cfg = zenoh.Config()
-    cfg.insert_json5("transport/shared_memory/enabled", "false")
-    listen = os.environ.get("ZENOH_LISTEN", "tcp/0.0.0.0:7448")
-    cfg.insert_json5("listen/endpoints", json.dumps([listen]))
-
-    with zenoh.open(cfg) as session:
-        session.declare_queryable("graspgenx/generate", _on_generate)
-        print("[graspgenx] listening on 'graspgenx/generate'...")
-        while True:
-            time.sleep(1)
+    serve("graspgenx/generate", _on_generate, os.environ.get("ZENOH_LISTEN", "tcp/0.0.0.0:7448"))
 
 
 if __name__ == "__main__":

@@ -1,8 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- Simulation profile: identical to cyclonedds_profile.xml except that the
-     robot is not a peer, so nothing on this host ever addresses 10.7.3.185.
-     Pair it with a ROS_DOMAIN_ID other than 5 (the robot's) when someone else
-     is using the real robot. -->
+<!-- CycloneDDS profile for simulation: same as cyclonedds_profile.xml but this host only, no robot peer. -->
 <CycloneDDS xmlns="https://cdds.io/config">
   <Domain id="any">
 
@@ -22,9 +19,6 @@
       <ParticipantIndex>auto</ParticipantIndex>
       <MaxAutoParticipantIndex>100</MaxAutoParticipantIndex>
       <Peers>
-        <!-- This host only. Interface is pinned to enp5s0, so participants
-             advertise 131.220.7.198 and never listen on loopback: a
-             "localhost" entry here would never match. -->
         <Peer Address="131.220.7.198"/>
       </Peers>
     </Discovery>

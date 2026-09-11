@@ -10,15 +10,15 @@ import argparse
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
-from navigation import graspable, standoff
-from scene_graph import graph as sg
-from search_object import ROOT, box, look_point, plan, targets
+from core.navigation import graspable, standoff
+from core.scene_graph import graph as sg
+from core.pipeline.search import ROOT, box, look_point, plan, targets
 
 ARROW = 0.35
 # Probes are drawn longer than APPROACH_DEPTH purely so they are visible at room scale.

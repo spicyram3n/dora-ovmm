@@ -16,7 +16,7 @@ from rclpy.node import Node
 from rclpy.parameter import Parameter
 from rclpy.time import Time
 from tf2_ros import Buffer, TransformListener, TransformException
-from utils.transforms import matrix_from_transform
+from core.utils.transforms import matrix_from_transform
 
 FRAME = "map"
 BASE = "base_footprint"
@@ -49,6 +49,52 @@ class Navigator(Node):
         self.driver = ActionClient(self, NavigateToPose, "navigate_to_pose")
         self.tf_buffer = Buffer()
         self.listener = TransformListener(self.tf_buffer, self)
+
+    def _lifecycle_call(self, service_type, service, request, timeout=15):
+        client = self.create_client(service_type, service)
+        try:
+            if not client.wait_for_service(timeout_sec=timeout):
+                raise RuntimeError(f"{service} unavailable; motion handoff stopped")
+            future = client.call_async(request)
+            rclpy.spin_until_future_complete(self, future, timeout_sec=timeout)
+            if not future.done():
+                client.remove_pending_request(future)
+                raise RuntimeError(f"{service} timed out; motion handoff stopped")
+            return future.result()
+        finally:
+            self.destroy_client(client)
+
+    def navigation_state(self, name):
+        from lifecycle_msgs.srv import GetState
+        return self._lifecycle_call(
+            GetState, f"/{name}/get_state", GetState.Request()).current_state.id
+
+    def pause_navigation(self):
+        """Deactivate Nav2 motion nodes before MoveIt takes control of the base."""
+        from lifecycle_msgs.msg import State
+        from nav2_msgs.srv import ManageLifecycleNodes
+        response = self._lifecycle_call(
+            ManageLifecycleNodes, "/lifecycle_manager_navigation/manage_nodes",
+            ManageLifecycleNodes.Request(command=ManageLifecycleNodes.Request.PAUSE), timeout=30)
+        if not response.success:
+            raise RuntimeError("Nav2 pause rejected; refusing MoveIt handoff")
+        for name in ("controller_server", "behavior_server", "bt_navigator", "waypoint_follower"):
+            if self.navigation_state(name) != State.PRIMARY_STATE_INACTIVE:
+                raise RuntimeError(f"{name} is not inactive; refusing MoveIt handoff")
+        print("[HANDOFF] Nav2 motion nodes inactive; MoveIt owns base motion", flush=True)
+
+    def resume_navigation_if_paused(self):
+        """Resume a previously paused navigation stack for a new search."""
+        from lifecycle_msgs.msg import State
+        from nav2_msgs.srv import ManageLifecycleNodes
+        if self.navigation_state("controller_server") != State.PRIMARY_STATE_INACTIVE:
+            return
+        response = self._lifecycle_call(
+            ManageLifecycleNodes, "/lifecycle_manager_navigation/manage_nodes",
+            ManageLifecycleNodes.Request(command=ManageLifecycleNodes.Request.RESUME), timeout=30)
+        if not response.success:
+            raise RuntimeError("Nav2 resume rejected")
+        print("[READY] Nav2 resumed for search", flush=True)
 
     def _run(self, client, goal, timeout):
         if not client.wait_for_server(timeout_sec=10):

@@ -66,7 +66,8 @@ RUN pip install --no-cache-dir \
     pyyaml \
     trimesh \
     pycollada \
-    eclipse-zenoh
+    eclipse-zenoh \
+    "rerun-sdk==0.22.1"
 
 # Source ROS environment automatically
 RUN echo "source /opt/ros/humble/setup.bash" >> /home/$USERNAME/.bashrc \

@@ -1,0 +1,56 @@
+name: hsr-models
+
+x-model: &model
+  network_mode: host
+  restart: unless-stopped
+  init: true
+  environment:
+    PYTHONUNBUFFERED: "1"
+    MODEL_QUEUE_SIZE: "2"
+  deploy:
+    resources:
+      reservations:
+        devices:
+          - driver: nvidia
+            count: all
+            capabilities: [gpu]
+
+services:
+  sam3:
+    <<: *model
+    image: hrl/sam3:latest
+    build:
+      context: ..
+      dockerfile: docker/sam3/Dockerfile
+    env_file:
+      - path: sam3/.env
+        required: false
+    volumes:
+      - ./sam3/checkpoints:/root/.cache/huggingface
+    healthcheck:
+      test: ["CMD", "python3", "zenoh_rpc.py", "tcp/127.0.0.1:7447", "sam3"]
+      interval: 30s
+      timeout: 10s
+      start_period: 10m
+      retries: 3
+
+  graspgenx:
+    <<: *model
+    image: hrl/graspgenx:latest
+    build:
+      context: ..
+      dockerfile: docker/graspgenx/Dockerfile
+    environment:
+      PYTHONUNBUFFERED: "1"
+      MODEL_QUEUE_SIZE: "2"
+      GRASPGENX_GRIPPER_CFG_DIR: /opt/graspgenx/assets
+      GRASPGENX_DEFAULT_GRIPPER: hsrc_hand
+    volumes:
+      - ./graspgenx/checkpoints:/opt/graspgenx/ext/graspgenx_checkpoints
+      - ./graspgenx/x_grippers:/opt/graspgenx/assets/x_grippers
+    healthcheck:
+      test: ["CMD", ".venv/bin/python3", "zenoh_rpc.py", "tcp/127.0.0.1:7448", "graspgenx"]
+      interval: 30s
+      timeout: 10s
+      start_period: 10m
+      retries: 3

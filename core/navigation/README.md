@@ -97,10 +97,10 @@ Run only one Nav2 launch. Check that the laser scan lines up with the map in RVi
 In **ROS terminal 3**, before moving the freshly spawned robot:
 
 ```bash
-python3 core/build_scene_graph.py register \
+python3 -m core.scene_graph.build register \
   --world-base 5.0 6.6 0.0 --output config/map/world_to_map.json
-python3 core/build_scene_graph.py --transform config/map/world_to_map.json
-python3 core/search_object.py 'pringles' --dry-run
+python3 -m core.scene_graph.build --transform config/map/world_to_map.json
+python3 -m core.pipeline.search 'pringles' --dry-run
 ```
 
 `5.0 6.6 0.0` is only for the default fresh apartment spawn. If the robot has moved, use its current Gazebo base-footprint X/Y/yaw. Registration needs correct AMCL localization; check graph furniture against the map and rebuild after changing the transform.
@@ -110,7 +110,7 @@ Set `DEEPSEEK_API_KEY` in this terminal for unknown-object searches or fallback 
 To assign room names, rebuild with:
 
 ```bash
-python3 core/build_scene_graph.py --transform config/map/world_to_map.json --rooms
+python3 -m core.scene_graph.build --transform config/map/world_to_map.json --rooms
 ```
 
 ## 3. Start perception and IK
@@ -124,7 +124,7 @@ bash docker/sam3/run_sam3.sh
 In another **ROS terminal**:
 
 ```bash
-ros2 launch grasp_execution ik_solver.launch.py
+ros2 launch /home/ws/launch/ik_solver.launch.py
 ```
 
 ## 4. Search
@@ -132,7 +132,7 @@ ros2 launch grasp_execution ik_solver.launch.py
 In ROS terminal 3:
 
 ```bash
-python3 core/search_object.py 'pringles' --top-k 3
+python3 -m core.pipeline.search 'pringles' --top-k 3
 ```
 
 | Option | Use it to |
@@ -169,7 +169,7 @@ Left panel is the 3D scene with the IK reach probes at the object; right panel i
 - Successful detection saves map-frame bounds before IK runs. Failed observations leave memory unchanged. Matching uses label and proximity, so instance identity is approximate; a same-label detection more than 1 m from a remembered one becomes a new node instead of overwriting it.
 - Base placement uses hand-pose probes. A reachable probe does not prove a stable grasp. The head aims at the object again after placement.
 - **Arm–furniture collisions are not checked:** the IK environment is empty. Base costmap and self-collision checks still apply.
-- Nav2's standing 25 cm tolerance is larger than the IK robustness neighborhood of about 7.5 cm, so the final approach tightens `general_goal_checker` to 0.08 m at runtime and restores it afterwards. Arrival is then re-measured against the certified pose: past 0.08 m the run reports **2**, not ready. See [IK settings](../../ros2_ws/src/grasp_execution/README.md#ik-settings).
+- Nav2's standing 25 cm tolerance is larger than the IK robustness neighborhood of about 7.5 cm, so the final approach tightens `general_goal_checker` to 0.08 m at runtime and restores it afterwards. Arrival is then re-measured against the certified pose: past 0.08 m the run reports **2**, not ready. See [IK solver settings](#ik-solver-settings).
 
 ## If it stops
 
@@ -183,14 +183,16 @@ Left panel is the 3D scene with the IK reach probes at the object; right panel i
 
 Planning or driving failures try another candidate. Observation tolerances are 0.30 m/rad, not grasp tolerances.
 
-## Use saved grasps for base placement
+## IK solver settings
 
-With the IK solver running and saved grasps available:
+[launch/ik_solver.launch.py](../../launch/ik_solver.launch.py) starts Toyota's solver with the **HSRC** plugin (Toyota's example hardcodes the different HSR-B geometry). Service: `/ik_solver_node/solve_ik_with_collision`.
 
-```bash
-python3 core/navigation/base_placement.py pringles --costmap
-```
+| Parameter | Value | Effect |
+| --- | --- | --- |
+| `convolution.ik_base_resolution` | `0.05` m | Base search grid spacing; halving it roughly quadruples grid work |
+| `convolution.grid_distance_threhsold` | `1.5` cells | Scores solutions using nearby reachable base cells |
+| `convolution.ik_result_joint_distance_threshold` | `1.0` (default) | Joint/base-yaw similarity used for scoring |
 
-Saved grasps must be in `odom`. Search handles map/odom transforms for its probes. The CLI uses the live costmap by default; `--map` selects the saved trinary map and blocks unknown cells. Candidate base poses still need Nav2 path checks before driving.
+Keep the spelling **`threhsold`**. Toyota's code reads that exact key; correcting it silently uses the default.
 
-For execution, see [grasp execution](../../ros2_ws/src/grasp_execution/README.md). The former `core/run_pipeline.py` entry point is absent from this checkout.
+The solver checks a base-position grid, filters collisions, scores nearby solutions, and returns only those tied for the best score. Border cells without a full scoring neighborhood are skipped. A timeout is a service error, not an unreachable result, and a reachable hand pose does not guarantee a grasp: [core/grasping/pick.py](../grasping/pick.py) plans the actual grasp from the parked pose. Toyota's implementation is under `ros2_ws/src/tmc_manipulation/tmc_ik_solver_node/`.

@@ -1,21 +1,26 @@
-"""Search remembered or LLM-ranked locations with Nav2 and SAM3, then park the
-base where the arm can reach what was found. The mission ends before grasping."""
+"""Search remembered or LLM-ranked locations with Nav2 and SAM3, park the base
+where the arm can reach what was found, and with --grasp pick it up."""
 
 import argparse
+import subprocess
+import sys
 from pathlib import Path
 import numpy as np
-from navigation import standoff
-from scene_graph import graph as sg
-from reasoner.query import Location, search_order
+from core.navigation import standoff
+from core.scene_graph import graph as sg
+from core.reasoner.query import Location, search_order
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parents[2]
 # Mission outcomes, from the object never being seen to standing ready to grasp.
 NOT_FOUND = "not_found"
 ARRIVED = "arrived"
 FOUND = "found"
 NOT_GRASPABLE = "not_graspable"
 READY = "ready"
-EXIT_CODES = {NOT_FOUND: 1, ARRIVED: 0, FOUND: 0, NOT_GRASPABLE: 2, READY: 0}
+PICKED = "picked"
+NOT_PICKED = "not_picked"
+EXIT_CODES = {NOT_FOUND: 1, ARRIVED: 0, FOUND: 0, NOT_GRASPABLE: 2, READY: 0,
+              PICKED: 0, NOT_PICKED: 4}
 # A same-label detection further than this from a remembered one is another instance.
 SAME_INSTANCE = 1.0
 # Nothing the HSR gripper can pick up measures more than this across.
@@ -91,8 +96,8 @@ def look_point(scene, location):
 
 
 def observed_furniture(scene, points):
-    from scene_graph.instance import Instance, from_box
-    from scene_graph.relations import classify
+    from core.scene_graph.instance import Instance, from_box
+    from core.scene_graph.relations import classify
 
     ids = []
     pieces = []
@@ -107,8 +112,8 @@ def observed_furniture(scene, points):
 
 
 def locate(obj):
-    from perception import pointcloud, sam3_client
-    from perception.camera_ros2 import grab_rgbd
+    from core.perception import pointcloud, sam3_client
+    from core.perception.camera_ros2 import grab_rgbd
 
     rgb, depth, intrinsics, transform = grab_rgbd(target_frame="map")
     try:
@@ -132,7 +137,7 @@ def locate(obj):
 
 def make_graspable(scene, node_id, navigator, obstacles="--costmap", bearings=6):
     """Refine the observation pose into one the IK solver certifies for the arm."""
-    from navigation import graspable
+    from core.navigation import graspable
 
     centre, dimensions = box(scene.nodes[node_id])
     blockers = []
@@ -161,10 +166,18 @@ def make_graspable(scene, node_id, navigator, obstacles="--costmap", bearings=6)
         print("Warning: the head cannot aim at the object from this pose.")
     print(
         f"Ready to grasp from ({pose[0]:.2f}, {pose[1]:.2f}, yaw {pose[2]:.2f}),"
-        f" parked {offset:.3f} m from it. Mission complete; grasp generation and"
-        " execution are separate commands."
+        f" parked {offset:.3f} m from it."
     )
     return READY
+
+
+def pick_up(obj):
+    """Re-observe the object from where the base is parked and pick it up.
+
+    Runs core/grasping/pick.py in its own process, which keeps MoveIt Task
+    Constructor's C++ node apart from this process's rclpy context."""
+    pick = subprocess.run([sys.executable, "-m", "core.grasping.pick", obj], cwd=ROOT)
+    return PICKED if pick.returncode == 0 else NOT_PICKED
 
 
 def search(scene, obj, navigator, furniture=None, top_k=3, observe=locate, views=2):
@@ -248,6 +261,34 @@ def search(scene, obj, navigator, furniture=None, top_k=3, observe=locate, views
     return (NOT_FOUND, None)
 
 
+def execute_mission(scene, obj, navigator, graph_path, *, furniture=None, top_k=3,
+                    bearings=6, obstacles="--costmap", refine=True, grasp=True):
+    """Search, persist the observation, park, then optionally perform a verified pick.
+
+    Both CLI entry points use this sequence. Errors propagate so a failed stage
+    cannot silently advance to robot motion in the next stage.
+    """
+    if grasp and not refine:
+        raise ValueError("Pickup requires arm-reachable base placement")
+    navigator.resume_navigation_if_paused()
+    print(f"[SEARCH] target={obj!r}; graph={graph_path}", flush=True)
+    status, object_id = search(scene, obj, navigator, furniture, top_k)
+    if object_id is not None:
+        # Preserve the observation even if the subsequent IK/model call fails.
+        sg.save(scene, graph_path)
+    if status == FOUND and refine:
+        if object_id is None:
+            raise RuntimeError("Search reported found without a recorded object")
+        print('[APPROACH] finding and reaching an arm-reachable base pose', flush=True)
+        status = make_graspable(scene, object_id, navigator, obstacles, bearings)
+    if status == READY and grasp:
+        navigator.pause_navigation()
+        print('[GRASP] generating grasps and picking the object up', flush=True)
+        status = pick_up(obj)
+    print(f'[RESULT] {status}', flush=True)
+    return status
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("object", nargs="?", default="")
@@ -260,6 +301,11 @@ def main():
         "--dry-run",
         action="store_true",
         help="show first location; unknown objects still call DeepSeek",
+    )
+    parser.add_argument(
+        "--grasp",
+        action="store_true",
+        help="generate grasps and pick the object up once parked",
     )
     parser.add_argument(
         "--no-refine",
@@ -285,6 +331,8 @@ def main():
         parser.error("--top-k must be positive")
     if args.bearings < 1:
         parser.error("--bearings must be positive")
+    if args.grasp and (args.no_refine or not args.object):
+        parser.error("--grasp requires an object and base refinement")
     scene = sg.load(args.graph)
     if args.dry_run:
         first = next(
@@ -296,21 +344,16 @@ def main():
             print(" ", pose)
         return 0
     import rclpy
-    from navigation.nav2_client import Navigator
+    from core.navigation.nav2_client import Navigator
 
     rclpy.init()
     navigator = Navigator()
     try:
-        status, object_id = search(
-            scene, args.object, navigator, args.furniture, args.top_k
+        status = execute_mission(
+            scene, args.object, navigator, args.graph, furniture=args.furniture,
+            top_k=args.top_k, bearings=args.bearings, obstacles=args.source,
+            refine=not args.no_refine, grasp=args.grasp,
         )
-        # Save what was seen before asking for IK: a solver fault must not lose it.
-        if object_id is not None:
-            sg.save(scene, args.graph)
-        if status == FOUND and not args.no_refine:
-            status = make_graspable(
-                scene, object_id, navigator, args.source, args.bearings
-            )
         return EXIT_CODES[status]
     finally:
         navigator.destroy_node()

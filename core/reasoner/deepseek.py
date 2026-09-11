@@ -3,7 +3,7 @@
 import json
 import os
 from pydantic import BaseModel
-from scene_graph import graph as sg
+from core.scene_graph import graph as sg
 from openai import OpenAI
 
 DEFAULT_MODEL = "deepseek-v4-flash"

@@ -1,67 +1,39 @@
 <?xml version="1.0" encoding="UTF-8"?>
+<!-- CycloneDDS profile for talking to the real robot at 10.7.3.185 over enp5s0. -->
 <CycloneDDS xmlns="https://cdds.io/config">
   <Domain id="any">
 
     <General>
-      <!-- docker0 (172.17.0.1) and br-24c2f3e55113 (172.18.0.1) sit alongside
-           enp5s0 on this PC. Left to autodetermine, CycloneDDS often picks a
-           docker bridge and then advertises a locator the robot cannot route
-           to: discovery appears to work, no data ever arrives. -->
       <Interfaces>
         <NetworkInterface name="enp5s0" autodetermine="false" multicast="true"/>
       </Interfaces>
 
-      <!-- The robot (10.7.3.185) is off-subnet, reached through the enp5s0
-           default gateway, so multicast never gets there - it is discovered
-           via the unicast Peer below. Multicast is still worth enabling for
-           SPDP so participants on this host (vision_rx, rviz2, ros2 CLI) find
-           each other without every address being listed by hand. Discovery
-           only: bulk data stays unicast, which does not depend on the lab
-           switch doing IGMP snooping. -->
       <AllowMulticast>spdp</AllowMulticast>
       <EnableMulticastLoopback>true</EnableMulticastLoopback>
 
-      <!-- enp5s0 runs 9000-byte jumbo frames. Staying under the MTU avoids IP
-           fragmentation, where losing one fragment discards the entire
-           datagram and forces a full retransmit. The previous 65500B relied on
-           the IP layer splitting every message into ~8 fragments. -->
       <FragmentSize>8000B</FragmentSize>
       <MaxMessageSize>8500B</MaxMessageSize>
     </General>
 
     <Discovery>
       <ParticipantIndex>auto</ParticipantIndex>
-      <!-- Each unicast peer is probed on one port per index every discovery
-           round, so 100 made SPDP needlessly chatty. -->
       <MaxAutoParticipantIndex>20</MaxAutoParticipantIndex>
       <Peers>
         <Peer Address="10.7.3.185"/>
-        <!-- This host's own enp5s0 address, not localhost: with the interface
-             pinned above, participants advertise on 131.220.7.198 and never
-             listen on loopback, so a "localhost" peer can never match. Keeps
-             same-host discovery working if the lab switch drops multicast. -->
         <Peer Address="131.220.7.198"/>
       </Peers>
     </Discovery>
 
     <Internal>
-      <!-- Sized for 30 Hz RGBD images and point clouds. net.core.rmem_max on
-           this host is already 2 GB, so these minimums are granted in full
-           rather than silently clamped. -->
       <SocketReceiveBufferSize min="32MB"/>
       <SocketSendBufferSize min="32MB"/>
       <MaxSampleSize>100MB</MaxSampleSize>
 
-      <!-- Defaults hold 4 unreliable / 16 reliable samples while their
-           fragments arrive. A 2 MB image is ~260 fragments, so at rate those
-           buffers overrun and partially-received frames are thrown away. -->
       <DefragUnreliableMaxSamples>64</DefragUnreliableMaxSamples>
       <DefragReliableMaxSamples>64</DefragReliableMaxSamples>
       <PrimaryReorderMaxSamples>1024</PrimaryReorderMaxSamples>
       <DeliveryQueueMaxSamples>1024</DeliveryQueueMaxSamples>
 
-      <!-- Default WhcHigh is 500 kB: a reliable writer stalls before even one
-           image frame is unacknowledged. -->
       <Watermarks>
         <WhcHigh>64MB</WhcHigh>
       </Watermarks>

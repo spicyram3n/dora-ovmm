@@ -1,0 +1,22 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>hsr_rgbd</name>
+  <version>0.1.0</version>
+  <description>
+    Relay that decimates the simulator's depth stream for MoveIt's 1 Hz
+    depth-image octomap updater.
+  </description>
+  <maintainer email="poorna.sesetti03@gmail.com">spicyram3n</maintainer>
+  <license>BSD 3-clause Clear License</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <exec_depend>cv_bridge</exec_depend>
+  <exec_depend>python3-numpy</exec_depend>
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

@@ -1,0 +1,9 @@
+# Model images use the repository root to copy the shared RPC helper.
+.git
+**/.env
+**/.env.*
+**/__pycache__
+ros2_ws
+outputs
+**/checkpoints
+**/x_grippers

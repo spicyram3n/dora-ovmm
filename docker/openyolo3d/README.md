@@ -61,7 +61,7 @@ Output: `instances.json` and one `instance_NNNN.npy` per mask, containing XYZ po
 Create a measured registration JSON with `source_frame: "room1_scan"` and a rigid 4×4 `map_from_source`. Then run in the **main workspace**, from its root:
 
 ```bash
-PYTHONPATH=core python -m scene_graph.openyolo3d \
+python -m core.scene_graph.openyolo3d \
   --instances docker/openyolo3d/output/room1/instances.json \
   --transform /absolute/path/to/room1_to_map.json \
   --output outputs/scene_graph/room1.json

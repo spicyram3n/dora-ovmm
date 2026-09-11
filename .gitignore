@@ -14,9 +14,10 @@ install/
 log/
 
 # Everything under ros2_ws/src/ is a separately cloned vendor repo
-# (its own .git directory) except grasp_execution/, which is ours.
+# (its own .git directory) except grasp_execution/ and hsr_rgbd/, which are ours.
 ros2_ws/src/*
 !ros2_ws/src/grasp_execution/
+!ros2_ws/src/hsr_rgbd/
 !ros2_ws/src/nbv/
 
 # Secrets: HF_TOKEN and the cached HF login it produces
@@ -32,7 +33,7 @@ config/targets/
 # Recorded runs. Useful to keep around locally while tuning navigation, but
 # they are measurements, not source, and they get large fast.
 bags/
-
+docs/
 .image_fingerprint
 
 # generic files 

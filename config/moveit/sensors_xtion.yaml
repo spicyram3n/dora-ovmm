@@ -1,0 +1,15 @@
+# The default 10 cm voxels are larger than the can and the finger clearance.
+octomap_resolution: 0.01
+octomap_frame: odom
+sensors:
+  - head_rgbd_sensor
+
+head_rgbd_sensor:
+  sensor_plugin: occupancy_map_monitor/DepthImageOctomapUpdater
+  image_topic: /head_rgbd_sensor/depth_registered/image_rect_raw
+  queue_size: 5
+  max_update_rate: 1.0
+  skip_vertical_pixels: 0
+  skip_horizontal_pixels: 2
+  filtered_cloud_topic: filtered_depth
+  ns: rgbd_octomap

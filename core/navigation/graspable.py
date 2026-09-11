@@ -7,7 +7,7 @@ comes from Toyota's collision-aware IK service through `base_placement.solve`.
 """
 
 import numpy as np
-from navigation import standoff
+from core.navigation import standoff
 
 # hand_palm_link: +z leaves the palm along the approach, +y is the finger axis.
 FINGER_LENGTH = 0.094
@@ -135,7 +135,7 @@ def reposition(navigator, centre, dimensions, obstacles="--costmap", bearings=6,
     Returns (pose, offset) only when the final measured position and yaw meet
     the approach tolerances; otherwise returns None. Reach probes still do not
     prove grasp feasibility at the measured joint/base configuration."""
-    from navigation import base_placement
+    from core.navigation import base_placement
 
     poses = probes(centre, dimensions, bearings)
     # The IK service takes an unstamped hand goal: transform to odom ourselves.

@@ -4,7 +4,7 @@ import json
 from dataclasses import dataclass
 from typing import Literal
 from pydantic import BaseModel, StrictInt
-from scene_graph import graph as sg
+from core.scene_graph import graph as sg
 from .deepseek import DEFAULT_MODEL, ask_json, get_client, have_key
 
 SYSTEM = """Rank the {k} most likely furniture locations for the requested object.

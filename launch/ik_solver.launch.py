@@ -8,9 +8,9 @@ hsrb_ik_solver_node ships an example.launch.py, but it hardcodes the HSR-B
 plugin and cannot be overridden from the command line -- the B and C arm
 geometries genuinely differ, so this launches the C one instead.
 
-    ros2 launch grasp_execution ik_solver.launch.py
+    ros2 launch /home/ws/launch/ik_solver.launch.py
 
-Then call /ik_solver_node/solve_ik_with_collision. See core/placement/.
+Then call /ik_solver_node/solve_ik_with_collision. See core/navigation/base_placement.py.
 """
 
 from launch import LaunchDescription
@@ -44,7 +44,7 @@ def generate_launch_description():
                     "hsrb_ik_solver_node::HsrcIkSolverPluginRobustToBasePositionError",
                 "map_convolution_type":
                     "tmc_ik_solver_node::EuclideanDistanceMapConvolution",
-                    # parameter explanation in the README file of grasp execution package
+                    # explained under "IK solver settings" in core/navigation/README.md
                 "convolution": {
                     "grid_distance_threhsold": 1.5,  # cells;
                     "ik_base_resolution": 0.05,      # metres between candidates

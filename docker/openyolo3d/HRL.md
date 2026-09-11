@@ -84,7 +84,7 @@ Do not substitute identity unless scan and target map coordinates truly coincide
 Once segmentation and registration are available:
 
 ```bash
-PYTHONPATH=core python -m scene_graph.openyolo3d \
+python -m core.scene_graph.openyolo3d \
   --instances docker/openyolo3d/output/hrl/instances.json \
   --transform config/map/hrl_to_map.json \
   --output outputs/scene_graph/hrl.json
@@ -98,13 +98,11 @@ HRL-to-map registration are still missing.
 
 ## Inspect test results in Rerun (no map or ROS needed)
 
-On the PC host, from the repository root, create a separate viewer environment:
+`rerun-sdk` is baked into the devcontainer image, so no separate viewer
+environment is needed. From the repository root, in the devcontainer:
 
 ```bash
-sudo apt-get install -y python3-venv
-python3 -m venv .venv-rerun
-.venv-rerun/bin/python -m pip install 'rerun-sdk==0.22.1' 'numpy<2' 'networkx>=3.4,<4' scipy
-PYTHONPATH=core .venv-rerun/bin/python -m scene_graph.visualize \
+python3 -m core.scene_graph.visualize \
   --instances docker/openyolo3d/output/hrl/instances.json \
   --output outputs/scene_graph/hrl_preview
 ```
@@ -120,11 +118,11 @@ run. To export inside a container without a display, add `--save-only`. Open the
 recording later on the PC host:
 
 ```bash
-.venv-rerun/bin/python -m rerun outputs/scene_graph/hrl_preview/scene.rrd
+python3 -m rerun outputs/scene_graph/hrl_preview/scene.rrd
 ```
 
 Up to 30,000 points per instance are displayed; all points build the graph.
-Optional `--scene docker/openyolo3d/data/hrl/scene.ply` adds gray context (install
-trimesh in the viewer environment). No inference rebuild, ROS, browser or map
-registration is needed. `--transform` remains available for a future measured
+Optional `--scene docker/openyolo3d/data/hrl/scene.ply` adds gray context
+(`trimesh` is already in the devcontainer image). No inference rebuild, ROS,
+browser or map registration is needed. `--transform` remains available for a future measured
 registration using the existing map graph builder.

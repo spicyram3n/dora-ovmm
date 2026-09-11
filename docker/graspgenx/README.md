@@ -59,9 +59,9 @@ bash run_demo.sh --vis-top-grasp-meshes --num-top-grasp-meshes 10
 bash run_graspgenx.sh
 ```
 
-Keep it running while clients request grasps. It loads the model once and listens on Zenoh key `graspgenx/generate`.
+The script starts the server in the background and waits for model readiness. It loads the model once and listens on Zenoh key `graspgenx/generate`. Use `docker compose -f docker/compose.yaml logs -f graspgenx` from the repository root for logs, or `docker compose -f docker/compose.yaml stop graspgenx` to stop it. See the root README for shared server setup.
 
-A client exists at [graspgenx_client.py](../../core/grasping/graspgenx_client.py), but the former combined `core/run_pipeline.py` entry point is absent from this checkout.
+A client exists at [graspgenx_client.py](../../core/grasping/graspgenx_client.py); [core/grasping/pick.py](../../core/grasping/pick.py) is the entry point that drives it.
 
 ## Request format
 

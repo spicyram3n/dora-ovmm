@@ -5,7 +5,7 @@ import xml.etree.ElementTree as ET
 import numpy as np
 import trimesh
 from scipy.spatial.transform import Rotation
-from perception.pointcloud import transform_points
+from core.perception.pointcloud import transform_points
 from .instance import Instance
 
 

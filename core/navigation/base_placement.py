@@ -1,16 +1,11 @@
-"""Request base-placement candidates from Toyota's IK service.
+"""Request base-placement candidates from Toyota's IK service (launch/ik_solver.launch.py)."""
 
-Usage: python3 core/navigation/base_placement.py <target> [--costmap|--map]"""
-
-import argparse
 import copy
 import math
-import sys
 import time
 from contextlib import contextmanager
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import numpy as np
 import rclpy
 import yaml
@@ -21,8 +16,7 @@ from rclpy.time import Time
 from sensor_msgs.msg import JointState
 from tf2_ros import Buffer, TransformListener
 from tmc_manipulation_msgs.srv import SolveIkWithCollision
-from grasping.grasp_io import load_grasps
-from utils.transforms import (
+from core.utils.transforms import (
     matrix_from_transform,
     pose_from_matrix,
 
@@ -38,7 +32,6 @@ ARM_JOINTS = [
     "wrist_roll_joint",
 ]
 NEUTRAL = [0.0, 0.0, 0.0, -1.57, 0.0]
-TARGETS_DIR = Path(__file__).resolve().parents[2] / "config" / "targets"
 MAP_YAML = (
     Path(__file__).resolve().parents[2] / "config" / "map" / "apartment_world_map.yaml"
 )
@@ -256,46 +249,3 @@ def solve(poses, obstacles=None, environment=None, timeout=30.0, goal_frame="odo
                 _solve_one(node, client, pose, obstacle_map, environment, timeout)
             )
         return results
-
-
-def _describe(index, score, bases):
-    if len(bases) == 0:
-        return f"  grasp {index} (score {score:.2f}): unreachable"
-    centre_x, centre_y = bases[:, :2].mean(axis=0)
-    x, y, yaw = bases[0]
-    return f"  grasp {index} (score {score:.2f}): {len(bases):3d} base poses, centred ({centre_x:+.2f}, {centre_y:+.2f}), first ({x:+.2f}, {y:+.2f}, yaw {yaw:+.2f})"
-
-
-def main(argv):
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("target")
-    options = parser.add_mutually_exclusive_group()
-    options.add_argument("--map", action="store_const", const="--map", dest="source")
-    options.add_argument("--costmap", action="store_const", const="--costmap", dest="source")
-    parser.set_defaults(source="--costmap")
-    args = parser.parse_args(argv)
-    source = args.source
-    poses, scores, data = load_grasps(TARGETS_DIR / args.target / "grasps.yaml")
-    # The service has no stamped hand goal: never silently reinterpret map as odom.
-    if data.get("frame_id") != "odom":
-        raise ValueError("IK input must be in odom; transform saved grasp poses before solving")
-    results = solve(poses, obstacles=source, goal_frame="odom")
-    mask_description = ""
-    if source:
-        mask_description = f", masked by {source}"
-    print(
-        f"\n{data['object_id']}: {len(poses)} grasps, frame {data['frame_id']}"
-        f"{mask_description}"
-    )
-    for index, (bases, _) in enumerate(results):
-        print(_describe(index, scores[index], bases))
-    reachable = 0
-    for bases, joint_positions in results:
-        if len(bases) > 0:
-            reachable += 1
-    print(f"\n  {reachable}/{len(poses)} grasps reachable")
-    return 0
-
-
-if __name__ == "__main__":
-    sys.exit(main(sys.argv[1:]))

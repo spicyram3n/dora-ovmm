@@ -68,6 +68,39 @@ def largest_cluster(points, gap=0.03, minimum=20):
     return points
 
 
+def object_depth_mask(depth_m, mask, step=0.02):
+    """Keep the largest depth-connected part of `mask`.
+
+    An alternative to shrink()+largest_cluster() for grasping, where the mask
+    must stay in pixel space: it splits the background off across the depth
+    discontinuity at the object's silhouette instead of eroding the boundary,
+    so the full visible surface survives for the cylinder fit."""
+    from scipy.sparse import coo_matrix
+    from scipy.sparse.csgraph import connected_components
+
+    valid = mask & np.isfinite(depth_m) & (depth_m > 0)
+    count = int(valid.sum())
+    if count == 0:
+        raise RuntimeError("no valid depth inside the mask")
+    indices = np.full(mask.shape, -1, dtype=np.int32)
+    indices[valid] = np.arange(count)
+    rows, columns = ([], [])
+    for first, second in ((np.s_[:-1, :], np.s_[1:, :]), (np.s_[:, :-1], np.s_[:, 1:])):
+        # A jump larger than `step` between neighbours is an edge, not a surface.
+        joined = valid[first] & valid[second] & (np.abs(depth_m[first] - depth_m[second]) < step)
+        rows.append(indices[first][joined])
+        columns.append(indices[second][joined])
+    rows, columns = (np.concatenate(rows), np.concatenate(columns))
+    linkage = coo_matrix((np.ones(len(rows)), (rows, columns)), shape=(count, count))
+    _, labels = connected_components(linkage, directed=False)
+    sizes = np.bincount(labels)
+    if sizes.max() < count / 2:
+        raise RuntimeError("target depth is fragmented; acquire another view")
+    result = np.zeros_like(valid)
+    result[valid] = labels == sizes.argmax()
+    return result
+
+
 def deproject(depth_m, k, mask):
     """Back-project every masked pixel that has valid depth into (N, 3) points."""
     fx = k[0, 0]

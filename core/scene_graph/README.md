@@ -7,7 +7,7 @@ Store objects and furniture in map coordinates, then choose where to search.
 From the repository root, with a measured world-to-map registration:
 
 ```bash
-python3 core/build_scene_graph.py --transform /path/to/world_to_map.json
+python3 -m core.scene_graph.build --transform /path/to/world_to_map.json
 ```
 
 For registration commands, use the [navigation quick start](../navigation/README.md). Set `DEEPSEEK_API_KEY` and add `--rooms` to assign room names.
@@ -19,8 +19,8 @@ The builder reads initial Gazebo world geometry, not objects moved during simula
 With `core` on Python's import path and the robot's map position in `robot_x, robot_y`:
 
 ```python
-from scene_graph import graph as sg
-from reasoner.query import search_order
+from core.scene_graph import graph as sg
+from core.reasoner.query import search_order
 
 scene = sg.load('outputs/scene_graph/apartment.json')
 locations = search_order(scene, 'pringles can', top_k=3, near=(robot_x, robot_y))
@@ -52,8 +52,8 @@ Use a trusted localized pose and account for any robot-origin/base-frame offset.
 Run segmentation and register the scan first. Given `segments` and `registered_transform`:
 
 ```python
-from scene_graph.instance import Instance
-from scene_graph import graph as sg
+from core.scene_graph.instance import Instance
+from core.scene_graph import graph as sg
 
 instances = [Instance(label, points, confidence=score, name=segment_id)
              for label, points, score, segment_id in segments]

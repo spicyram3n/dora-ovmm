@@ -22,6 +22,8 @@ RUN uv sync --python 3.10
 # (the ROS 2 side and the SAM3 container) - see bugs/ for why this matters.
 RUN uv add "eclipse-zenoh==1.9.0"
 
-COPY app.py app.py
+COPY docker/graspgenx/app.py app.py
 
 CMD ["uv", "run", "python3", "app.py"]
+
+COPY core/utils/zenoh_rpc.py ./zenoh_rpc.py

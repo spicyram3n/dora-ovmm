@@ -27,13 +27,11 @@ See zenoh_examples/sam3_trigger.py for a client that calls this.
 """
 
 import io
-import json
 import os
-import time
 
 import numpy as np
 import torch
-import zenoh
+from zenoh_rpc import serve, unquote
 from PIL import Image
 
 # Sam3Processor resizes every image to a fixed resolution (1008×1008 by
@@ -81,11 +79,12 @@ def _warmup():
 
 
 def _on_detect(query):
-    prompt = query.parameters.get("prompt", "")
+    prompt = unquote(query.parameters.get("prompt", ""))
     conf = float(query.parameters.get("conf", "0.5"))
+    if not 0 <= conf <= 1:
+        raise ValueError("conf must be between 0 and 1")
     if not prompt:
-        query.reply_err(b"no prompt provided")
-        return
+        raise ValueError("no prompt provided")
 
     img = Image.open(io.BytesIO(query.payload.to_bytes())).convert("RGB")
 
@@ -116,24 +115,15 @@ def _on_detect(query):
 
     print(f"[sam3] '{prompt}': {n} instance(s)")
     body = masks.tobytes() + boxes.tobytes() + scores.tobytes()
-    meta = json.dumps({"num_instances": n, "height": h, "width": w})
-    query.reply(query.key_expr, payload=body, attachment=meta.encode())
+    meta = {"num_instances": n, "height": h, "width": w}
+    return meta, body
 
 
 def main():
     _load_model()
     _warmup()
     
-    cfg = zenoh.Config()
-    cfg.insert_json5("transport/shared_memory/enabled", "false")
-    listen = os.environ.get("ZENOH_LISTEN", "tcp/0.0.0.0:7447")
-    cfg.insert_json5("listen/endpoints", json.dumps([listen]))
-
-    with zenoh.open(cfg) as session:
-        session.declare_queryable("sam3/detect", _on_detect)
-        print("[sam3] Listening on 'sam3/detect'...")
-        while True:
-            time.sleep(1)
+    serve("sam3/detect", _on_detect, os.environ.get("ZENOH_LISTEN", "tcp/0.0.0.0:7447"))
 
 
 if __name__ == "__main__":
