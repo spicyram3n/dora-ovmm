@@ -70,6 +70,7 @@ RUN pip install --no-cache-dir \
     openai \
     graphviz \
     requests \
+    flask \
     opencv-python \
     transforms3d \
     pyyaml \

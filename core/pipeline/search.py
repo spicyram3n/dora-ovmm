@@ -8,7 +8,8 @@ from pathlib import Path
 import numpy as np
 from core.navigation import standoff
 from core.scene_graph import graph as sg
-from core.reasoner.query import Location, search_order
+from core.reasoner.query import Location, described, search_order
+from core.utils import events
 
 ROOT = Path(__file__).resolve().parents[2]
 # Mission outcomes, from the object never being seen to standing ready to grasp.
@@ -117,6 +118,14 @@ def plan(scene, location, robot_xy=None):
     )
     if location.reason:
         print(f"  {location.reason}")
+    # The dashboard draws the place, its neighbours and every pose it may park at.
+    furniture = []
+    for node, data in sg.furniture(scene).items():
+        centre, dimensions, yaw = sg.footprint(data)
+        furniture.append({"id": node, "name": data["name"] or data["label"],
+                          "centre": centre, "dimensions": dimensions, "yaw": yaw})
+    events.emit("plan", location=described(scene, [location])[0], poses=poses,
+                views=views, furniture=furniture, robot_radius=standoff.ROBOT_RADIUS)
     return (poses, views)
 
 

@@ -1,73 +1,22 @@
-# Search for an object
+# Navigation: search and park
 
-Search scene-graph memory, drive to a viewing position, detect with SAM3, and park within arm reach. Search does not generate or execute grasps.
+Find the object with Nav2 and SAM3, then park where the arm can reach it. Picking is in [core/grasping/pick.py](../grasping/pick.py).
 
-## Single launch: simulation to ready for grasping
+## Quick run
 
-Prepare and check the registered scene graph using steps 1–2 below once. Start
-SAM3 on the **host** (`bash docker/sam3/run_sam3.sh`); the ROS dev container does
-not manage that GPU container. Set `DEEPSEEK_API_KEY` in the ROS terminal when
-LLM predictions are needed.
+| Goal | Command |
+| --- | --- |
+| Full mission (sim included) | `ros2 launch /home/ws/launch/search.launch.py target:=pringles` |
+| Search and park, no pick | Add `grasp:=false` |
+| Search on a stack you started by hand | `python3 -m core.pipeline.search 'pringles' --top-k 3` |
 
-With the ROS and workspace setup sourced, run:
+Set `DEEPSEEK_API_KEY` for objects the scene graph does not know. The scene graph must exist first ([root README, step 2](../../README.md#2-build-the-scene-graph)).
 
-```bash
-ros2 launch /home/ws/launch/search.launch.py target:=pringles top_k:=3
-```
+---
 
-The same mission as a behaviour tree ([core/pipeline/mission_tree.py](../pipeline/mission_tree.py)):
-add `use_tree:=true`. Same checks and steps; the base parks once, a failed
-pick is tried again from there (fresh segmentation and grasps), up to 3 times,
-and the arm goes home after the pick. Watch it live in
-another terminal with `py-trees-tree-watcher` (ROS sourced; it is a plain
-command, not a `ros2 run` executable).
+## Run the pieces by hand
 
-This starts simulation, Nav2 with `config/nav2/nav2_params.yaml`, and IK. The search
-worker waits for active Nav2 lifecycle nodes, navigation/head actions, IK,
-fresh localization, synchronized RGB-D with TF, and an actual SAM3 response.
-The startup SAM3 result is discarded; the search takes fresh observations after
-moving. Startup has a shared 180-second deadline; override with
-`startup_timeout:=300` for slower startup. No motion is requested before these
-checks pass. Readiness does not validate the accuracy of your map registration.
-
-After readiness checks, every launch sends the arm to home positions
-`[0.0, 0.0, -1.57, -1.57, 0.0]` for lift, flex, roll, wrist flex, and wrist roll,
-with a 3-second trajectory. It waits for successful completion before searching;
-rejection, failure, or a 30-second execution timeout stops the mission. This also
-runs when attaching to existing simulation with the start flags set to false.
-Logs show `[HOME]` followed by `[READY] arm home pose reached`.
-
-The worker searches memory or LLM-ranked furniture, visits viewpoints, detects
-the target, saves its updated graph entry, and refines the base position. It
-stops before grasp generation and arm execution.
-
-If simulation, Nav2 and IK are already running, avoid launching duplicates:
-
-```bash
-ros2 launch /home/ws/launch/search.launch.py target:="red cup" \
-  start_simulation:=false start_navigation:=false start_ik:=false
-```
-
-Each start flag can be used independently. Other arguments are `graph`, `map`,
-`params_file`, and `bearings`. Use a separate prepared `graph:=/path/to/scenario.json`
-for each demo scenario: detections update that file, and the launcher does not
-rebuild it or change room assignments.
-
-Output is labelled by process (`simulation`, `navigation`, `ik`, `search`), with
-individual ROS node names inside their logs. The worker prints `[WAIT]`,
-`[READY]`, `[SEARCH]`, `[APPROACH]`, and `[RESULT]`, alongside existing per-location
-and per-pose output. Launch also saves logs in its printed log directory.
-These are readiness/stage messages, not a percentage-complete dashboard.
-
-After the search exits, simulation stays open for inspection. The final mission
-message reports ready (0), not found (1), placement failed (2), or error (3).
-This is the **worker** exit status; the interactive ROS launch stays running.
-Press Ctrl+C to shut down launched processes; separately started services remain
-yours to stop. Rerun with the appropriate start flags to search again.
-
-## 1. Launch simulation and Nav2
-
-Run this setup in **each ROS terminal**:
+Source ROS in each container terminal first:
 
 ```bash
 cd /home/ws
@@ -75,7 +24,7 @@ source /opt/ros/humble/setup.bash
 source ros2_ws/install/setup.bash
 ```
 
-**ROS terminal 1 — simulation:**
+**Terminal 1 — simulation**
 
 ```bash
 ros2 launch hsrb_gazebo_launch hsrb_apartment_world.launch.py \
@@ -83,94 +32,61 @@ ros2 launch hsrb_gazebo_launch hsrb_apartment_world.launch.py \
   description_package:=hsrc_description description_file:=hsrc1s.urdf.xacro
 ```
 
-**ROS terminal 2 — Nav2:**
+**Terminal 2 — Nav2**
 
 ```bash
 ros2 launch hsrb_rosnav_config navigation_launch.py \
   map:=/home/ws/config/map/apartment_world_map.yaml \
-  params_file:=/home/ws/config/nav2/nav2_params.yaml \
-  use_sim_time:=true
+  params_file:=/home/ws/config/nav2/nav2_params.yaml use_sim_time:=true
 ```
 
-The loaded controller is direct Omni MPPI, without a rotation shim. It can
-strafe during approaches without first aligning to the path. Path-heading costs
-still encourage forward-facing travel, and the goal checker requires final yaw.
-Restart Nav2 after changing controller plugins.
+**Host — SAM3:** `bash docker/sam3/run_sam3.sh`
 
-Run only one Nav2 launch. Check that the laser scan lines up with the map in RViz before continuing. The initial AMCL pose comes from the parameter YAML.
+**Terminal 3 — IK solver** (needed for parking): `ros2 launch /home/ws/launch/ik_solver.launch.py`
 
-## 2. Register and build the scene graph
+**Terminal 4 — search:** `python3 -m core.pipeline.search 'pringles' --top-k 3`
 
-In **ROS terminal 3**, before moving the freshly spawned robot:
+- Run only one Nav2. Check in RViz that the laser scan lines up with the map. The first AMCL pose comes from the params YAML.
+- **Controller:** Omni MPPI, no rotation shim. It can strafe on approach; path-heading costs still favour facing forward, and the goal checker wants the final yaw. Restart Nav2 after changing controller plugins.
 
-```bash
-python3 -m core.scene_graph.build register \
-  --world-base 5.0 6.6 0.0 --output config/map/world_to_map.json
-python3 -m core.scene_graph.build --transform config/map/world_to_map.json
-python3 -m core.pipeline.search 'pringles' --dry-run
-```
+## Search options
 
-`5.0 6.6 0.0` is only for the default fresh apartment spawn. If the robot has moved, use its current Gazebo base-footprint X/Y/yaw. Registration needs correct AMCL localization; check graph furniture against the map and rebuild after changing the transform.
-
-Set `DEEPSEEK_API_KEY` in this terminal for unknown-object searches or fallback after a remembered location fails. Unknown-object dry runs also call the API, but send no motion commands.
-
-To assign room names, rebuild with:
-
-```bash
-python3 -m core.scene_graph.build --transform config/map/world_to_map.json --rooms
-```
-
-## Real room: from a scan
-
-Build the graph from OpenYOLO3D output with `python -m core.scene_graph.openyolo3d`,
-as in the [scan workflow](../../docker/openyolo3d/README.md#3-build-the-scene-graph),
-then plot a piece before driving:
-
-```bash
-python3 visualization/viewpoints.py --furniture <name> --graph outputs/scene_graph/room1.json
-```
-
-Every graph build, scan or Gazebo, fits each furniture piece with the smallest
-turned rectangle around its points seen from above, so turned pieces keep their
-yaw. Stray points in a mask stretch that rectangle, and box errors move every
-viewpoint by the same amount. Graphs built before this fall back to
-axis-aligned boxes until rebuilt.
-
-## 3. Start perception and IK
-
-In a **host terminal**, from the repository root:
-
-```bash
-bash docker/sam3/run_sam3.sh
-```
-
-In another **ROS terminal**:
-
-```bash
-ros2 launch /home/ws/launch/ik_solver.launch.py
-```
-
-## 4. Search
-
-In ROS terminal 3:
-
-```bash
-python3 -m core.pipeline.search 'pringles' --top-k 3
-```
+`python3 -m core.pipeline.search <object> [options]`
 
 | Option | Use it to |
 | --- | --- |
-| `--dry-run` | Print search choices without moving |
-| `--no-refine` | Stop after detection; no IK solver needed |
-| `--furniture high_table01` | Test navigation without SAM3 or DeepSeek |
-| `--graph /path/to/graph.json` | Use a different scene graph |
-| `--bearings 6` | Set horizontal reach-probe directions |
+| `--dry-run` | Print the first location and its poses. No motion. Unknown objects still call DeepSeek. |
+| `--top-k 3` | Set how many places DeepSeek suggests |
+| `--furniture high_table01` | Drive to a piece of furniture. No SAM3, no DeepSeek. |
+| `--graph /path/to/graph.json` | Use another scene graph |
+| `--no-refine` | Stop after detection. No IK solver needed. |
+| `--grasp` | Pick the object up after parking |
+| `--bearings 6` | Set the horizontal reach-probe directions |
+| `--map` / `--costmap` | Choose the obstacle source for parking (default `--costmap`) |
 
-Exit codes: **0** ready/arrived, **1** not found, **2** found but not graspable — either no probe direction is reachable, or the base could not park inside the cluster the IK solver certified.
+| Exit code | Meaning |
+| --- | --- |
+| `0` | Parked and ready (or arrived, or picked with `--grasp`) |
+| `1` | Not found |
+| `2` | Found, but not graspable: no reachable probe, or could not park where the IK solver certified |
+| `4` | Parked, but the pick failed (`--grasp`) |
+
+## What the mission does at startup
+
+| Step | Details |
+| --- | --- |
+| **Home arm** | Lift, flex, roll, wrist flex, wrist roll → `[0.0, 0.0, -1.57, -1.57, 0.0]` in 3 s. A rejection, failure or 30 s timeout stops the mission. Logs `[HOME]`, then `[READY] arm home pose reached`. |
+| **Ready** | Waits for active Nav2 nodes, nav and head actions, IK, fresh localization, synced RGB-D with TF, and one SAM3 reply (thrown away). Shared 180 s budget; `startup_timeout:=300` for slow machines. |
+| Then | The base moves only after Ready passes. Ready does **not** check that your map registration is accurate. |
+
+- **Logs** are labelled by process: `simulation`, `navigation`, `ik`, `move_group`, `mission_tree`. The mission ends with the tree and each step's status.
+- **Exit codes:** `0` done, `1` not found, `2` could not park, `3` startup/service error, `4` pick failed, `130` Ctrl+C. The sim stays open afterwards.
+- **Watch live:** `py-trees-tree-watcher` in another sourced terminal. It is a plain command, not `ros2 run`.
+- ⚠️ **Detections update the graph file.** Use a separate `graph:=/path/to/scenario.json` per demo scenario. The launch never rebuilds it.
 
 ## Preview the viewpoints
 
-No robot, no ROS. Draws what the query selects, using the same `plan()` call the mission drives:
+No robot, no ROS. Draws what a query would do, using the same `plan()` the mission drives:
 
 ```bash
 python3 visualization/viewpoints.py 'pringles' --output outputs/viewpoints.png
@@ -178,52 +94,78 @@ python3 visualization/viewpoints.py 'pringles' --output outputs/viewpoints.png
 
 | Option | Use it to |
 | --- | --- |
-| `--index 1` | Plot the next search location; past the remembered ones this calls DeepSeek |
-| `--robot X Y` | Order candidates as if the robot were there (default `0 0`) |
-| `--furniture high_table01` | Plot a furniture target instead of an object |
+| `--index 1` | Plot the next location. Past the remembered ones, this calls DeepSeek. |
+| `--robot X Y` | Order the poses as if the robot stood there (default `0 0`) |
+| `--furniture high_table01` | Plot a furniture target |
 | `--graph room1.json` | Plot a scanned graph |
 
-Reading the plot: green arrows are candidate poses, numbered in visiting
-order. The title says how many views the location needs; only that many are
-driven to, and later numbers are fallbacks when Nav2 cannot reach one.
+**Reading the plot:**
 
-Left panel is the 3D scene with the IK reach probes at the object; right panel is the plan view, where the circles are the base radius the standoff filter uses. Red crosses are candidates dropped for hitting furniture. Dotted lines show where each view looks; the title gives how many views the location needs. The filter checks the **base footprint only** — a pose it keeps can still be sighting through another piece of furniture, which is visible in the shelf case.
+| You see | Means |
+| --- | --- |
+| Green numbered arrows | Candidate poses, in visiting order |
+| Title's "views needed" | Only that many are driven to; later numbers are fallbacks |
+| Circles (right panel) | The base radius the furniture filter uses |
+| Red crosses | Poses dropped for hitting furniture |
+| Dotted lines | Where each view looks |
+| Purple arrows (left panel) | IK reach probes at the object |
 
-## What success means
+⚠️ The filter checks the **base footprint only**. A kept pose can still look through other furniture, which shows up in the shelf case.
 
-- Candidate views sit every 0.5 m along a line 0.8 m out from the furniture edge, following its yaw, each facing the part in front of it. The first view is the nearest of those showing nearly as much as the best one (within 5%), so it is close without being an end view down a long table; after it, views go in the order that shows the most unseen top from within 1.5 m, until another would add under 5%: 2 for a small table, 3–5 for long ones, at most 6. The second view of a small table comes from the far side.
-- Shelved furniture (taller than 1.2 m, or labelled shelf/bookcase/rack) is viewed only from its long faces, with the head aimed at each height band in turn. Heights beyond the head's tilt are skipped. Check head aiming in Gazebo before hardware use.
-- A run keeps every place's candidate views, and what happened at each (`no path`, `drive failed`, `cannot aim`, `not detected`, `detected`), in `search.VIEWS`. A later look at the same place reuses them, reordered from where the robot is. They are held in memory, so they go when the process ends; another process, such as the NBV node, cannot see them.
-- The camera field of view is assumed to be ±0.45 rad horizontally and ±0.35 rad vertically (`standoff.py`). Check it against the HSR-C `camera_info`.
-- Detection needs fresh RGB-D, at least 100 valid masked depth points, and 25% valid masked depth. Bad depth tries another view.
-- Search tries every remembered instance of the object, nearest first, before asking DeepSeek to guess furniture. Without an API key it searches memory only and reports not found, rather than failing.
-- Successful detection saves map-frame bounds before IK runs. Failed observations leave memory unchanged. Matching uses label and proximity, so instance identity is approximate; a same-label detection more than 1 m from a remembered one becomes a new node instead of overwriting it.
-- Base placement uses hand-pose probes. A reachable probe does not prove a stable grasp. The head aims at the object again after placement.
-- **Arm–furniture collisions are not checked:** the IK environment is empty. Base costmap and self-collision checks still apply.
-- Nav2's standing 25 cm tolerance is larger than the IK robustness neighborhood of about 7.5 cm, so the final approach tightens `general_goal_checker` to 0.08 m at runtime and restores it afterwards. Arrival is then re-measured against the certified pose: past 0.08 m the run reports **2**, not ready. See [IK solver settings](#ik-solver-settings).
+## How search decides
+
+| Topic | Rule |
+| --- | --- |
+| **View poses** | Every 0.5 m along a line 0.8 m out from the furniture edge, following its yaw, each facing the part in front of it |
+| **View order** | First: the nearest view that shows within 5% of the best one. Then whichever shows the most unseen top within 1.5 m, until a view adds under 5%. |
+| **How many** | 2 for a small table (the second from the far side), 3–5 for long ones, at most 6 |
+| **Shelves** | Taller than 1.2 m, or labelled shelf/bookcase/rack: long faces only, head aimed at each height band. Heights past the head's tilt are skipped. |
+| **Search order** | Every remembered instance, nearest first, then DeepSeek. No API key → memory only → "not found". |
+| **Detection** | Needs fresh RGB-D, 100+ valid masked depth points and 25%+ valid depth. Bad depth → next view. |
+| **Saving** | Map-frame bounds are saved before IK runs. Failed looks change nothing. A same-label detection more than 1 m from a remembered one becomes a new node. |
+| **View memory** | Each place's poses and outcomes (`no path`, `drive failed`, `cannot aim`, `not detected`, `detected`) stay in `search.VIEWS` for the process. Other processes cannot see them. |
+| **Camera FOV** | Assumed ±0.45 rad horizontal, ±0.35 rad vertical (`standoff.py`). Check against the HSR-C `camera_info`. |
+| **Parking** | Hand-pose probes via IK. Reachable does not mean a stable grasp. The head re-aims at the object after parking. |
+| **Parking accuracy** | Nav2's usual tolerance is 25 cm; IK needs about 7.5 cm. The final approach tightens `general_goal_checker` to 0.08 m and restores it after. Parked further than 0.08 m → exit `2`. |
+| ⚠️ **Arm collisions** | Arm–furniture collisions are **not** checked; the IK scene is empty. Base costmap and self-collision checks still apply. |
+
+- Head aiming is tested in Gazebo only. Check it before using hardware.
+- Viewing tolerances are 0.30 m / 0.30 rad, not grasp tolerances. A failed plan or drive tries the next pose.
 
 ## If it stops
 
 | Problem | Next step |
 | --- | --- |
 | Goal acceptance times out | Stop Nav2 before retrying; the goal state is unknown |
-| Cancellation cannot be confirmed | Resolve the active goal before restarting search |
-| Camera, SAM3, or IK error | Restore the service; an error does not mean the object is absent or unreachable |
-| Old map-to-base TF | Check localization and clock alignment; TF must be within 2 seconds |
-| No reachable view | Check localization, furniture bounds, and the costmap |
-
-Planning or driving failures try another candidate. Observation tolerances are 0.30 m/rad, not grasp tolerances.
+| Cancellation cannot be confirmed | Resolve the active goal before restarting |
+| Camera, SAM3 or IK error | Fix the service. An error does not mean the object is missing or unreachable. |
+| Old map-to-base TF | Check localization and clocks; TF must be under 2 s old |
+| No reachable view | Check localization, furniture bounds and the costmap |
 
 ## IK solver settings
 
-[launch/ik_solver.launch.py](../../launch/ik_solver.launch.py) starts Toyota's solver with the **HSRC** plugin (Toyota's example hardcodes the different HSR-B geometry). Service: `/ik_solver_node/solve_ik_with_collision`.
+[launch/ik_solver.launch.py](../../launch/ik_solver.launch.py) starts Toyota's solver with the **HSRC** plugin (Toyota's example hardcodes the HSR-B). Service: `/ik_solver_node/solve_ik_with_collision`.
 
 | Parameter | Value | Effect |
 | --- | --- | --- |
-| `convolution.ik_base_resolution` | `0.05` m | Base search grid spacing; halving it roughly quadruples grid work |
-| `convolution.grid_distance_threhsold` | `1.5` cells | Scores solutions using nearby reachable base cells |
-| `convolution.ik_result_joint_distance_threshold` | `1.0` (default) | Joint/base-yaw similarity used for scoring |
+| `convolution.ik_base_resolution` | `0.05` m | Base grid spacing. Halving it roughly quadruples the work. |
+| `convolution.grid_distance_threhsold` | `1.5` cells | Scores solutions by nearby reachable base cells |
+| `convolution.ik_result_joint_distance_threshold` | `1.0` (default) | Joint and base-yaw similarity used in scoring |
 
-Keep the spelling **`threhsold`**. Toyota's code reads that exact key; correcting it silently uses the default.
+⚠️ Keep the spelling **`threhsold`**. Toyota's code reads that exact key; the correct spelling is silently ignored.
 
-The solver checks a base-position grid, filters collisions, scores nearby solutions, and returns only those tied for the best score. Border cells without a full scoring neighborhood are skipped. A timeout is a service error, not an unreachable result, and a reachable hand pose does not guarantee a grasp: [core/grasping/pick.py](../grasping/pick.py) plans the actual grasp from the parked pose. Toyota's implementation is under `ros2_ws/src/tmc_manipulation/tmc_ik_solver_node/`.
+- **How it works:** the solver checks a grid of base positions, drops collisions, scores nearby solutions and returns only the best-scoring ones. Border cells without a full neighbourhood are skipped.
+- **Timeouts:** a timeout is a service error, not "unreachable".
+- **Reach is not a grasp:** a reachable hand pose is not a grasp. `pick.py` plans the real grasp from the parked pose.
+- **Source:** `ros2_ws/src/tmc_manipulation/tmc_ik_solver_node/`.
+
+## Real room: from a scan
+
+1. Build the graph from OpenYOLO3D output ([scan workflow](../../docker/openyolo3d/README.md#3-build-the-scene-graph)).
+2. Plot a piece before driving:
+
+```bash
+python3 visualization/viewpoints.py --furniture <name> --graph outputs/scene_graph/room1.json
+```
+
+Every graph build fits each furniture piece with the smallest turned rectangle seen from above, so turned pieces keep their yaw. Stray mask points stretch that rectangle and shift every viewpoint with it. Graphs built before this use axis-aligned boxes until rebuilt.

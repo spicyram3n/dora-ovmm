@@ -9,8 +9,8 @@ Each leaf runs one existing step to its end within a single tick. The mission
 is a strict sequence, and Ctrl+C still cancels a Nav2 goal inside the step.
 
     Mission                                   Mission (--navigate-only true)
+    ├─ Home arm        first, whatever pose   ├─ Home arm
     ├─ Ready                                  ├─ Ready             no SAM3
-    ├─ Home arm                               ├─ Home arm
     ├─ Find target                            ├─ Choose location   target reasoning
     ├─ Park            once                   └─ Go there          first reachable view
     ├─ Pause Nav2
@@ -37,6 +37,7 @@ from rclpy.executors import SingleThreadedExecutor
 from core.navigation.nav2_client import Navigator
 from core.pipeline import mission, search
 from core.scene_graph import graph as sg
+from core.utils import events
 
 ROOT = Path(__file__).resolve().parents[2]
 # Each pick re-segments the object and asks for fresh grasps, so a retry is a new try.
@@ -71,7 +72,8 @@ class Step(py_trees.behaviour.Behaviour):
 
 def build(steps, grasp=True, navigate_only=False):
     """The mission tree over `steps`, a dict of name -> action."""
-    children = [Step("Ready", steps["ready"]), Step("Home arm", steps["home"])]
+    # Home first: it needs only the arm controller, and every later step assumes it.
+    children = [Step("Home arm", steps["home"]), Step("Ready", steps["ready"])]
     if navigate_only:
         children.append(Step("Choose location", steps["choose"]))
         children.append(Step("Go there", steps["go"]))
@@ -85,6 +87,15 @@ def build(steps, grasp=True, navigate_only=False):
             "Pick, retried", Step("Pick", steps["pick"]), num_failures=ATTEMPTS))
         children.append(Step("Home arm after pick", steps["home"]))
     return py_trees.composites.Sequence("Mission", memory=True, children=children)
+
+
+def snapshot(node):
+    """A behaviour and its children with their status, as the dashboard draws them."""
+    children = []
+    for child in node.children:
+        children.append(snapshot(child))
+    return {"name": node.name, "type": type(node).__name__,
+            "status": node.status.value, "children": children}
 
 
 def exit_code(root):
@@ -204,6 +215,8 @@ def run(argv=None):
         threading.Thread(target=viewers.spin, daemon=True).start()
         while True:
             tree.tick()
+            # A step blocks inside its tick, so this lands once per status change.
+            events.emit("tree", tree=snapshot(tree.root), running=tree.root.tip().name)
             if tree.root.status != py_trees.common.Status.RUNNING:
                 break
             time.sleep(0.1)

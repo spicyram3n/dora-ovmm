@@ -27,8 +27,12 @@ def generate_launch_description():
     declared_arguments = [
         DeclareLaunchArgument("description_package", default_value="hsrc_description"),
         DeclareLaunchArgument("description_file", default_value="hsrc1s.urdf.xacro"),
-        DeclareLaunchArgument("collision_file", default_value="collision_pair_hsrc.xml"),
-        DeclareLaunchArgument("use_sim_time", default_value="true", choices=["true", "false"]),
+        DeclareLaunchArgument(
+            "collision_file", default_value="collision_pair_hsrc.xml"
+        ),
+        DeclareLaunchArgument(
+            "use_sim_time", default_value="true", choices=["true", "false"]
+        ),
     ]
 
     ik_solver = Node(
@@ -40,16 +44,15 @@ def generate_launch_description():
             load_collision_description(),
             {
                 "use_sim_time": LaunchConfiguration("use_sim_time"),
-                "ik_plugin_type":
-                    "hsrb_ik_solver_node::HsrcIkSolverPluginRobustToBasePositionError",
-                "map_convolution_type":
-                    "tmc_ik_solver_node::EuclideanDistanceMapConvolution",
-                    # explained under "IK solver settings" in core/navigation/README.md
+                "ik_plugin_type": "hsrb_ik_solver_node::HsrcIkSolverPluginRobustToBasePositionError",
+                "map_convolution_type": "tmc_ik_solver_node::EuclideanDistanceMapConvolution",
+                # explained under "IK solver settings" in core/navigation/README.md
                 "convolution": {
                     "grid_distance_threhsold": 1.5,  # cells;
-                    "ik_base_resolution": 0.05,      # metres between candidates
+                    "ik_base_resolution": 0.05,  # metres between candidates
                 },
             },
-        ])
+        ],
+    )
 
     return LaunchDescription(declared_arguments + [ik_solver])

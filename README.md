@@ -1,29 +1,37 @@
-# HSR object search
+# HSR fetch
 
-**One command:** home the arm → search scene-graph/LLM locations → navigate → detect with SAM3 → park within arm reach → generate grasps with GraspGenX → approach, close on finger feedback, lift, and verify the hold.
+Ask for an object. The HSR homes its arm, picks where to look (scene graph first, then DeepSeek), drives there, finds the object with SAM3, parks within reach, and picks it up with GraspGenX and MoveIt.
 
-## 1. Clone
+| Where | What runs there |
+| --- | --- |
+| **Host** (your PC) | Model servers in Docker: SAM3 (detection), GraspGenX (grasps) |
+| **Dev container** | ROS 2 Humble: Gazebo sim, Nav2, IK, MoveIt, the mission, the web dashboard |
+
+## Quick start
+
+Already set up? Two commands.
+
+| # | Where | Command | Why |
+| --- | --- | --- | --- |
+| 1 | Host | `docker compose -f docker/compose.yaml up -d --wait --wait-timeout 900` | Start SAM3 and GraspGenX |
+| 2 | Container | `ros2 launch /home/ws/launch/search.launch.py target:="pringles"` | Start the sim stack and run one mission |
+
+Prefer clicking? Use the [web dashboard](#5-web-dashboard) instead of step 2.
+
+---
+
+## 1. One-time setup
+
+**Host needs:** Docker with GPU access (NVIDIA driver + NVIDIA Container Toolkit), VS Code with the **Dev Containers** extension.
 
 ```bash
 git clone git@github.com:spicyram3n/dora-ovmm.git
 cd dora-ovmm
 ```
 
-## 2. Set up Docker and the workspace
+Open the folder in VS Code → **Dev Containers: Reopen in Container**. The first start downloads ROS packages and builds the workspace. Wait for it.
 
-On the **host**, install Docker, NVIDIA drivers + NVIDIA Container Toolkit, and VS Code with the **Dev Containers** extension. Docker must work for your user and have GPU access for the model servers.
-
-Open the repository in VS Code → **Dev Containers: Reopen in Container**. First setup downloads ROS packages and builds the workspace. Wait for it to finish.
-
-After changing ROS sources, rebuild inside the **dev container**:
-
-```bash
-ROS2_REBUILD=1 bash /home/ws/.devcontainer/postCreate.sh
-```
-
-For `.devcontainer/Dockerfile` changes, use **Dev Containers: Rebuild Container**. Workspace Python, YAML, and launch-file edits normally only need a process restart. For model-server changes, rebuild the model images using step 4.
-
-Run this in **each new dev-container terminal**:
+**Run this in every new container terminal:**
 
 ```bash
 cd /home/ws
@@ -31,9 +39,22 @@ source /opt/ros/humble/setup.bash
 source ros2_ws/install/setup.bash
 ```
 
-## 3. Prepare the scene graph — once per scene
+**When to rebuild:**
 
-**Container terminal 1 — simulation:**
+| You changed | Do this |
+| --- | --- |
+| ROS packages in `ros2_ws/src/` | `ROS2_REBUILD=1 bash /home/ws/.devcontainer/postCreate.sh` |
+| `.devcontainer/Dockerfile` | VS Code → **Dev Containers: Rebuild Container** |
+| Python, YAML or launch files | Nothing. Restart the process. |
+| Model server code in `docker/` | Rebuild the images ([step 3](#3-start-the-model-servers)) |
+
+---
+
+## 2. Build the scene graph
+
+**Once per scene.** The mission reads furniture and remembered objects from `outputs/scene_graph/apartment.json`.
+
+**Container terminal 1 — simulation.** Registration needs the robot in the world.
 
 ```bash
 ros2 launch hsrb_gazebo_launch hsrb_apartment_world.launch.py \
@@ -41,7 +62,7 @@ ros2 launch hsrb_gazebo_launch hsrb_apartment_world.launch.py \
   description_package:=hsrc_description description_file:=hsrc1s.urdf.xacro
 ```
 
-**Container terminal 2 — Nav2:**
+**Container terminal 2 — Nav2.** Gives the robot's pose on the map.
 
 ```bash
 ros2 launch hsrb_rosnav_config navigation_launch.py \
@@ -49,11 +70,9 @@ ros2 launch hsrb_rosnav_config navigation_launch.py \
   params_file:=/home/ws/config/nav2/nav2_params.yaml use_sim_time:=true
 ```
 
-Check that the laser scan lines up with the map in RViz. Keep the freshly spawned robot stationary.
+Check in RViz that the laser scan lines up with the map. **Do not move the robot.**
 
-**Container terminal 3 — register and build:**
-
-Set `DEEPSEEK_API_KEY` in this terminal for room assignment and LLM search.
+**Container terminal 3 — register, build, check.** Set `DEEPSEEK_API_KEY` first (room names).
 
 ```bash
 python3 -m core.scene_graph.build register \
@@ -63,220 +82,228 @@ python3 -m core.scene_graph.build \
 python3 -m core.pipeline.search pringles --dry-run
 ```
 
-The spawn coordinates above apply only to the default fresh apartment. Check graph alignment before using it. Output: `outputs/scene_graph/apartment.json`.
+| Command | Why |
+| --- | --- |
+| `build register --world-base X Y YAW` | Measures the Gazebo-world → map transform from where the robot stands |
+| `build --transform ... --rooms` | Builds the graph from the world file; DeepSeek names the rooms |
+| `search pringles --dry-run` | Shows the first place a query would search. No motion. |
 
-Stop simulation and Nav2 with **Ctrl+C** in terminals 1 and 2 before the full launch below.
+⚠️ `5.0 6.6 0.0` is the default fresh spawn only. If the robot moved, use its Gazebo `base_footprint` x, y, yaw.
 
-For an unknown-object demo, use a graph copy with the target removed but furniture retained. Successful searches update the selected graph. See [scene graph instructions](core/scene_graph/README.md) for more details.
+Then **Ctrl+C terminals 1 and 2** before the full launch.
 
-## 4. Start the model servers — host terminal
+- **Unknown-object demo:** copy the graph, delete the target's node, keep the furniture. Successful searches update the graph they use.
+- **More:** [scene graph README](core/scene_graph/README.md).
 
-Run these commands from the repository root on the **host**, with Docker Compose 2.24+ and GPU access configured.
+---
 
-Before the first run:
+## 3. Start the model servers
 
-- Accept the `facebook/sam3` model license on Hugging Face and save `HF_TOKEN=...` in `docker/sam3/.env`.
-- Follow the [GraspGenX setup](docker/graspgenx/README.md) to prepare checkpoints and register the `hsrc_hand` gripper. This is required for pickup; search alone only needs SAM3.
-- Stop old manually launched SAM3/GraspGenX containers so their ports are free.
+**On the host, from the repository root.** Needs Docker Compose 2.24+.
 
-**First run, or after changing model-server code:**
+**Before the first run:**
 
-```bash
-docker compose -f docker/compose.yaml up -d --build --wait --wait-timeout 900
-```
+- [ ] Accept the `facebook/sam3` license on Hugging Face and put `HF_TOKEN=...` in `docker/sam3/.env`.
+- [ ] Do the [GraspGenX setup](docker/graspgenx/README.md). Only needed for picking.
+- [ ] Stop any SAM3/GraspGenX containers you started by hand, so the ports are free.
 
-This builds and starts both servers in the background, then waits for model loading and warmup. Continue to the pipeline once the command succeeds.
+| Command | Why |
+| --- | --- |
+| `docker compose -f docker/compose.yaml up -d --build --wait --wait-timeout 900` | First run, or server code changed: build, start, wait for warmup |
+| `docker compose -f docker/compose.yaml up -d --wait --wait-timeout 900` | Every later run |
+| `docker compose -f docker/compose.yaml up -d --build --wait --wait-timeout 900 sam3` | Search only: start SAM3 alone |
+| `docker compose -f docker/compose.yaml ps sam3 graspgenx` | Health. Both `healthy`; `starting` means still loading |
+| `docker compose -f docker/compose.yaml logs --tail=100 -f sam3 graspgenx` | See why a server failed. Ctrl+C leaves them running |
+| `docker compose -f docker/compose.yaml down` | Stop and remove the containers. Checkpoints and gripper files stay |
 
-**Subsequent runs:**
+Shortcuts that build, start and wait: `bash docker/sam3/run_sam3.sh`, `bash docker/graspgenx/run_graspgenx.sh`.
 
-```bash
-docker compose -f docker/compose.yaml up -d --wait --wait-timeout 900
-```
-
-**Search only:** start just SAM3 instead:
-
-```bash
-docker compose -f docker/compose.yaml up -d --build --wait --wait-timeout 900 sam3
-```
-
-The existing `bash docker/sam3/run_sam3.sh` and `bash docker/graspgenx/run_graspgenx.sh` commands are shortcuts that build/start the selected server and wait for readiness.
-
-**Check health — host terminal:**
-
-```bash
-docker compose -f docker/compose.yaml ps sam3 graspgenx
-```
-
-Both should show `healthy`; `starting` is normal during model loading and warmup. Docker checks Zenoh readiness every 30 seconds on SAM3 port `7447` and GraspGenX port `7448`.
-
-Model RPC uses direct TCP connections with multicast discovery disabled to avoid host UDP port `7446` conflicts. Clients default to `tcp/127.0.0.1:7447,tcp/127.0.0.1:7448`; set `ZENOH_CONNECT` to comma-separated TCP endpoints when the models run on another host.
-
-Run the same probes immediately (silent success, exit code `0`; failure is nonzero):
+**Readiness probes** (exit code 0 = ready; they check warmup, not a full inference):
 
 ```bash
 docker compose -f docker/compose.yaml exec -T sam3 python3 zenoh_rpc.py tcp/127.0.0.1:7447 sam3
 docker compose -f docker/compose.yaml exec -T graspgenx .venv/bin/python3 zenoh_rpc.py tcp/127.0.0.1:7448 graspgenx
 ```
 
-These check readiness after warmup, not a full inference. To investigate failures:
+| Server | Port | Note |
+| --- | --- | --- |
+| SAM3 | `7447` | TCP only; multicast is off to avoid clashes on UDP `7446` |
+| GraspGenX | `7448` | Same |
+
+Models on another machine? Set `ZENOH_CONNECT=tcp/<ip>:7447,tcp/<ip>:7448` in the container terminal.
+
+---
+
+## 4. Run the mission
+
+**Container terminal**, with `DEEPSEEK_API_KEY` set for unknown objects:
 
 ```bash
-docker compose -f docker/compose.yaml logs --tail=100 -f sam3 graspgenx
+ros2 launch /home/ws/launch/search.launch.py target:="pringles"
 ```
 
-Ctrl+C exits log viewing; the servers keep running. Checkpoints and registered grippers persist in their existing host folders. A failed readiness wait does not stop the containers; inspect their logs before retrying.
+This starts the sim, Nav2, IK and MoveIt, then runs the [behaviour tree](core/pipeline/mission_tree.py):
 
-## 5. Run the pipeline
-
-In a sourced **dev-container terminal**, with `DEEPSEEK_API_KEY` set for LLM predictions:
-
-```bash
-ros2 launch /home/ws/launch/search.launch.py target:="pringles" top_k:=3 grasp:=true
-```
-
-For search and base placement only, use the same command with `grasp:=false`.
-
-The launch starts simulation, Nav2, IK, and MoveIt; waits for services, localization, RGB-D, and SAM3; then sends the arm home before searching. Pickup is enabled by default; `grasp:=false` stops after base placement.
-
-Watch **`[WAIT]` → `[READY]` → `[HOME]` → `[SEARCH]` → `[APPROACH]` → `[GRASP]` → `[RESULT]`**. Process logs are labelled individually. Simulation stays open after completion; **Ctrl+C** stops the launched processes.
-
-Pickup ([core/grasping/pick.py](core/grasping/pick.py)) works on any object SAM3 segments and GraspGenX can grasp. MoveIt Task Constructor opens the hand and reaches the best reachable grasp; the gripper closes by effort; a second task attaches the object and lifts it. The hand is then checked for having closed on something. After a successful pickup the robot keeps holding the object; the next pickup opens the hand first.
-
-Useful overrides:
-
-| Argument | Purpose |
+| Step | What happens |
 | --- | --- |
-| `target:="red cup"` | Change the queried object |
-| `grasp:=true` | Pick the object up once parked |
-| `graph:=/path/to/scenario.json` | Select prepared object memory |
-| `top_k:=5` | Ask for more candidate locations |
-| `startup_timeout:=300` | Allow slower startup |
+| **Home arm** | Arm to the home pose, whatever pose it is in |
+| **Ready** | Waits for Nav2, head, IK, localization, RGB-D and SAM3 (180 s budget) |
+| **Find target** | Scene graph first, then DeepSeek's top-k. Drives to views; SAM3 looks. |
+| **Park** | Drives to an IK-certified pose within arm reach |
+| **Pause Nav2** | So MoveIt can move the base |
+| **Pick** (up to 3 tries) | GraspGenX grasps + MoveIt Task Constructor; checks the hand closed on something |
+| **Home arm after pick** | Arm back home, still holding the object |
 
-If simulation, Nav2, IK, and MoveIt are **already running**, reuse them:
+**Launch arguments:**
+
+| Argument | Use it to |
+| --- | --- |
+| `target:="red cup"` | Choose the object |
+| `grasp:=false` | Stop after parking; no pick |
+| `navigate_only:=true` | Only reason and drive there; no SAM3 or GraspGenX |
+| `top_k:=5` | Ask DeepSeek for more places |
+| `graph:=/path/to/scenario.json` | Use another scene graph |
+| `startup_timeout:=300` | Allow slower startup |
+| `bearings:=6` | Set the reach-probe directions for parking |
+| `use_rviz:=true` | Open RViz with MoveIt |
+| `shutdown_when_done:=true` | Close everything when the mission ends |
+| `web:=true` | Start the stack with no mission ([dashboard](#5-web-dashboard)) |
+| `start_simulation:=false` (also `start_navigation`, `start_ik`, `start_move_group`) | Reuse a stack that is already running |
+
+**Reuse a running stack:**
 
 ```bash
-ros2 launch /home/ws/launch/search.launch.py target:="pringles" grasp:=true \
+ros2 launch /home/ws/launch/search.launch.py target:="pringles" \
   start_simulation:=false start_navigation:=false start_ik:=false start_move_group:=false
 ```
 
-### MoveIt with this repository's plugins
+**While it runs:**
 
-The full pipeline launch automatically starts `launch/move_group.launch.py`.
-It uses the HSRC description (`hsrc_description`, `hsrc1s.urdf.xacro`) and loads:
+- **Logs:** `[HOME]` → `[WAIT]` → `[READY]` → search output → `[RESULT]`, then the tree with each step's status.
+- **Watch the tree live:** run `py-trees-tree-watcher` (terminal) or `py-trees-tree-viewer` (window) in another sourced terminal.
+- The sim stays open afterwards. **Ctrl+C** stops everything.
 
-- `config/moveit/kinematics.yaml`: arm and whole-body IK plugins.
-- `config/moveit/ompl_planning.yaml`: motion planner settings.
-- `config/moveit/sensors_xtion.yaml`: MoveIt's depth-image updater and the 1 cm octomap, fed by `hsr_rgbd`'s 1 Hz relay.
-- `move_group/ExecuteTaskSolutionCapability`: executes MoveIt Task Constructor plans.
+**Exit codes:**
 
-The vendor command `ros2 launch hsrb_moveit_config demo.py` loads the installed
-package's configuration; it does not select these repository-local YAML files.
-For a separate MoveIt terminal, use this command after sourcing ROS and the workspace:
-
-```bash
-ros2 launch /home/ws/launch/move_group.launch.py use_sim_time:=true use_rviz:=true
-```
-
-Then run the pipeline in another sourced terminal, reusing that MoveIt instance:
-
-```bash
-ros2 launch /home/ws/launch/search.launch.py target:="pringles" grasp:=true start_move_group:=false
-```
-
-This still starts simulation, Nav2, and IK. If those are already running too,
-use all four `start_...:=false` arguments shown above. Run only one MoveIt
-instance. Editing `config/moveit/` settings only requires restarting MoveIt.
-
-To grasp on its own, with the base already parked within reach:
-
-```bash
-python3 -m core.grasping.pick "pringles can"
-```
-
-## 6. Stop
-
-Press **Ctrl+C** in the pipeline terminal to stop the ROS launch. Model servers run independently; stop them from a **host terminal**:
-
-```bash
-docker compose -f docker/compose.yaml down
-```
-
-This removes the model containers while keeping downloaded checkpoints and gripper files. Servers otherwise restart after process failure unless explicitly stopped. Healthchecks report readiness; they do not restart an unhealthy process.
-
-## Model client notes
-
-Each model runs one inference at a time with two waiting slots (`MODEL_QUEUE_SIZE`). Full queues return `BUSY`; client deadlines raise `TimeoutError`. Expired queued work is skipped, but running GPU inference cannot be cancelled.
-
-Clients reuse one Zenoh session per process. Existing `detect()` and `generate()` calls keep their return values. `sam3_client.detect_all()` returns all masks, boxes, scores, and metadata. Both clients accept optional `metadata` containing `frame_id`, `stamp` (`sec`/`nanosec`), and `object_id`; use `return_metadata=True` with GraspGenX to receive it. Supply the acquisition stamp and actual cloud/image frame. Centering transforms and object tracking remain the caller's responsibility.
-
-Rebuild both model images after shared protocol changes. Direct Docker builds now use the repository root as context, for example `docker build -f docker/sam3/Dockerfile -t hrl/sam3:latest .`.
-
-## More details
-
-- [Navigation and troubleshooting](core/navigation/README.md)
-- [Real scans → Mask3D/OpenYOLO3D → scene graph](docker/openyolo3d/README.md)
-- [Pickup with MoveIt Task Constructor](core/grasping/pick.py)
-- [Camera transport between machines](vision-transport-poorna/README.md)
-
-## Code organization
-
-Run the complete mission against an already running ROS stack from the repository root:
-
-```bash
-python3 -m core.pipeline --target "pringles"
-# Search and park only:
-python3 -m core.pipeline --target "pringles" --grasp false
-```
-
-The ROS launch above brings up the stack and invokes this same entry point.
-The mission waits for readiness, homes the arm, queries remembered/LLM locations,
-searches with Nav2 and SAM3, saves the observation, parks within reach, generates
-fresh grasps, and picks the object up with MoveIt Task Constructor.
-
-| Folder | Responsibility |
+| Code | Meaning |
 | --- | --- |
-| `core/pipeline/` | Mission readiness, orchestration, and object search |
-| `core/grasping/` | MoveIt Task Constructor pickup and the GraspGenX client |
-| `core/navigation/` | Nav2, standoff poses, and arm-reachable base placement |
-| `core/perception/` | RGB-D capture, SAM3, and point clouds |
-| `core/reasoner/` | Query ordering and DeepSeek location predictions |
-| `core/scene_graph/` | Graph building, registration, memory, and visualization |
-| `core/utils/` | Transforms and model transport |
+| `0` | Done |
+| `1` | Not found |
+| `2` | Found, but could not park within reach |
+| `3` | Startup or service error |
+| `4` | Parked, but the pick failed |
+| `130` | Stopped with Ctrl+C |
 
-Use `python3 -m core.<package>.<module>` from the repository root for individual
-commands; the former loose scripts have moved into these packages.
-Mission exit codes: `0` completed, `1` not found, `2` placement failed,
-`3` startup/service error, `4` pickup failed, `130` interrupted.
+---
 
-The grasping package now has this layout:
+## 5. Web dashboard
 
-```text
-core/grasping/
-├── __init__.py
-├── pick.py               # SAM3 + GraspGenX + MoveIt Task Constructor pickup
-└── graspgenx_client.py   # model RPC
-```
+Type a query in the browser and watch each stage. Runs **navigate-only** for now: home the arm, choose the place, drive there.
 
-### Inspect the running MoveIt scene
+| # | Terminal | Command | Why |
+| --- | --- | --- | --- |
+| 1 | Container A | `python3 -m web.server` | The dashboard. Keep it running; it outlives the sim. |
+| 2 | Container B | `ros2 launch /home/ws/launch/search.launch.py web:=true` | The stack, with no mission. Restart it freely. |
+| 3 | Browser | <http://localhost:8080> | Type the object, press **Fetch** |
 
-Open RViz without starting another MoveIt instance:
+| On the page | Shows |
+| --- | --- |
+| Left | The mission tree, live, and **Runs**: every saved query |
+| **1 · Home** | The robot model homing its arm. **Home arm** homes it by hand. |
+| **2 · Reason** | The reasoner: already in the scene graph, or DeepSeek's top-k and why |
+| **3 · Navigate** | The target furniture, parking spots, Nav2's path as dots, the robot driving |
+| Bottom right | The head camera |
 
-```bash
-ros2 launch /home/ws/launch/move_group.launch.py rviz_only:=true use_rviz:=true
-```
+- **Saved runs:** each query is saved to `outputs/web_runs/` (`<start time>.json` + `.log`). Open any under **Runs**, with or without the sim.
+- **Replays:** a stage replays once when you open its tab. Click the tab to replay.
+- **Options:** extra mission options go after the server command, e.g. `python3 -m web.server --top-k 5`.
+- ⚠️ The browser needs internet (three.js comes from a CDN). The server listens on localhost only.
 
-The repository preset `config/rviz/moveit.rviz` selects `odom`,
-`/monitored_planning_scene`, occupied octomap voxels, and `whole_body` automatically.
-The octomap is part of the planning scene, separate from Nav2's 2D costmap.
+---
 
-To open RViz when starting a new full pipeline, add `use_rviz:=true` to
-`search.launch.py`. These options need no rebuild. The RViz-only launch supplies
-the same planning robot description and model settings as the MoveIt launch.
+## 6. Pick, MoveIt and RViz
 
-Before pickup, the mission pauses `/lifecycle_manager_navigation` and verifies
-that the controller, behavior, navigator, and waypoint nodes are inactive.
-Localization remains active. A failed pause prevents pickup, and navigation
-stays paused after either pickup success or failure. A new mission resumes it.
+| Command | Why |
+| --- | --- |
+| `python3 -m core.grasping.pick "pringles can"` | Grasp only, base already parked. Needs MoveIt, SAM3, GraspGenX, and Nav2 paused. Exit 0 = holding it. |
+| `ros2 launch /home/ws/launch/move_group.launch.py use_sim_time:=true use_rviz:=true` | MoveIt in its own terminal; then add `start_move_group:=false` to the mission launch |
+| `ros2 launch /home/ws/launch/move_group.launch.py rviz_only:=true use_rviz:=true` | RViz on the running MoveIt scene, without a second MoveIt |
 
-The octomap relay publishes the latest depth frame at 1 Hz to match the updater.
-Full-resolution grasp perception remains on the original camera stream.
+**This repo's MoveIt loads:**
+
+| File | Why |
+| --- | --- |
+| `config/moveit/kinematics.yaml` | Arm and whole-body IK plugins |
+| `config/moveit/ompl_planning.yaml` | Planner settings |
+| `config/moveit/sensors_xtion.yaml` | 1 cm octomap from `hsr_rgbd`'s 1 Hz depth relay |
+| `move_group/ExecuteTaskSolutionCapability` | Runs MoveIt Task Constructor plans |
+
+- ⚠️ `ros2 launch hsrb_moveit_config demo.py` ignores these files. Run only one MoveIt. Config changes need only a MoveIt restart.
+- **RViz preset:** `config/rviz/moveit.rviz` shows `odom`, the planning scene, occupied octomap voxels and `whole_body`. The octomap is separate from Nav2's 2D costmap.
+- **Before a pick**, the mission pauses Nav2's motion nodes (localization stays on) and refuses to pick if that fails. Nav2 stays paused afterwards; the next mission resumes it.
+- **After a pick**, the robot keeps holding the object. The next pick opens the hand first.
+
+---
+
+## 7. Stop
+
+| What | How |
+| --- | --- |
+| Sim stack and mission | **Ctrl+C** in the launch terminal |
+| Model servers | `docker compose -f docker/compose.yaml down` (host) |
+
+Servers restart after a crash unless stopped. Healthchecks only report readiness; they do not restart a stuck server.
+
+---
+
+## Tests
+
+| Command | Tests |
+| --- | --- |
+| `python3 -m pytest -p no:anyio tests` | Mission tree, web server, events, geometry, standoff poses (local `tests/` folder, not in git) |
+| `python3 -m pytest -p no:anyio ros2_ws/src/nbv/test` | The nbv octomap node |
+
+Run them from `/home/ws` in a sourced terminal.
+
+## Code map
+
+| Folder | What it does |
+| --- | --- |
+| `core/pipeline/` | The mission tree, readiness checks, object search |
+| `core/navigation/` | Nav2 client, viewing poses, arm-reachable parking ([README](core/navigation/README.md)) |
+| `core/perception/` | RGB-D capture, SAM3 client, point clouds |
+| `core/reasoner/` | Search order and DeepSeek predictions |
+| `core/scene_graph/` | Build, save and query the graph ([README](core/scene_graph/README.md)) |
+| `core/grasping/` | Pick with MoveIt Task Constructor; GraspGenX client |
+| `core/utils/` | Geometry, transforms, model transport, dashboard events |
+| `web/` | The dashboard: `server.py` and `static/` |
+| `launch/` | Sim stack, MoveIt and IK launches |
+| `visualization/` | Offline plots of viewpoints and scan graphs |
+
+| Entry point | Run it to |
+| --- | --- |
+| `python3 -m core.pipeline.mission_tree --target pringles` | Run the mission on an already running stack (`--grasp false`, `--navigate-only true`) |
+| `python3 -m core.pipeline.mission_tree --render` | Save a picture of the tree to `outputs/` (no ROS) |
+| `python3 -m core.pipeline.search pringles --dry-run` | See where a query would search, without moving |
+| `python3 -m core.scene_graph.build --transform ...` | Rebuild the scene graph |
+| `python3 -m core.grasping.pick "pringles can"` | Pick from where the robot stands |
+| `python3 -m web.server` | Start the dashboard |
+| `python3 visualization/viewpoints.py pringles` | Plot the poses a query would visit (no ROS) |
+
+## Model server notes
+
+- **Queue:** one inference at a time, two waiting (`MODEL_QUEUE_SIZE`). A full queue answers `BUSY`; a client deadline raises `TimeoutError`. Running GPU work cannot be cancelled.
+- **Sessions:** clients reuse one Zenoh session per process.
+- **Extra outputs:** `sam3_client.detect_all()` returns every mask, box and score. Both clients take optional `metadata` (`frame_id`, `stamp`, `object_id`); pass `return_metadata=True` to GraspGenX to get it back.
+- **Rebuilds:** rebuild both images after protocol changes. Direct builds use the repository root as context: `docker build -f docker/sam3/Dockerfile -t hrl/sam3:latest .`
+
+## More docs
+
+| Doc | Covers |
+| --- | --- |
+| [core/navigation/README.md](core/navigation/README.md) | Search, parking, viewpoints, IK settings, troubleshooting |
+| [core/scene_graph/README.md](core/scene_graph/README.md) | Graph building, frames, Python use |
+| [docker/graspgenx/README.md](docker/graspgenx/README.md) | GraspGenX setup for the HSRC hand |
+| [docker/openyolo3d/README.md](docker/openyolo3d/README.md) | Real scans → labelled 3D objects → scene graph |
+| [ros2_ws/src/nbv/README.md](ros2_ws/src/nbv/README.md) | Next-best-view octomap |
+| [vision-transport-poorna/README.md](vision-transport-poorna/README.md) | Robot camera → PC over Zenoh |

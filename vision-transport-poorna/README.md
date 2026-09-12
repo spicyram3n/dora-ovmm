@@ -1,26 +1,37 @@
 # Vision Transport
 
-Originally developed by my colleague **Sagar**, adapted for this project's HSR/HSRC setup.
+Originally built by my colleague **Sagar**, adapted for this project's HSR/HSRC setup.
 
-**Robot camera → TX compresses → Zenoh connection → PC RX → ROS topics.**
+**Robot camera → TX compresses → Zenoh → PC RX → ROS topics.**
 
-## Ports at a glance
+## At a glance
+
+| # | Where | Command | Why |
+| --- | --- | --- | --- |
+| 1 | PC | Edit `deployment/config/zenoh_rx.json5` and `rx.yaml` | Point RX at the right transmitter |
+| 2 | PC, `vision-transport-poorna/` | `docker compose -f deployment/compose.yaml build dev` | Build the image |
+| 3 | PC | `docker compose -f deployment/compose.yaml up -d vision_rx` | Start the receiver |
+| 4 | PC, sourced | `ROS_DOMAIN_ID=5 ros2 topic hz /remote/head_rgbd_sensor/rgb/image_rect_color` | Check images arrive |
+
+## Ports
 
 | Machine | Service | TCP port | Purpose |
 | --- | --- | --- | --- |
 | Robot | Sagar's shared TX | `7447`* | Reuse the existing camera transmitter |
-| Robot | This repository's separate TX | `7450` | Use only if you need your own transmitter |
+| Robot | This repo's separate TX | `7450` | Only if you need your own transmitter |
 | Your PC | RX | `7451` | Local receiver listener |
 | Your PC | SAM3 | `7447` | Object detection |
 | Your PC | GraspGenX | `7448` | Grasp generation |
 
-*Shared TX port comes from the previous team notes; confirm its running configuration. The same port on different machines does not conflict.*
+*From the previous team notes; confirm against its running config. The same port on different machines does not clash.*
 
-RX connects to the robot's TX. Data returns over that connection; no port-forwarder or explicit TX-to-PC connection is needed.
+RX connects to the robot's TX, and data comes back over that connection. No port forwarding needed.
+
+---
 
 ## 1. Choose the transmitter
 
-**Prefer Sagar's running TX** to avoid encoding the same camera twice.
+**Prefer Sagar's running TX**, so the camera is not encoded twice.
 
 | Setting | Shared TX | Separate TX (current files) |
 | --- | --- | --- |
@@ -28,47 +39,47 @@ RX connects to the robot's TX. Data returns over that connection; no port-forwar
 | RX `zenoh_key` prefix | `robot/head_rgbd_sensor/`* | `poorna/head_rgbd_sensor/` |
 | Start another TX? | No | Yes, on the robot |
 
-Edit [zenoh_rx.json5](deployment/config/zenoh_rx.json5) for the robot IP/port and [rx.yaml](deployment/config/rx.yaml) for keys. Keep RX's `listen` port at `7451`.
+- **Robot IP and port:** set them in [zenoh_rx.json5](deployment/config/zenoh_rx.json5).
+- **Keys:** set them in [rx.yaml](deployment/config/rx.yaml).
+- **RX `listen` port:** keep it at `7451`.
 
-*Confirm shared TX keys and protocol with Sagar's config. Match each full key, stream type, and codec support—not just the prefix. Enable only the point-cloud stream you use; the RX file currently lists both Draco and Cloudini on the same ROS output topic.*
+⚠️ *Confirm the shared TX keys with Sagar's config: each full key, stream type and codec must match, not just the prefix. Enable only the point-cloud stream you use; `rx.yaml` currently lists Draco and Cloudini on the same ROS topic.*
 
 ## 2. Build on your PC
 
-With Docker and the repository available, run from `vision-transport-poorna`:
+From `vision-transport-poorna/`:
 
 ```bash
 docker compose -f deployment/compose.yaml build dev
 ```
 
-Before starting, check [cyclonedds.xml](deployment/config/cyclonedds.xml): its network interface and peer address must match your machine. RX and your local ROS consumers must use the same ROS domain; Compose defaults to **5**.
+Before starting, check [cyclonedds.xml](deployment/config/cyclonedds.xml): its network interface and peer address must match your machine. RX and your ROS tools must share a ROS domain; Compose defaults to **5**.
 
 ## 3. Start RX
 
-On your **PC**, from `vision-transport-poorna`:
+On your **PC**, from `vision-transport-poorna/`:
 
-```bash
-docker compose -f deployment/compose.yaml up -d vision_rx
-docker compose -f deployment/compose.yaml logs -f vision_rx
-```
+| Command | Why |
+| --- | --- |
+| `docker compose -f deployment/compose.yaml up -d vision_rx` | Start the receiver (builds the ROS package on first start) |
+| `docker compose -f deployment/compose.yaml logs -f vision_rx` | Watch it. Ctrl+C leaves it running. |
 
-Startup builds the ROS package automatically. Ctrl+C exits log viewing; RX keeps running.
+**Separate TX only:**
 
-Only for a **separate TX**, build the same image on the **robot**, check its DDS settings and camera topics in [tx.yaml](deployment/config/tx.yaml), then run there:
+1. Build the same image on the **robot**.
+2. Check its DDS settings and camera topics in [tx.yaml](deployment/config/tx.yaml).
+3. On the robot, run `docker compose -f deployment/compose.yaml up -d vision_tx`.
 
-```bash
-docker compose -f deployment/compose.yaml up -d vision_tx
-```
+## 4. See the data
 
-## 4. View the data
-
-In a sourced ROS terminal on your PC, use the RX's domain:
+In a sourced ROS terminal on your PC:
 
 ```bash
 export ROS_DOMAIN_ID=5
 ros2 topic hz /remote/head_rgbd_sensor/rgb/image_rect_color
 ```
 
-**A ROS subscriber starts transmission.** You can also select the output topic in RViz.
+**Nothing is sent until something subscribes.** RViz works too.
 
 | Stream | RX ROS output |
 | --- | --- |
@@ -76,20 +87,17 @@ ros2 topic hz /remote/head_rgbd_sensor/rgb/image_rect_color
 | Depth | `/remote/head_rgbd_sensor/depth_registered/image_rect_raw` |
 | Point cloud | `/remote/head_rgbd_sensor/depth_registered/rectified_points` |
 
-**Pipeline integration:** the current camera code reads `/head_rgbd_sensor/...`, so align those input names with RX's `/remote/...` outputs. CameraInfo and TF also need to reach the PC; this configuration transports images/depth/clouds only. The current simulation launcher is not a hardware bringup command.
+⚠️ **Not wired into the pipeline yet:**
+
+- **Topic names:** the camera code reads `/head_rgbd_sensor/...`, so align it with RX's `/remote/...` outputs.
+- **CameraInfo and TF** must also reach the PC; this config carries images, depth and clouds only.
+- **Hardware:** the sim launch is not a hardware bringup.
 
 ## Restart or stop
 
-After editing configuration or changing the ROS domain:
+| Command | When |
+| --- | --- |
+| `docker compose -f deployment/compose.yaml up -d --force-recreate vision_rx` | After editing config or changing the ROS domain |
+| `docker compose -f deployment/compose.yaml stop vision_rx` | Stop RX |
 
-```bash
-docker compose -f deployment/compose.yaml up -d --force-recreate vision_rx
-```
-
-Stop RX:
-
-```bash
-docker compose -f deployment/compose.yaml stop vision_rx
-```
-
-No images? Check **robot IP/port → matching keys → local ROS domain/DDS interface → active ROS subscriber**. Logs report `received`, `published`, and `errors`.
+**No images?** Check, in order: robot IP/port → matching keys → local ROS domain and DDS interface → an active subscriber. The logs report `received`, `published` and `errors`.

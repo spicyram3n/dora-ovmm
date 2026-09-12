@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>HSR fetch</title>
+<link rel="stylesheet" href="style.css">
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+  "three/examples/jsm/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/",
+  "urdf-loader": "https://cdn.jsdelivr.net/npm/urdf-loader@0.12.3/src/URDFLoader.js"
+} }
+</script>
+</head>
+<body>
+<header>
+  <div class="brand">HSR <span>fetch</span></div>
+  <form id="query">
+    <input id="target" placeholder="What should I fetch?" autocomplete="off">
+    <button id="go">Fetch</button>
+  </form>
+  <div class="status"><span class="dot" id="status-dot"></span><span id="status">connecting</span></div>
+</header>
+<main>
+  <aside class="card">
+    <h2>Mission tree</h2>
+    <div class="tree" id="tree"><p class="empty">Appears when a query runs.</p></div>
+    <h2 class="runs-title">Runs</h2>
+    <div class="tree"><ul id="runs"></ul></div>
+  </aside>
+  <section class="card">
+    <nav id="tabs">
+      <button data-stage="home"><span class="dot"></span>1 · Home</button>
+      <button data-stage="reason"><span class="dot"></span>2 · Reason</button>
+      <button data-stage="navigate"><span class="dot"></span>3 · Navigate</button>
+    </nav>
+    <div class="stage">
+      <div class="view" id="home">
+        <div class="caption" id="home-caption"></div>
+        <button class="corner" id="home-button">Home arm</button>
+      </div>
+      <div class="view" id="reason"></div>
+      <div class="view" id="navigate"><div class="caption" id="nav-caption"></div></div>
+      <img class="camera" id="camera" alt="head camera" hidden>
+    </div>
+    <footer id="log">&nbsp;</footer>
+  </section>
+</main>
+
+<script type="module" src="app.js"></script>
+</body>
+</html>

@@ -16,6 +16,7 @@ from rclpy.node import Node
 from rclpy.parameter import Parameter
 from rclpy.time import Time
 from tf2_ros import Buffer, TransformListener, TransformException
+from core.utils import events
 from core.utils.transforms import matrix_from_transform
 
 FRAME = "map"
@@ -205,11 +206,14 @@ class Navigator(Node):
         goal = NavigateToPose.Goal()
         goal.pose = _pose(x, y, yaw)
         goal.pose.header.stamp = self.get_clock().now().to_msg()
+        events.emit("drive", pose=[x, y, yaw], reached=None)
         outcome = self._run(self.driver, goal, timeout)
-        if outcome is None or outcome.status != GoalStatus.STATUS_SUCCEEDED:
-            return False
-        offset, error = self.residual(x, y, yaw)
-        return offset <= tolerance and error <= yaw_tolerance
+        reached = False
+        if outcome is not None and outcome.status == GoalStatus.STATUS_SUCCEEDED:
+            offset, error = self.residual(x, y, yaw)
+            reached = offset <= tolerance and error <= yaw_tolerance
+        events.emit("drive", pose=[x, y, yaw], reached=reached)
+        return reached
 
     def residual(self, x, y, yaw):
         """How far the base actually is from a goal, as (metres, radians)."""

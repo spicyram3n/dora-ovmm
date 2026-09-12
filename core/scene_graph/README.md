@@ -1,22 +1,52 @@
 # Scene graph
 
-Store objects and furniture in map coordinates, then choose where to search.
+Furniture and objects in map coordinates. The mission reads it to decide where to look, and saves what it finds back into it.
 
-## Build the apartment graph
+Default file: `outputs/scene_graph/apartment.json`.
 
-From the repository root, with a measured world-to-map registration:
+## Build it (Gazebo apartment)
+
+Needs the sim and Nav2 running for `register` ([root README, step 2](../../README.md#2-build-the-scene-graph)).
+
+| Command | Why |
+| --- | --- |
+| `python3 -m core.scene_graph.build register --world-base 5.0 6.6 0.0` | Measure the Gazebo-world → map transform. Writes `config/map/world_to_map.json` (`--output` to change). |
+| `python3 -m core.scene_graph.build --transform config/map/world_to_map.json` | Build the graph from the world file |
+| Add `--rooms` | Let DeepSeek name the rooms (needs `DEEPSEEK_API_KEY`) |
+| Add `--output path.json` | Save somewhere else |
+| Add `--world path.world` | Use another Gazebo world |
+| `python3 -m core.pipeline.search pringles --dry-run` | Check the result: where would a query search first? |
+
+- The builder reads the **initial** world file, not objects moved during the sim.
+- Walls stay in Nav2's costmaps, not in the graph.
+- ⚠️ `--world-base` is the robot's current Gazebo `base_footprint` x, y, yaw. `5.0 6.6 0.0` is the fresh-spawn value only.
+
+## Build it from a scan
+
+For OpenYOLO3D output ([scan workflow](../../docker/openyolo3d/README.md)):
 
 ```bash
-python3 -m core.scene_graph.build --transform /path/to/world_to_map.json
+python3 -m core.scene_graph.openyolo3d \
+  --instances docker/openyolo3d/output/room1/instances.json \
+  --transform /absolute/path/to/room1_to_map.json \
+  --output outputs/scene_graph/room1.json
 ```
 
-For registration commands, use the [navigation quick start](../navigation/README.md). Set `DEEPSEEK_API_KEY` and add `--rooms` to assign room names.
+From your own segments, in Python (given `segments` and a measured `registered_transform`):
 
-The builder reads initial Gazebo world geometry, not objects moved during simulation. Walls stay in navigation costmaps, not semantic nodes.
+```python
+from core.scene_graph.instance import Instance
+from core.scene_graph import graph as sg
 
-## Search from Python
+instances = [Instance(label, points, confidence=score, name=segment_id)
+             for label, points, score, segment_id in segments]
+scene = sg.build(instances, source_frame='ipad_scan', map_from_source=registered_transform)
+sg.save(scene, 'scan_graph.json')
+```
 
-With `core` on Python's import path and the robot's map position in `robot_x, robot_y`:
+This module does not run segmentation or estimate registration.
+
+## Ask it where to search
 
 ```python
 from core.scene_graph import graph as sg
@@ -27,58 +57,57 @@ locations = search_order(scene, 'pringles can', top_k=3, near=(robot_x, robot_y)
 first = next(locations)
 ```
 
-Known objects use memory first. Unknown objects and failed-location fallback use DeepSeek. Iterate only after an observation fails; stop after detection. Calling `list(locations)` triggers fallback too early.
-
-Returned centroids are object or furniture positions, **not base navigation goals**. Navigation chooses a reachable viewing pose. Invalid API answers raise an error.
+- **Order:** remembered objects first, then DeepSeek.
+- **One at a time:** take the next location only after a look fails. `list(locations)` asks DeepSeek too early.
+- **Not goals:** returned centroids are object or furniture positions, **not** places to drive to. Navigation picks the viewing pose.
+- **Bad answers:** an invalid DeepSeek answer raises an error.
 
 ## Frame rules
 
-- Use metres. All instances in one build must share a source frame.
-- Supply `source_frame` and a measured rigid 4×4 `map_from_source` transform. Scale and shear are rejected.
-- `map`, `odom`, and Gazebo world are different frames. The occupancy YAML's `origin` is not world-to-map registration.
-- Verify registration against the map in RViz. Matrix validation cannot prove alignment is accurate.
-- Transform camera observations with timestamped TF before storing them in map. Transform separately to odom for grasping.
+| Rule | Why |
+| --- | --- |
+| Metres, one source frame per build | Mixed frames or units corrupt every position |
+| Give `source_frame` and a measured rigid 4×4 `map_from_source` | Scale and shear are rejected |
+| `map`, `odom` and Gazebo world are different frames | The occupancy YAML's `origin` is **not** world-to-map registration |
+| Check registration against the map in RViz | Matrix checks cannot prove the alignment is right |
+| Transform camera observations with timestamped TF before storing | Stored positions must be in `map` |
+| For grasping, transform separately to `odom` | The arm plans in `odom` |
 
-Registration JSON contains `source_frame: "gazebo_world"` and `map_from_source`. At the same instant, using the same physical base frame:
+Registration JSON: `source_frame: "gazebo_world"` plus `map_from_source`. It comes from one moment, one physical base frame:
 
 ```text
 T_map_world = T_map_base @ inverse(T_world_base)
 ```
 
-Use a trusted localized pose and account for any robot-origin/base-frame offset. Keep this scene transform fixed instead of recalculating it from noisy localization.
+Use a trusted localized pose and keep the transform fixed; do not recompute it from noisy localization.
 
-## Build from a scan
+## What a node holds
 
-Run segmentation and register the scan first. Given `segments` and `registered_transform`:
+| Field | Meaning |
+| --- | --- |
+| `label`, `name` | Class and instance name |
+| `movable` | `true` = object, `false` = furniture |
+| `centroid`, `dimensions`, `bounds` | Map-frame box; `bounds` are axis-aligned |
+| `room` | Room name (with `--rooms`) |
+| `footprint` | Furniture only: the smallest turned rectangle seen from above (`centre`, `size`, `yaw`) |
+| Edge `relation` | Object → furniture: `on`, `in` or `near` |
 
-```python
-from core.scene_graph.instance import Instance
-from core.scene_graph import graph as sg
-
-instances = [Instance(label, points, confidence=score, name=segment_id)
-             for label, points, score, segment_id in segments]
-scene = sg.build(instances, source_frame='ipad_scan',
-                 map_from_source=registered_transform)
-sg.save(scene, 'scan_graph.json')
-```
-
-This module does not run Mask3D or estimate registration. For OpenYOLO3D input, see the [scan workflow](../../docker/openyolo3d/README.md).
-
-## Update objects
-
-`record_object(..., frame_id="map")` takes a box centre and dimensions. Supply `node_id` to update; omit it to create. Labels alone never merge objects.
-
-IDs survive save/load but may change on rebuild. Nodes store centroids and separate axis-aligned bounds. Furniture also stores `footprint`: the smallest turned rectangle around its points seen from above (`centre`, `size`, `yaw`), which navigation uses instead of the bounds. Read it with `graph.footprint(node)`. `on`, `in`, and `near` are geometry estimates; they do not prove support, visibility, or reachability.
+- **Footprints:** navigation uses the footprint, not the bounds. Read it with `graph.footprint(scene.nodes[node_id])`.
+- **Relations are guesses:** `on`, `in` and `near` are geometric estimates. They do not prove support, visibility or reach.
+- **IDs:** node IDs survive save/load but can change on rebuild.
+- **Updating an object:** `record_object(..., frame_id="map")` takes a box centre and dimensions. Pass `node_id` to update; leave it out to create. Labels alone never merge objects.
 
 ## Code map
 
 | File | Purpose |
 | --- | --- |
+| [build.py](build.py) | CLI: register the transform, build the apartment graph |
+| [openyolo3d.py](openyolo3d.py) | CLI: build a graph from OpenYOLO3D output |
+| [graph.py](graph.py) | Build, update, validate, save and load graphs |
 | [instance.py](instance.py) | Labelled source-frame points |
-| [graph.py](graph.py) | Build, update, validate, and save graphs |
-| [gazebo.py](gazebo.py) | Read initial world collision geometry |
+| [gazebo.py](gazebo.py) | Read the world's initial collision geometry |
 | [relations.py](relations.py) | Estimate object–furniture relations |
 | [query.py](../reasoner/query.py) | Choose search locations |
-| [deepseek.py](../reasoner/deepseek.py) | API calls and room assignments |
+| [deepseek.py](../reasoner/deepseek.py) | DeepSeek calls and room names |
 
 Dependencies: numpy, scipy, trimesh, networkx ≥ 3.4, pydantic ≥ 2, openai; pycollada for COLLADA meshes.

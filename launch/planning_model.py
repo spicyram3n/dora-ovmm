@@ -48,11 +48,14 @@ def moveit_params():
     ompl = {
         "planning_plugin": "ompl_interface/OMPLPlanner",
         "request_adapters": " ".join(
-            ["default_planner_request_adapters/AddTimeOptimalParameterization",
-             "default_planner_request_adapters/FixWorkspaceBounds",
-             "default_planner_request_adapters/FixStartStateBounds",
-             "default_planner_request_adapters/FixStartStateCollision",
-             "default_planner_request_adapters/FixStartStatePathConstraints"]),
+            [
+                "default_planner_request_adapters/AddTimeOptimalParameterization",
+                "default_planner_request_adapters/FixWorkspaceBounds",
+                "default_planner_request_adapters/FixStartStateBounds",
+                "default_planner_request_adapters/FixStartStateCollision",
+                "default_planner_request_adapters/FixStartStatePathConstraints",
+            ]
+        ),
         "start_state_max_bounds_error": 0.1,
         **ours("ompl_planning.yaml"),
     }
@@ -98,8 +101,11 @@ def semantic(urdf, srdf):
     name = robot.get("name")
     if not name:
         raise ValueError("Planning URDF must specify a robot name")
-    movable = {joint.get("name") for joint in robot.findall("joint")
-               if joint.get("type") not in (None, "fixed")}
+    movable = {
+        joint.get("name")
+        for joint in robot.findall("joint")
+        if joint.get("type") not in (None, "fixed")
+    }
     root = ET.fromstring(srdf)
     root.set("name", name)
     for state in root.findall("group_state"):

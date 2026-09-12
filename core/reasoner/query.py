@@ -1,10 +1,11 @@
 """Known object first; ask DeepSeek only when the search needs another location."""
 
 import json
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from typing import Literal
 from pydantic import BaseModel, StrictInt
 from core.scene_graph import graph as sg
+from core.utils import events
 from .deepseek import DEFAULT_MODEL, ask_json, get_client, have_key
 
 SYSTEM = """Rank the {k} most likely furniture locations for the requested object.
@@ -104,18 +105,38 @@ def predict(scene, obj, client=None, top_k=3, hint="", exclude=(), model=DEFAULT
     return result
 
 
+def described(scene, locations):
+    """Locations as the dashboard shows them, each with its furniture's name."""
+    result = []
+    for location in locations:
+        item = asdict(location)
+        item["furniture"] = None
+        if location.furniture_id is not None:
+            data = scene.nodes[location.furniture_id]
+            item["furniture"] = data["name"] or data["label"]
+        result.append(item)
+    return result
+
+
 def search_order(
     scene, obj, client=None, top_k=3, hint="", model=DEFAULT_MODEL, near=None
 ):
     """Consume one location at a time; stop iterating when detection succeeds."""
     excluded = []
+    known = remembered(scene, obj, near)
+    events.emit("reason", target=obj, source="scene_graph", locations=described(scene, known))
     # Exhaust what the graph already knows before paying a model to guess.
-    for location in remembered(scene, obj, near):
+    for location in known:
         yield location
         if location.furniture_id is not None:
             excluded.append(location.furniture_id)
     # Both of these run only if the caller is still searching.
     if client is None and not have_key():
         print("No DEEPSEEK_API_KEY set; searching remembered locations only.")
+        events.emit("reason", target=obj, source="no_key")
         return
-    yield from predict(scene, obj, client, top_k, hint, tuple(excluded), model)
+    events.emit("reason", target=obj, source="asking", top_k=top_k)
+    guesses = predict(scene, obj, client, top_k, hint, tuple(excluded), model)
+    events.emit("reason", target=obj, source="llm", top_k=top_k,
+                locations=described(scene, guesses))
+    yield from guesses
