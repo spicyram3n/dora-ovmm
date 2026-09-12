@@ -5,6 +5,7 @@ import networkx as nx
 import numpy as np
 from . import relations
 from .instance import Instance, from_box, is_structure, match_score
+from core.utils import geometry
 
 _EDGES = "edges"
 
@@ -49,6 +50,31 @@ def _attributes(label, centroid, dimensions, movable, confidence, name, room=Non
     }
 
 
+def _fitted_footprint(points):
+    """A furniture node's turned floor outline, rounded like its other attributes."""
+    centre, size, yaw = geometry.fit_footprint(points)
+    rounded_centre = []
+    for value in centre:
+        rounded_centre.append(round(float(value), 3))
+    rounded_size = []
+    for value in size:
+        rounded_size.append(round(float(value), 3))
+    return {"centre": rounded_centre, "size": rounded_size, "yaw": round(float(yaw), 4)}
+
+
+def footprint(data):
+    """A furniture node as (centre, dimensions along its own axes, yaw in map).
+
+    Graphs saved before footprints were fitted fall back to the axis-aligned bounds."""
+    lower, upper = np.asarray(data["bounds"], dtype=float)
+    centre, dimensions = ((lower + upper) / 2, upper - lower)
+    if "footprint" not in data:
+        return (centre, dimensions, 0.0)
+    centre[:2] = data["footprint"]["centre"]
+    dimensions[:2] = data["footprint"]["size"]
+    return (centre, dimensions, float(data["footprint"]["yaw"]))
+
+
 def build(instances, *, source_frame, map_from_source, drop_structure=True, **kwargs):
     """Transform instances into map and connect objects to furniture."""
     if not isinstance(source_frame, str) or not source_frame.strip():
@@ -86,6 +112,9 @@ def build(instances, *, source_frame, map_from_source, drop_structure=True, **kw
             )
         )
         graph.nodes[node_id]["bounds"] = [item.lower.tolist(), item.upper.tolist()]
+        if not item.movable:
+            # The bounds of a turned piece are larger than it; views follow its sides.
+            graph.nodes[node_id]["footprint"] = _fitted_footprint(item.points)
     furniture_ids = []
     for index, item in enumerate(instances):
         if not item.movable:

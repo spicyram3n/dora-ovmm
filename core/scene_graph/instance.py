@@ -4,6 +4,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 import numpy as np
+from core.utils.geometry import box_corners
 
 FURNITURE = frozenset(
     {
@@ -166,11 +167,5 @@ def from_box(label, centre, dimensions, **kwargs):
     valid_values = np.isfinite(dimensions).all()
     if not valid_shape or not valid_values or np.any(dimensions < 0):
         raise ValueError("dimensions must be three finite nonnegative lengths")
-    corners = []
-    for x in (-1, 1):
-        for y in (-1, 1):
-            for z in (-1, 1):
-                corners.append([x, y, z])
-    corners = np.array(corners)
-    points = np.asarray(centre, float) + corners * dimensions / 2
+    points = box_corners(np.asarray(centre, float), dimensions)
     return Instance(label, points, **kwargs)

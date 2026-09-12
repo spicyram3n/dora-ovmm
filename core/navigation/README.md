@@ -15,6 +15,13 @@ With the ROS and workspace setup sourced, run:
 ros2 launch /home/ws/launch/search.launch.py target:=pringles top_k:=3
 ```
 
+The same mission as a behaviour tree ([core/pipeline/mission_tree.py](../pipeline/mission_tree.py)):
+add `use_tree:=true`. Same checks and steps; the base parks once, a failed
+pick is tried again from there (fresh segmentation and grasps), up to 3 times,
+and the arm goes home after the pick. Watch it live in
+another terminal with `py-trees-tree-watcher` (ROS sourced; it is a plain
+command, not a `ros2 run` executable).
+
 This starts simulation, Nav2 with `config/nav2/nav2_params.yaml`, and IK. The search
 worker waits for active Nav2 lifecycle nodes, navigation/head actions, IK,
 fresh localization, synchronized RGB-D with TF, and an actual SAM3 response.
@@ -113,6 +120,22 @@ To assign room names, rebuild with:
 python3 -m core.scene_graph.build --transform config/map/world_to_map.json --rooms
 ```
 
+## Real room: from a scan
+
+Build the graph from OpenYOLO3D output with `python -m core.scene_graph.openyolo3d`,
+as in the [scan workflow](../../docker/openyolo3d/README.md#3-build-the-scene-graph),
+then plot a piece before driving:
+
+```bash
+python3 visualization/viewpoints.py --furniture <name> --graph outputs/scene_graph/room1.json
+```
+
+Every graph build, scan or Gazebo, fits each furniture piece with the smallest
+turned rectangle around its points seen from above, so turned pieces keep their
+yaw. Stray points in a mask stretch that rectangle, and box errors move every
+viewpoint by the same amount. Graphs built before this fall back to
+axis-aligned boxes until rebuilt.
+
 ## 3. Start perception and IK
 
 In a **host terminal**, from the repository root:
@@ -150,7 +173,7 @@ Exit codes: **0** ready/arrived, **1** not found, **2** found but not graspable 
 No robot, no ROS. Draws what the query selects, using the same `plan()` call the mission drives:
 
 ```bash
-python3 core/navigation/visualize.py 'pringles' --output outputs/viewpoints.png
+python3 visualization/viewpoints.py 'pringles' --output outputs/viewpoints.png
 ```
 
 | Option | Use it to |
@@ -158,12 +181,20 @@ python3 core/navigation/visualize.py 'pringles' --output outputs/viewpoints.png
 | `--index 1` | Plot the next search location; past the remembered ones this calls DeepSeek |
 | `--robot X Y` | Order candidates as if the robot were there (default `0 0`) |
 | `--furniture high_table01` | Plot a furniture target instead of an object |
+| `--graph room1.json` | Plot a scanned graph |
 
-Left panel is the 3D scene with the IK reach probes at the object; right panel is the plan view, where the circles are the base radius the standoff filter uses. Red crosses are ring candidates dropped for hitting furniture. The filter checks the **base footprint only** — a pose it keeps can still be sighting through another piece of furniture, which is visible in the shelf case.
+Reading the plot: green arrows are candidate poses, numbered in visiting
+order. The title says how many views the location needs; only that many are
+driven to, and later numbers are fallbacks when Nav2 cannot reach one.
+
+Left panel is the 3D scene with the IK reach probes at the object; right panel is the plan view, where the circles are the base radius the standoff filter uses. Red crosses are candidates dropped for hitting furniture. Dotted lines show where each view looks; the title gives how many views the location needs. The filter checks the **base footprint only** — a pose it keeps can still be sighting through another piece of furniture, which is visible in the shelf case.
 
 ## What success means
 
-- Search tries up to two reachable views per location and aims the head before capture. Check head aiming in Gazebo before hardware use.
+- Candidate views sit every 0.5 m along a line 0.8 m out from the furniture edge, following its yaw, each facing the part in front of it. The first view is the nearest of those showing nearly as much as the best one (within 5%), so it is close without being an end view down a long table; after it, views go in the order that shows the most unseen top from within 1.5 m, until another would add under 5%: 2 for a small table, 3–5 for long ones, at most 6. The second view of a small table comes from the far side.
+- Shelved furniture (taller than 1.2 m, or labelled shelf/bookcase/rack) is viewed only from its long faces, with the head aimed at each height band in turn. Heights beyond the head's tilt are skipped. Check head aiming in Gazebo before hardware use.
+- A run keeps every place's candidate views, and what happened at each (`no path`, `drive failed`, `cannot aim`, `not detected`, `detected`), in `search.VIEWS`. A later look at the same place reuses them, reordered from where the robot is. They are held in memory, so they go when the process ends; another process, such as the NBV node, cannot see them.
+- The camera field of view is assumed to be ±0.45 rad horizontally and ±0.35 rad vertically (`standoff.py`). Check it against the HSR-C `camera_info`.
 - Detection needs fresh RGB-D, at least 100 valid masked depth points, and 25% valid masked depth. Bad depth tries another view.
 - Search tries every remembered instance of the object, nearest first, before asking DeepSeek to guess furniture. Without an API key it searches memory only and reports not found, rather than failing.
 - Successful detection saves map-frame bounds before IK runs. Failed observations leave memory unchanged. Matching uses label and proximity, so instance identity is approximate; a same-label detection more than 1 m from a remembered one becomes a new node instead of overwriting it.

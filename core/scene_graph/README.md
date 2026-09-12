@@ -68,7 +68,7 @@ This module does not run Mask3D or estimate registration. For OpenYOLO3D input, 
 
 `record_object(..., frame_id="map")` takes a box centre and dimensions. Supply `node_id` to update; omit it to create. Labels alone never merge objects.
 
-IDs survive save/load but may change on rebuild. Nodes store centroids and separate axis-aligned bounds. `on`, `in`, and `near` are geometry estimates; they do not prove support, visibility, or reachability.
+IDs survive save/load but may change on rebuild. Nodes store centroids and separate axis-aligned bounds. Furniture also stores `footprint`: the smallest turned rectangle around its points seen from above (`centre`, `size`, `yaw`), which navigation uses instead of the bounds. Read it with `graph.footprint(node)`. `on`, `in`, and `near` are geometry estimates; they do not prove support, visibility, or reachability.
 
 ## Code map
 

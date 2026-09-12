@@ -45,6 +45,14 @@ Visualization Manager:
       Min Intensity: 0.5
       Max Intensity: 1
       Selectable: true
+    - Class: octomap_rviz_plugins/OccupancyMap
+      Name: OctoMap
+      Enabled: true
+      Topic:
+        Value: /nbv/octomap
+        Depth: 1
+        Durability Policy: Volatile
+        Reliability Policy: Reliable
     - Class: rviz_default_plugins/Marker
       Name: Target sphere
       Enabled: true

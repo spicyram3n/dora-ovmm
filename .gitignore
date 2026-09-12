@@ -39,3 +39,7 @@ docs/
 # generic files 
 data_hrl/
 /outputs
+/tests
+
+#vscode
+.vscode

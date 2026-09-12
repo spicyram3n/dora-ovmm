@@ -25,12 +25,25 @@ EXIT_CODES = {NOT_FOUND: 1, ARRIVED: 0, FOUND: 0, NOT_GRASPABLE: 2, READY: 0,
 SAME_INSTANCE = 1.0
 # Nothing the HSR gripper can pick up measures more than this across.
 MAX_SPAN = 0.6
+# Taller furniture holds things on shelves the head cannot see from above.
+TALL = 1.2
+STORAGE_WORDS = ("shelf", "shelves", "bookcase", "rack")
+# Views planned this run, per place, with what happened at each pose, so a later
+# look at the same place (another query, active perception) can reuse them.
+# Held in memory only: they go when the run ends.
+VIEWS = {}
 
 
 def box(data):
     """The box centre differs from a segmented cloud's mean; prefer saved bounds."""
     lower, upper = np.asarray(data["bounds"])
     return ((lower + upper) / 2, upper - lower)
+
+
+def is_storage(data):
+    """Shelved furniture is searched level by level instead of from above."""
+    height = data["bounds"][1][2] - data["bounds"][0][2]
+    return height > TALL or any(word in data["label"].lower() for word in STORAGE_WORDS)
 
 
 def targets(scene, obj, furniture=None, robot_xy=None, top_k=3):
@@ -54,21 +67,28 @@ def targets(scene, obj, furniture=None, robot_xy=None, top_k=3):
         yield from search_order(scene, obj, near=robot_xy, top_k=top_k)
 
 
-def plan(scene, location, robot_xy=None):
+def view_key(location):
+    """One place to look: furniture, or a remembered object where it was last seen."""
+    return (location.furniture_id, location.object_id,
+            tuple(np.round(location.centroid, 2).tolist()))
+
+
+def _views(scene, location):
+    """Every clear pose around a place, facing it, and the surface it has to see."""
     pieces = sg.furniture(scene)
     blockers = []
     for data in pieces.values():
-        blockers.append(box(data))
+        blockers.append(sg.footprint(data))
     if location.furniture_id is None:
-        centre, dimensions = (location.centroid, [0, 0, 0])
+        centre, dimensions, yaw = (location.centroid, [0, 0, 0], 0.0)
+        storage = False
     else:
-        centre, dimensions = box(pieces[location.furniture_id])
-    sg.require_map(scene)
-    if location.frame_id != "map":
-        raise ValueError("Search locations must be in map")
+        centre, dimensions, yaw = sg.footprint(pieces[location.furniture_id])
+        storage = is_storage(pieces[location.furniture_id])
     poses = standoff.candidates(
-        centre, dimensions, robot_xy=robot_xy, blockers=blockers
+        centre, dimensions, yaw, blockers=blockers, storage=storage
     )
+    points = standoff.surface_points(centre, dimensions, yaw)
     if location.object_id is not None:
         # Stand outside the furniture, but face the remembered object itself.
         aimed = []
@@ -76,23 +96,47 @@ def plan(scene, location, robot_xy=None):
             yaw = float(np.arctan2(location.centroid[1] - y, location.centroid[0] - x))
             aimed.append((x, y, yaw))
         poses = aimed
+        points = np.array([location.centroid[:2]])
+    return (poses, points)
+
+
+def plan(scene, location, robot_xy=None):
+    """Observation poses in visiting order, and how many views the location needs."""
+    sg.require_map(scene)
+    if location.frame_id != "map":
+        raise ValueError("Search locations must be in map")
+    key = view_key(location)
+    if key not in VIEWS:
+        poses, points = _views(scene, location)
+        VIEWS[key] = {"poses": poses, "points": points, "outcomes": {}}
+    # Ordered afresh each time: the nearest pose depends on where the robot is now.
+    poses, views = standoff.order(VIEWS[key]["poses"], VIEWS[key]["points"], robot_xy)
     print(
-        f"{location.source}: {location.label}, room={location.room}, {len(poses)} observation poses"
+        f"{location.source}: {location.label}, room={location.room},"
+        f" {len(poses)} observation poses, {views} views needed"
     )
     if location.reason:
         print(f"  {location.reason}")
-    return poses
+    return (poses, views)
 
 
-def look_point(scene, location):
+def look_points(scene, location, pose):
+    """Where the head aims from `pose`: the remembered object, just above a
+    surface, or each height of shelved furniture."""
     if location.object_id is not None or location.furniture_id is None:
-        return location.centroid
+        return [location.centroid]
     data = scene.nodes[location.furniture_id]
-    centre, dimensions = box(data)
-    # Tables expose their top; storage furniture is first inspected at mid-height.
-    if any(word in data["label"].lower() for word in ("table", "desk", "counter")):
-        centre[2] = data["bounds"][1][2] + 0.1
-    return centre
+    centre, dimensions, yaw = sg.footprint(data)
+    x, y = standoff.aim_point(pose[:2], centre, dimensions, yaw)
+    lower, upper = (data["bounds"][0][2], data["bounds"][1][2])
+    if not is_storage(data):
+        # Objects lie on top; aiming just above it keeps the whole top in view.
+        return [[x, y, upper + 0.1]]
+    distance = np.hypot(x - pose[0], y - pose[1])
+    points = []
+    for height in standoff.shelf_heights(lower, upper, distance):
+        points.append([x, y, height])
+    return points
 
 
 def observed_furniture(scene, points):
@@ -142,7 +186,7 @@ def make_graspable(scene, node_id, navigator, obstacles="--costmap", bearings=6)
     centre, dimensions = box(scene.nodes[node_id])
     blockers = []
     for data in sg.furniture(scene).values():
-        blockers.append(box(data))
+        blockers.append(sg.footprint(data))
     outcome = graspable.reposition(
         navigator, centre, dimensions, obstacles=obstacles, bearings=bearings,
         blockers=blockers,
@@ -181,29 +225,48 @@ def pick_up(obj):
 
 
 def search(scene, obj, navigator, furniture=None, top_k=3, observe=locate, views=2):
-    """Try bounded viewpoints per location. Perception/server errors stop the run.
+    """Try at least `views` viewpoints per location, more when the furniture is too
+    large for them to cover. Perception/server errors stop the run.
 
     Returns (status, recorded object node), the node being None when nothing was seen."""
     if views < 1:
         raise ValueError("views must be positive")
     # Advancing this iterator requests LLM fallback only when needed.
     for location in targets(scene, obj, furniture, navigator.robot_xy(), top_k):
-        poses = plan(scene, location, navigator.robot_xy())
+        poses, needed = plan(scene, location, navigator.robot_xy())
+        limit = max(views, needed)
+        outcomes = VIEWS[view_key(location)]["outcomes"]
         observations = 0
         for pose in poses:
-            if not navigator.reachable(*pose) or not navigator.drive_to(*pose):
+            if not navigator.reachable(*pose):
+                outcomes[pose] = "no path"
+                continue
+            if not navigator.drive_to(*pose):
+                outcomes[pose] = "drive failed"
                 continue
             if not obj:
                 return (ARRIVED, None)
             # A spent view is spent whether the head or the detector failed;
             # otherwise an unaimable target burns every candidate pose.
             observations += 1
-            if not navigator.look_at(look_point(scene, location)):
-                print("The head cannot aim at the target from this pose.")
-                points = None
-            else:
+            points = None
+            aimed = False
+            for aim in look_points(scene, location, pose):
+                # A shelf height beyond the head's tilt is skipped; the others still count.
+                if not navigator.look_at(aim):
+                    continue
+                aimed = True
                 # A missed detection allows retry; communication errors still stop us.
                 points = observe(obj)
+                if points is not None:
+                    break
+            if not aimed:
+                print("The head cannot aim at the target from this pose.")
+                outcomes[pose] = "cannot aim"
+            elif points is None:
+                outcomes[pose] = "not detected"
+            else:
+                outcomes[pose] = "detected"
             if points is not None:
                 points = np.asarray(points, dtype=float)
                 if points.ndim != 2 or points.shape[1] != 3 or not len(points) or not np.isfinite(points).all():
@@ -217,7 +280,7 @@ def search(scene, obj, navigator, furniture=None, top_k=3, observe=locate, views
                         f"Detection spans {span:.2f} m, beyond the {MAX_SPAN:.2f} m"
                         " a graspable object can measure; discarding this view."
                     )
-                    if observations >= views:
+                    if observations >= limit:
                         break
                     continue
                 # A fallback detection updates the remembered object, not a duplicate.
@@ -252,7 +315,7 @@ def search(scene, obj, navigator, furniture=None, top_k=3, observe=locate, views
                 )
                 print(f"Found {obj} in map at {points.mean(axis=0).round(3).tolist()}")
                 return (FOUND, object_id)
-            if observations >= views:
+            if observations >= limit:
                 break
         if observations == 0:
             print("Location could not be observed: navigation failed; trying the next location.")
@@ -340,7 +403,8 @@ def main():
         )
         if first is None:
             return 1
-        for pose in plan(scene, first)[:3]:
+        poses, _ = plan(scene, first)
+        for pose in poses[:3]:
             print(" ", pose)
         return 0
     import rclpy

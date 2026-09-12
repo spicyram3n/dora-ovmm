@@ -44,6 +44,9 @@ RUN apt-get update && apt-get upgrade -y && \
     ros-humble-moveit-task-constructor-visualization \
     ros-humble-octomap-server \
     ros-humble-octomap-rviz-plugins \
+    ros-humble-py-trees \
+    ros-humble-py-trees-ros \
+    ros-humble-py-trees-ros-viewer \
     ros-humble-pinocchio \
     ros-humble-rmw-zenoh-cpp \
     ros-humble-rmw-cyclonedds-cpp \
@@ -71,6 +74,7 @@ RUN pip install --no-cache-dir \
     transforms3d \
     pyyaml \
     trimesh \
+    octomap-python==1.10.0.0 \
     pycollada \
     eclipse-zenoh \
     "rerun-sdk==0.22.1"

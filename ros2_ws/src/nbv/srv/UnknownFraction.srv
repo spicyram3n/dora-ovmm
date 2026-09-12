@@ -1,0 +1,7 @@
+# How much of a sphere the map has never seen.
+geometry_msgs/Point centre   # in the map's frame (the node's `frame` parameter)
+float64 radius               # metres
+---
+float64 fraction             # unknown / total, 0 when the sphere holds no cells
+uint32 unknown
+uint32 total

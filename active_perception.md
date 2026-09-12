@@ -3,7 +3,7 @@
 Decide where the robot should look, and stand, to see enough of a target object
 to grasp it.
 
-The map is the first piece: an occupancy grid of **one sphere** around the
+The map is the first piece: an OctoMap (`octomap-python`) reported over **one sphere** around the
 target. Information gain, view sampling, and base placement come next and are
 not built yet.
 
@@ -16,13 +16,15 @@ Package: [`ros2_ws/src/nbv`](ros2_ws/src/nbv/README.md). Main pipeline:
 | --- | --- | --- |
 | Structure | [ActPerMoMa](https://arxiv.org/abs/2310.00433) | Mobile base + head camera, same as the HSR. The decision is *where the base goes*, and utility trades information gain against grasp reachability. |
 | Formulation | [active_grasp](https://github.com/ethz-asl/active_grasp) | Object-anchored volume, raycast forward from a candidate view, count unknown cells. Simpler, and enough. |
-| Map | ours | Occupancy, not TSDF. GraspGenX eats points, not a TSDF grid, and occupancy gives `unknown` for free. |
+| Map | OctoMap (`octomap-python`) | Occupancy, not TSDF. GraspGenX eats points, not a TSDF grid, and occupancy gives `unknown` for free. Chosen over our own numpy grid on real frames: it stays small as the map grows. |
 
 Both papers anchor the volume to **the target object, never the robot**.
 active_grasp uses a 0.3 m cube on the target's bounding box; ActPerMoMa counts
 gain only inside the target's bbox. Ours is a sphere on the target.
 
 ## 1. Prerequisites — once per boot
+
+Once ever: `pip install --user octomap-python`, the map library `build_octomap.py` uses.
 
 CycloneDDS asks for 32 MB socket buffers. Without these every ROS node dies at
 startup with `rmw handle is invalid`.
@@ -95,8 +97,8 @@ cd /home/ws && source /opt/ros/humble/setup.bash && source ros2_ws/install/setup
 rviz2 -d /home/ws/config/rviz/nbv.rviz
 ```
 
-Preloaded: occupied cells as boxes coloured by probability, the target sphere,
-the robot. Fixed frame `base_footprint`.
+Preloaded: occupied cells as boxes coloured by probability, the whole OctoMap,
+the target sphere, the robot. Fixed frame `base_footprint`.
 
 Click a cell with the **Select** tool to read its occupancy probability.
 
@@ -134,6 +136,15 @@ look at again.
 | --- | --- | --- |
 | `/nbv/occupied` | `PointCloud2` | Occupied cell centres. `intensity` = occupancy probability |
 | `/nbv/sphere` | `Marker` | The region being mapped |
+| `/nbv/octomap` | `octomap_msgs/Octomap` | The whole map, for RViz's OccupancyMap display |
+| `/nbv/unknown_fraction` | service `nbv/srv/UnknownFraction` | Share of any sphere never seen |
+
+Ask how much of a sphere is still unseen:
+
+```bash
+ros2 service call /nbv/unknown_fraction nbv/srv/UnknownFraction \
+  "{centre: {x: 0.51, y: 0.0, z: 1.16}, radius: 0.5}"
+```
 
 ## Tuning
 
@@ -147,13 +158,14 @@ Constants at the top of
 | `MAX_RANGE` | `2.5` | Depth past this is dropped |
 | `DEPTH`, `INFO` | head RGBD | The simulator and the real robot name the depth topic differently |
 
-Cost per frame, 0.5 m sphere:
+Cost per frame. OctoMap inserts every ray out to 2.5 m, so this follows cell
+size, not sphere size:
 
 | Resolution | Time |
 | --- | --- |
-| 5 cm | 14 ms |
-| 2 cm | 23 ms |
-| 1 cm | 93 ms |
+| 5 cm | ~15 ms |
+| 2 cm | ~60 ms |
+| 1 cm | ~0.5 s |
 
 ## Troubleshooting
 
@@ -177,8 +189,7 @@ Done:
 Next, in order:
 
 1. **Information gain** — raycast forward from a candidate view, count the
-   unknown cells it would uncover. Same raycast as `integrate`, counting
-   instead of updating.
+   unknown cells it would uncover. OctoMap's `castRay` and `getLabels`.
 2. **Candidate views** — through the HSR's full-body kinematics: head pan and
    tilt, arm lift and flex, torso, all at once.
 3. **Base placement** — the base is part of that chain. Score against
@@ -192,9 +203,8 @@ Next, in order:
 
 | Path | Purpose |
 | --- | --- |
-| [`ros2_ws/src/nbv/nbv/occupancy.py`](ros2_ws/src/nbv/nbv/occupancy.py) | The grid. Pure numpy, no ROS, testable without a robot |
 | [`ros2_ws/src/nbv/scripts/build_octomap.py`](ros2_ws/src/nbv/scripts/build_octomap.py) | ROS node: depth image → map |
-| [`ros2_ws/src/nbv/scripts/plot_octomap.py`](ros2_ws/src/nbv/scripts/plot_octomap.py) | PNG figure |
-| [`ros2_ws/src/nbv/scripts/save_occupied.py`](ros2_ws/src/nbv/scripts/save_occupied.py) | PLY export |
+| [`ros2_ws/src/nbv/visualization/plot_octomap.py`](ros2_ws/src/nbv/visualization/plot_octomap.py) | PNG figure |
+| [`ros2_ws/src/nbv/visualization/save_occupied.py`](ros2_ws/src/nbv/visualization/save_occupied.py) | PLY export |
 | [`config/rviz/nbv.rviz`](config/rviz/nbv.rviz) | RViz layout |
 | [`bugs/`](bugs/) | Upstream bugs found on the way |

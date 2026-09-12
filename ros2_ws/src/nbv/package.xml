@@ -1,28 +1,29 @@
 <package format="3">
   <name>nbv</name>
   <version>0.0.1</version>
-  <description>Next best view planning for the HSR-C. C++ nodes for talking to
-  nav2 and the controllers, Python for the planner itself.</description>
+  <description>Next best view planning for the HSR-C: an OctoMap of what the head
+  camera sees, and the planner on top of it.</description>
   <maintainer email="poorna.sesetti03@gmail.com">hsr</maintainer>
   <license>BSD 3-clause Clear License</license>
 
-  <!-- ament_cmake builds the C++. ament_cmake_python adds the Python half to
-       the same package. Do not add ament_python, the two do not mix. -->
+  <!-- ament_cmake installs the scripts and generates the service type. -->
   <buildtool_depend>ament_cmake</buildtool_depend>
-  <buildtool_depend>ament_cmake_python</buildtool_depend>
+  <buildtool_depend>rosidl_default_generators</buildtool_depend>
 
   <depend>geometry_msgs</depend>
-  <depend>nav2_msgs</depend>
-  <depend>rclcpp</depend>
-  <depend>rclcpp_action</depend>
+  <depend>octomap_msgs</depend>
   <depend>rclpy</depend>
   <depend>cv_bridge</depend>
   <depend>sensor_msgs</depend>
   <depend>tf2_ros</depend>
   <depend>visualization_msgs</depend>
+  <exec_depend>rosidl_default_runtime</exec_depend>
+  <exec_depend>octomap_rviz_plugins</exec_depend>
   <exec_depend>python3-numpy</exec_depend>
   <exec_depend>python3-scipy</exec_depend>
   <exec_depend>python3-matplotlib</exec_depend>
+
+  <member_of_group>rosidl_interface_packages</member_of_group>
 
   <export>
     <build_type>ament_cmake</build_type>

@@ -1,16 +1,20 @@
-"""View OpenYOLO instances and graph connections in native Rerun."""
+"""View OpenYOLO instances and graph connections in native Rerun.
+
+Usage: python3 visualization/scene_graph.py --instances INSTANCES.json --output DIR"""
 import argparse
 import colorsys
 import json
+import sys
 from pathlib import Path
 
 import networkx as nx
 import numpy as np
 import rerun as rr
 
-from .openyolo3d import load_instances
-from . import graph as sg
-from .relations import distance_to
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from core.scene_graph.openyolo3d import load_instances  # noqa: E402
+from core.scene_graph import graph as sg  # noqa: E402
+from core.scene_graph.relations import distance_to  # noqa: E402
 
 
 def preview_graph(instances, frame):

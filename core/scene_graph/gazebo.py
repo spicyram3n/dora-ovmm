@@ -6,6 +6,7 @@ import numpy as np
 import trimesh
 from scipy.spatial.transform import Rotation
 from core.perception.pointcloud import transform_points
+from core.utils.geometry import box_corners
 from .instance import Instance
 
 
@@ -34,12 +35,8 @@ def _pose(element):
 
 def _corners(lower, upper):
     """Return every combination of lower/upper X, Y and Z bounds."""
-    corners = []
-    for x in (lower[0], upper[0]):
-        for y in (lower[1], upper[1]):
-            for z in (lower[2], upper[2]):
-                corners.append([x, y, z])
-    return np.array(corners)
+    lower, upper = (np.asarray(lower, dtype=float), np.asarray(upper, dtype=float))
+    return box_corners((lower + upper) / 2, upper - lower)
 
 
 def _roots(world_path):

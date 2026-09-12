@@ -1,18 +1,33 @@
 """Simulation bringup for the core.pipeline query-to-grasp mission."""
 
-from pathlib import Path
+import subprocess
 import sys
+from pathlib import Path
+
+from launch import LaunchDescription
+from launch.actions import (DeclareLaunchArgument, EmitEvent, ExecuteProcess, LogInfo,
+                            OpaqueFunction, RegisterEventHandler)
+from launch.conditions import IfCondition, UnlessCondition
+from launch.event_handlers import OnProcessExit, OnShutdown
+from launch.events import Shutdown
+from launch.substitutions import LaunchConfiguration as Arg
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def generate_launch_description():
-    from launch import LaunchDescription
-    from launch.actions import DeclareLaunchArgument, ExecuteProcess, LogInfo, RegisterEventHandler
-    from launch.conditions import IfCondition
-    from launch.event_handlers import OnProcessExit
-    from launch.substitutions import LaunchConfiguration as Arg
+def stop_gazebo(context):
+    """Signal Gazebo itself, not its launcher.
 
+    hsrb_gazebo_launch starts Gazebo through the `ign` ruby wrapper, which does
+    not pass Ctrl+C on; stopping only the wrapper leaves Gazebo running with no
+    parent. Gazebo's own processes stop their server and GUI within seconds."""
+    if context.launch_configurations['start_simulation'] == 'true':
+        # Anchored to the start of the command line, so it cannot match a shell.
+        subprocess.run(['pkill', '-INT', '-f', '^ign gazebo '], check=False)
+    return []
+
+
+def generate_launch_description():
     arguments = [
         DeclareLaunchArgument('target', description='Object to search for, e.g. pringles'),
         DeclareLaunchArgument('graph', default_value=str(ROOT / 'outputs/scene_graph/apartment.json')),
@@ -24,6 +39,12 @@ def generate_launch_description():
         DeclareLaunchArgument('params_file', default_value=str(ROOT / 'config/nav2/nav2_params.yaml')),
         DeclareLaunchArgument('grasp', default_value='true', choices=['true', 'false'],
                               description='Generate grasps and pick the object up once parked.'),
+        DeclareLaunchArgument('use_tree', default_value='false', choices=['true', 'false'],
+                              description='Run the behaviour-tree mission instead of core.pipeline.'),
+        DeclareLaunchArgument('navigate_only', default_value='false', choices=['true', 'false'],
+                              description='Tree only: reason and drive to the target; no SAM3 or GraspGenX.'),
+        DeclareLaunchArgument('shutdown_when_done', default_value='false', choices=['true', 'false'],
+                              description='Shut every launched process down when the mission ends.'),
     ]
     processes = []
     for name, command in [
@@ -38,25 +59,40 @@ def generate_launch_description():
     ]:
         arguments.append(DeclareLaunchArgument('start_' + name, default_value='true',
                                               choices=['true', 'false']))
+        # Each is a whole launch of its own. Gazebo takes longer than launch's
+        # default 5 s to stop, and killing its launch sooner leaves it running.
         processes.append(ExecuteProcess(
             cmd=['ros2', 'launch', *command], name=name, output='both',
-            condition=IfCondition(Arg('start_' + name)),
+            condition=IfCondition(Arg('start_' + name)), sigterm_timeout='30',
         ))
-    mission = ExecuteProcess(
-        cmd=[sys.executable, '-u', '-m', 'core.pipeline',
-             '--target', Arg('target'), '--graph', Arg('graph'),
-             '--top-k', Arg('top_k'), '--bearings', Arg('bearings'),
-             '--startup-timeout', Arg('startup_timeout'), '--grasp', Arg('grasp')],
-        name='search', output='both', cwd=str(ROOT),
+    common = ['--target', Arg('target'), '--graph', Arg('graph'),
+              '--top-k', Arg('top_k'), '--bearings', Arg('bearings'),
+              '--startup-timeout', Arg('startup_timeout'), '--grasp', Arg('grasp')]
+    # One of the two runs, picked by use_tree.
+    script = ExecuteProcess(
+        cmd=[sys.executable, '-u', '-m', 'core.pipeline', *common],
+        name='search', output='both', cwd=str(ROOT), condition=UnlessCondition(Arg('use_tree')),
+    )
+    tree = ExecuteProcess(
+        cmd=[sys.executable, '-u', '-m', 'core.pipeline.mission_tree', *common,
+             '--navigate-only', Arg('navigate_only')],
+        name='mission_tree', output='both', cwd=str(ROOT), condition=IfCondition(Arg('use_tree')),
     )
 
     def finished(event, context):
         meanings = {0: 'SUCCEEDED', 1: 'NOT FOUND', 2: 'FOUND but placement failed',
                     3: 'STARTUP / SERVICE ERROR', 4: 'PARKED but pickup failed'}
-        return [LogInfo(msg=f'[mission] {meanings.get(event.returncode, "FAILED")} '
-                        f'(exit {event.returncode}). Simulation remains open; Ctrl+C to stop.')]
+        done = context.launch_configurations['shutdown_when_done'] == 'true'
+        after = 'Shutting everything down.' if done else 'Simulation remains open; Ctrl+C to stop.'
+        actions = [LogInfo(msg=f'[mission] {meanings.get(event.returncode, "FAILED")} '
+                               f'(exit {event.returncode}). {after}')]
+        if done:
+            actions.append(EmitEvent(event=Shutdown(reason='mission finished')))
+        return actions
 
     return LaunchDescription(arguments + [
-        RegisterEventHandler(OnProcessExit(target_action=mission, on_exit=finished)),
-        *processes, mission,
+        RegisterEventHandler(OnProcessExit(target_action=script, on_exit=finished)),
+        RegisterEventHandler(OnProcessExit(target_action=tree, on_exit=finished)),
+        RegisterEventHandler(OnShutdown(on_shutdown=[OpaqueFunction(function=stop_gazebo)])),
+        *processes, script, tree,
     ])

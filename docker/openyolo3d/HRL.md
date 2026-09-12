@@ -102,7 +102,7 @@ HRL-to-map registration are still missing.
 environment is needed. From the repository root, in the devcontainer:
 
 ```bash
-python3 -m core.scene_graph.visualize \
+python3 visualization/scene_graph.py \
   --instances docker/openyolo3d/output/hrl/instances.json \
   --output outputs/scene_graph/hrl_preview
 ```
