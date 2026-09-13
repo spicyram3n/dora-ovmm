@@ -1,0 +1,161 @@
+diff --git a/hsrb_gz_ros2_control/CMakeLists.txt b/hsrb_gz_ros2_control/CMakeLists.txt
+index d009808..e4da46c 100644
+--- a/hsrb_gz_ros2_control/CMakeLists.txt
++++ b/hsrb_gz_ros2_control/CMakeLists.txt
+@@ -53,6 +53,8 @@ install(DIRECTORY
+ 
+ # Testing and linting
+ if(BUILD_TESTING)
++  add_executable(test_mimic_velocity test/test_mimic_velocity.cpp)
++  add_test(NAME test_mimic_velocity COMMAND test_mimic_velocity)
+   find_package(ament_lint_auto REQUIRED)
+   ament_lint_auto_find_test_dependencies()
+ endif()
+diff --git a/hsrb_gz_ros2_control/include/hsrb_gz_ros2_control/hsrb_system.hpp b/hsrb_gz_ros2_control/include/hsrb_gz_ros2_control/hsrb_system.hpp
+index a5ab838..3231935 100644
+--- a/hsrb_gz_ros2_control/include/hsrb_gz_ros2_control/hsrb_system.hpp
++++ b/hsrb_gz_ros2_control/include/hsrb_gz_ros2_control/hsrb_system.hpp
+@@ -182,6 +182,17 @@ class GazeboSimSystem : public gz_ros2_control::GazeboSimSystemInterface {
+     double upper;
+   };
+   std::vector<JointSaturation> joint_saturations_;
++
++  struct HandMimic {
++    sim::Entity joint;
++    sim::Entity source;
++    double multiplier;
++    double offset;
++    double lower;
++    double upper;
++    double max_velocity;
++  };
++  std::vector<HandMimic> hand_mimics_;
+ };
+ 
+ }  // namespace hsrb_gz_ros2_control
+diff --git a/hsrb_gz_ros2_control/src/hsrb_system.cpp b/hsrb_gz_ros2_control/src/hsrb_system.cpp
+index dd5f958..b3a9084 100644
+--- a/hsrb_gz_ros2_control/src/hsrb_system.cpp
++++ b/hsrb_gz_ros2_control/src/hsrb_system.cpp
+@@ -26,7 +26,9 @@ OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH
+ DAMAGE.
+ */
+ #include "hsrb_gz_ros2_control/hsrb_system.hpp"
++#include "hsrb_gz_ros2_control/mimic_velocity.hpp"
+ 
++#include <cmath>
+ #include <limits>
+ #include <map>
+ #include <memory>
+@@ -325,6 +327,30 @@ bool GazeboSimSystem::initSim(
+   }
+ 
+   for (const auto& joint : hardware_info.joints) {
++    const auto mimic = joint.parameters.find("mimic");
++    if (joint.name.rfind("hand_", 0) == 0 && mimic != joint.parameters.end()) {
++      const auto entity = enableJoints.find(joint.name);
++      const auto source = enableJoints.find(mimic->second);
++      if (entity == enableJoints.end() || source == enableJoints.end()) {
++        RCLCPP_ERROR(this->nh_->get_logger(), "Missing hand mimic joint: %s", joint.name.c_str());
++        return false;
++      }
++      const auto axis = _ecm.Component<sim::components::JointAxis>(entity->second)->Data();
++      const auto multiplier = joint.parameters.find("multiplier");
++      const auto offset = joint.parameters.find("offset");
++      this->hand_mimics_.push_back({entity->second, source->second,
++          multiplier == joint.parameters.end() ? 1.0 : std::stod(multiplier->second),
++          offset == joint.parameters.end() ? 0.0 : std::stod(offset->second),
++          axis.Lower(), axis.Upper(), axis.MaxVelocity()});
++      const auto& entry = this->hand_mimics_.back();
++      if (!std::isfinite(entry.multiplier) || !std::isfinite(entry.offset) ||
++          !std::isfinite(entry.max_velocity) || entry.max_velocity <= 0.0) {
++        RCLCPP_ERROR(this->nh_->get_logger(), "Invalid hand mimic limits: %s", joint.name.c_str());
++        return false;
++      }
++      RCLCPP_INFO(this->nh_->get_logger(), "Measured hand mimic: %s = %.3f * %s + %.3f",
++          joint.name.c_str(), entry.multiplier, mimic->second.c_str(), entry.offset);
++    }
+     for (const auto& param : joint.parameters) {
+       if ((param.first == "do_saturate") &&
+           (param.second == "true" || param.second == "True" || param.second == "1")) {
+@@ -393,6 +419,27 @@ hardware_interface::return_type GazeboSimSystem::write(
+     gripper_system->write(this->ecm_);
+   }
+ 
++  // Humble's parent mimic handler omits offsets. Override only the hand's
++  // mimic velocity commands using measured joint states, not motor commands.
++  // This preserves the URDF linkage without resetting joints or attaching objects.
++  for (const auto& mimic : this->hand_mimics_) {
++    const auto source = this->ecm_->Component<sim::components::JointPosition>(mimic.source);
++    const auto velocity = this->ecm_->Component<sim::components::JointVelocity>(mimic.source);
++    const auto position = this->ecm_->Component<sim::components::JointPosition>(mimic.joint);
++    if (!source || !velocity || !position || source->Data().empty() ||
++        velocity->Data().empty() || position->Data().empty()) {
++      continue;
++    }
++    const double command = MimicVelocity(source->Data()[0], velocity->Data()[0],
++        position->Data()[0], mimic.multiplier, mimic.offset, mimic.lower, mimic.upper, mimic.max_velocity);
++    auto output = this->ecm_->Component<sim::components::JointVelocityCmd>(mimic.joint);
++    if (output == nullptr) {
++      this->ecm_->CreateComponent(mimic.joint, sim::components::JointVelocityCmd({command}));
++    } else {
++      *output = sim::components::JointVelocityCmd({command});
++    }
++  }
++
+   constexpr double kJointResetPosition = 1.0e-4;
+   for (const auto& saturation : joint_saturations_) {
+     const auto joint_pos =
+diff --git a/hsrb_gz_ros2_control/include/hsrb_gz_ros2_control/mimic_velocity.hpp b/hsrb_gz_ros2_control/include/hsrb_gz_ros2_control/mimic_velocity.hpp
+new file mode 100644
+index 0000000..a5fc1f6
+--- /dev/null
++++ b/hsrb_gz_ros2_control/include/hsrb_gz_ros2_control/mimic_velocity.hpp
+@@ -0,0 +1,17 @@
++#ifndef HSRB_GZ_ROS2_CONTROL_MIMIC_VELOCITY_HPP_
++#define HSRB_GZ_ROS2_CONTROL_MIMIC_VELOCITY_HPP_
++
++#include <algorithm>
++
++namespace hsrb_gz_ros2_control {
++// Track measured source motion, including passive spring deflection. The
++// desired position is constrained by the mimic joint's own URDF limits.
++inline double MimicVelocity(double source_position, double source_velocity,
++    double position, double multiplier, double offset, double lower,
++    double upper, double max_velocity) {
++  const double target = std::clamp(multiplier * source_position + offset, lower, upper);
++  return std::clamp(20.0 * (target - position) + multiplier * source_velocity,
++      -max_velocity, max_velocity);
++}
++}  // namespace hsrb_gz_ros2_control
++#endif  // HSRB_GZ_ROS2_CONTROL_MIMIC_VELOCITY_HPP_
+diff --git a/hsrb_gz_ros2_control/test/test_mimic_velocity.cpp b/hsrb_gz_ros2_control/test/test_mimic_velocity.cpp
+new file mode 100644
+index 0000000..1c4c69a
+--- /dev/null
++++ b/hsrb_gz_ros2_control/test/test_mimic_velocity.cpp
+@@ -0,0 +1,24 @@
++#include <cmath>
++#include <stdexcept>
++#include "hsrb_gz_ros2_control/mimic_velocity.hpp"
++
++int main() {
++  using hsrb_gz_ros2_control::MimicVelocity;
++  auto require = [](bool condition) {
++    if (!condition) {throw std::runtime_error("Mimic tracking regression");}
++  };
++  // A settled motor still requires the fixed distal offset.
++  require(MimicVelocity(.46, 0., -.46, -1., -.087, -1.24, .798, 1.) < 0.);
++  require(std::abs(MimicVelocity(.46, 0., -.547, -1., -.087, -1.24, .798, 1.)) < 1.e-12);
++  // Passive spring deflection must be counter-rotated, even at zero velocity.
++  require(MimicVelocity(.135, 0., 0., -1., 0., -.698, 0., 1.) == -1.);
++  double position = 0.;
++  for (int i = 0; i < 200; ++i) {
++    const double velocity = MimicVelocity(.135, 0., position, -1., 0., -.698, 0., 1.);
++    require(std::abs(velocity) <= 1.);
++    position += .005 * velocity;
++  }
++  require(std::abs(position + .135) < .0001);
++  require(MimicVelocity(2., 0., -.698, -1., 0., -.698, 0., 1.) == 0.);
++  return 0;
++}

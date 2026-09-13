@@ -200,7 +200,7 @@ class Navigator(Node):
         end = path.poses[-1].pose.position
         return math.hypot(end.x - x, end.y - y) <= 0.1
 
-    def drive_to(self, x, y, yaw, timeout=180, tolerance=0.3, yaw_tolerance=0.3):
+    def drive_to(self, x, y, yaw, timeout=300, tolerance=0.3, yaw_tolerance=0.3):
         """Drive and verify. Tolerances must stay at or above the goal checker's."""
         goal = NavigateToPose.Goal()
         goal.pose = _pose(x, y, yaw)
@@ -229,6 +229,12 @@ class Navigator(Node):
                 parameter.value.type = ParameterType.PARAMETER_DOUBLE
                 parameter.value.double_value = float(value)
                 request.parameters.append(parameter)
+            # A holonomic base needs a small backward correction if it passes
+            # a precise parking goal. Normal travel retains forward-only vx.
+            reverse = ParameterMsg(name='FollowPath.vx_min')
+            reverse.value.type = ParameterType.PARAMETER_DOUBLE
+            reverse.value.double_value = -.08 if xy < .1 else 0.
+            request.parameters.append(reverse)
             future = client.call_async(request)
             rclpy.spin_until_future_complete(self, future, timeout_sec=timeout)
             if not future.done():
@@ -248,6 +254,10 @@ class Navigator(Node):
         pivot = self.tf_buffer.lookup_transform(FRAME, "head_pan_link", Time()).transform.translation
         bearing = math.atan2(point[1] - pivot.y, point[0] - pivot.x) - yaw
         pan = math.atan2(math.sin(bearing), math.cos(bearing))
+        # The asymmetric joint range extends past -pi. A positive bearing
+        # outside the upper limit can still be reachable as pan - 2*pi.
+        if pan > 1.75 and pan-2*math.pi >= -3.84:
+            pan -= 2*math.pi
         # HSRC RGB-D camera sits roughly 0.25 m above the head pivot.
         distance = math.hypot(point[0] - pivot.x, point[1] - pivot.y)
         tilt = math.atan2(point[2] - pivot.z - 0.248, distance)
@@ -260,7 +270,7 @@ class Navigator(Node):
         client = ActionClient(self, FollowJointTrajectory,
                               "/head_trajectory_controller/follow_joint_trajectory")
         try:
-            result = self._run(client, goal, 15)
+            result = self._run(client, goal, 45)
             return (result is not None and result.status == GoalStatus.STATUS_SUCCEEDED
                     and result.result.error_code == 0)
         finally:

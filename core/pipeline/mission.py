@@ -143,6 +143,8 @@ def run(argv=None):
     parser.add_argument('--bearings', type=int, default=6)
     parser.add_argument('--startup-timeout', type=float, default=180)
     parser.add_argument('--grasp', default='true', choices=['true', 'false'])
+    parser.add_argument('--mode', default='auto', choices=['auto', 'pickup', 'grasp'],
+                        help='auto lifts cylinders; grasp stops at finger contact')
     args = parser.parse_args(argv)
     if not args.target.strip() or args.top_k < 1 or args.bearings < 1:
         parser.error('target must be nonempty; top-k and bearings must be positive')
@@ -157,9 +159,11 @@ def run(argv=None):
     try:
         wait = get_ready(navigator, args.target, args.startup_timeout)
         home_arm(navigator, wait)
+        from core.navigation.manipulation_recovery import recover
+        recover(navigator)
         status = execute_mission(
             scene, args.target, navigator, args.graph, top_k=args.top_k,
-            bearings=args.bearings, grasp=args.grasp == 'true',
+            bearings=args.bearings, grasp=args.grasp == 'true', mode=args.mode,
         )
         return EXIT_CODES[status]
     finally:

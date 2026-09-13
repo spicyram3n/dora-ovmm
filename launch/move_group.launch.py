@@ -31,6 +31,7 @@ def generate_launch_description():
                               description="Open RViz against an existing move_group; also set use_rviz:=true."),
         DeclareLaunchArgument("use_rviz", default_value="false", choices=["true", "false"]),
         DeclareLaunchArgument("use_sim_time", default_value="true", choices=["true", "false"]),
+        DeclareLaunchArgument("enable_grasp_servo", default_value="false", choices=["true", "false"]),
         DeclareLaunchArgument("depth_topic",
                               default_value="/head_rgbd_sensor/depth_registered/image",
                               description="Simulator depth stream feeding the octomap relay."),
@@ -66,6 +67,12 @@ def generate_launch_description():
                               "depth_topic": LaunchConfiguration("depth_topic")}])
     stack = [
         move_group,
+        # Starts idle. The pickup client explicitly starts/pauses Servo around
+        # IBVS so its topic commands never compete with MTC's action goals.
+        Node(package="moveit_servo", executable="servo_node_main", name="grasp_servo",
+             condition=IfCondition(LaunchConfiguration('enable_grasp_servo')),
+             output="screen", parameters=model + [{"moveit_servo": ours("servo.yaml"),
+                                                   "use_sim_time": sim_time}]),
         Node(package="tf2_ros", executable="static_transform_publisher", output="log",
              arguments=["0.0", "0.0", "0.0", "0.0", "0.0", "0.0", "odom", "world"]),
         Node(package="hsrb_moveit_config", executable="odom_joint_states_publisher.py",

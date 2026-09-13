@@ -1,0 +1,2 @@
+# Unified patches contain context lines consisting of a single space.
+.devcontainer/grasp_patches/*.patch -whitespace

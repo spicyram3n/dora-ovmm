@@ -53,6 +53,8 @@ planner_configs:
   PRMstarkConfigDefault:
     type: geometric::PRMstar
 arm:
+  # Resolve narrow finger/table clearances during arm-only recovery planning.
+  longest_valid_segment_fraction: 0.001
   planner_configs:
     - SBLkConfigDefault
     - ESTkConfigDefault

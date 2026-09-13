@@ -5,9 +5,15 @@ sensors:
   - head_rgbd_sensor
 
 head_rgbd_sensor:
-  sensor_plugin: occupancy_map_monitor/DepthImageOctomapUpdater
+  sensor_plugin: hsr_rgbd/ConfiguredDepthUpdater
   image_topic: /head_rgbd_sensor/depth_registered/image_rect_raw
   queue_size: 5
+  near_clipping_plane_distance: 0.15
+  far_clipping_plane_distance: 5.0
+  shadow_threshold: 0.04
+  # Match the working robot self-filter; this does not shift grasp poses.
+  padding_scale: 1.0
+  padding_offset: 0.02
   max_update_rate: 1.0
   skip_vertical_pixels: 0
   skip_horizontal_pixels: 2

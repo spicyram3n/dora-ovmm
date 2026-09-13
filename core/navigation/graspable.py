@@ -19,7 +19,7 @@ NAV_YAW_TOLERANCE = 0.25
 # keeps the certificate it issued. Yaw is looser: the arm can roll to compensate.
 PRECISE_TOLERANCE = 0.08
 PRECISE_YAW_TOLERANCE = 0.15
-APPROACH_TIMEOUT = 90
+APPROACH_TIMEOUT = 180
 
 
 def _palm_pose(point, approach, closing):
@@ -114,7 +114,9 @@ def _approach(navigator, pose):
     The stock 0.25 m tolerance is three times the solver's robustness radius, so
     arriving under it proves nothing about reach. Restore it whatever happens:
     a permanently precise checker would make ordinary navigation fail."""
-    navigator.set_goal_tolerance(PRECISE_TOLERANCE, PRECISE_YAW_TOLERANCE)
+    # Stop inside the acceptance band, leaving margin for final localization
+    # updates instead of repeatedly failing just beyond the same boundary.
+    navigator.set_goal_tolerance(PRECISE_TOLERANCE*.5, PRECISE_YAW_TOLERANCE*.5)
     try:
         navigator.drive_to(
             *pose,
@@ -129,7 +131,7 @@ def _approach(navigator, pose):
 
 
 def reposition(navigator, centre, dimensions, obstacles="--costmap", bearings=6,
-               timeout=30.0, blockers=()):
+               timeout=30.0, blockers=(), hand_poses=None):
     """Park at a base pose the IK solver certified.
 
     Returns (pose, offset) only when the final measured position and yaw meet
@@ -137,7 +139,7 @@ def reposition(navigator, centre, dimensions, obstacles="--costmap", bearings=6,
     prove grasp feasibility at the measured joint/base configuration."""
     from core.navigation import base_placement
 
-    poses = probes(centre, dimensions, bearings)
+    poses = probes(centre, dimensions, bearings) if hand_poses is None else np.asarray(hand_poses)
     # The IK service takes an unstamped hand goal: transform to odom ourselves.
     odom_from_map = navigator.frame_transform("odom", "map")
     results = base_placement.solve(

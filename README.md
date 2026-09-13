@@ -140,7 +140,44 @@ The launch starts simulation, Nav2, IK, and MoveIt; waits for services, localiza
 
 Watch **`[WAIT]` → `[READY]` → `[HOME]` → `[SEARCH]` → `[APPROACH]` → `[GRASP]` → `[RESULT]`**. Process logs are labelled individually. Simulation stays open after completion; **Ctrl+C** stops the launched processes.
 
-Pickup ([core/grasping/pick.py](core/grasping/pick.py)) works on any object SAM3 segments and GraspGenX can grasp. MoveIt Task Constructor opens the hand and reaches the best reachable grasp; the gripper closes by effort; a second task attaches the object and lifts it. The hand is then checked for having closed on something. After a successful pickup the robot keeps holding the object; the next pickup opens the hand first.
+Pickup ([core/grasping/pick.py](core/grasping/pick.py)) keeps SAM3, GraspGenX and
+MoveIt Task Constructor. Calibrated finger geometry places side grasps on fitted
+cylinders and top grasps across resolved rectangular tops; other shapes use
+observed front contact sections. Ambiguous geometry or excessive width stops
+pickup before motion.
+
+Before generating grasps, a bounded head scan combines overlapping RGB-D
+observations in odom. Image clipping and nearer foreground occlusion are
+checked. If the arm blocks the scan, MTC plans one return to the existing
+observation/home arm pose, re-aims the head at the target and captures again.
+An unsuccessful recovery stops the pick. Detections that do not overlap the
+same target are discarded; this is a conservative check, not a guarantee of
+complete geometry for every shape or occlusion.
+
+MTC plans opening, pregrasp, and the full 80 mm approach together before execution.
+Candidates with an infeasible approach are rejected before motion. Cartesian
+approach and lift use coordinated arm and base motion with collision checking.
+The palm goal is computed once as `contact - rotation @ calibrated_pad(width)`:
+one shared gripper calibration, with a different pad-centre offset for each
+measured grip width. This is not a fixed 75 mm addition to every generated
+pose. Cylinder diameter, rectangular short edge, or an observed irregular
+contact section determines the width. Out-of-range apertures are rejected.
+For a controlled insertion trial, `HSR_GRASP_INSERTION_M=0.005` adds 5 mm
+along each grasp approach direction. Default is 10 mm for cylinders and zero otherwise; allowed range is 0–10 mm,
+also capped at 20% of contact width. This is trial tuning, not validated calibration.
+Closure uses bounded position steps and bilateral spring feedback: 0.10 rad
+for grasp-only contact and 0.14 rad for pickup. The legacy effort helper is
+not used by the default sequence. Contact alone does not verify a pickup.
+
+Closure requires measured arrival at the calibrated palm pose. A short test
+lift still requires RGB-D evidence of object motion to report success.
+
+Visual servoing is disabled in the default pickup sequence. The old Servo
+experiment remains available in source; its node is opt-in with
+`enable_grasp_servo:=true`. The calibration profile lives beside the unchanged
+registered meshes in `docker/graspgenx/x_grippers/hsrc_hand/closing_profile.json`.
+Geometry and collision checks remain necessary; calibration does not make
+all object shapes or poses graspable.
 
 Useful overrides:
 
@@ -254,7 +291,10 @@ The grasping package now has this layout:
 core/grasping/
 ├── __init__.py
 ├── pick.py               # SAM3 + GraspGenX + MoveIt Task Constructor pickup
-└── graspgenx_client.py   # model RPC
+├── graspgenx_client.py   # model RPC
+├── contact_geometry.py  # observed shape and calibrated pad placement
+├── visual_servo.py      # bounded eye-to-hand IBVS through MoveIt Servo
+└── test/                # geometry, visual-control and closure guards
 ```
 
 ### Inspect the running MoveIt scene

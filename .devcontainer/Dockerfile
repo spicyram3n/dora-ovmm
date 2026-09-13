@@ -38,6 +38,7 @@ RUN apt-get update && apt-get upgrade -y && \
     ros-humble-tf-transformations \
     ros-humble-gazebo-ros-pkgs \
     ros-humble-moveit \
+    ros-humble-moveit-servo \
     ros-humble-moveit-task-constructor-core \
     ros-humble-moveit-task-constructor-capabilities \
     ros-humble-moveit-task-constructor-msgs \
