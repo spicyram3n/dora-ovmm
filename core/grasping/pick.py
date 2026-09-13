@@ -181,6 +181,21 @@ def model_target(node, points):
         )
     ]
     scene.world.collision_objects = [box]
+    # Empty the octomap before applying anything, or move_group dies here.
+    #
+    # Applying a diff makes move_group republish monitored_planning_scene with
+    # the whole world in it, octomap included. At the 1 cm resolution
+    # config/moveit/sensors_xtion.yaml asks for, a map of everywhere the robot
+    # has driven reaches ~110 MB -- past CycloneDDS's 100 MB MaxSampleSize in
+    # .devcontainer/cyclonedds_sim.xml. The publish raises
+    # rclcpp::exceptions::RCLError("failed to publish data") on a publisher
+    # thread where nothing catches it, so move_group aborts with SIGABRT and
+    # every later call reports "/apply_planning_scene timed out".
+    #
+    # The clear below is the one that matters to planning: it rebuilds the map
+    # around the box. This one only keeps the message on the wire small, and is
+    # why the two are not redundant.
+    call(node, Empty, "/clear_octomap", Empty.Request())
     if not call(
         node,
         ApplyPlanningScene,

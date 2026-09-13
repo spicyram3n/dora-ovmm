@@ -114,8 +114,11 @@ def mission_steps(navigator, scene, target, graph_path, top_k, bearings, timeout
         return True
 
     def home():
-        _, wait = actions.waiter(navigator, time.monotonic() + 60)
-        actions.home_arm(navigator, wait)
+        # Homing now waits for the arm controller to activate, not just to
+        # appear, so it shares the startup budget rather than a shorter one of
+        # its own: on a cold start the spawners finish well after the action does.
+        remaining, wait = actions.waiter(navigator, time.monotonic() + timeout)
+        actions.home_arm(navigator, wait, remaining)
         return True
 
     def choose():

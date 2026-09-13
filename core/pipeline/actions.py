@@ -11,6 +11,7 @@ import rclpy
 from action_msgs.msg import GoalStatus
 from builtin_interfaces.msg import Duration
 from control_msgs.action import FollowJointTrajectory
+from controller_manager_msgs.srv import ListControllers
 from lifecycle_msgs.srv import GetState
 from rclpy.action import ActionClient
 from tmc_manipulation_msgs.srv import SolveIkWithCollision
@@ -59,12 +60,34 @@ def home_goal():
     return goal
 
 
-def home_arm(navigator, wait):
+def home_arm(navigator, wait, remaining):
     """Complete the user's navigation home pose before starting the search."""
     client = ActionClient(navigator, FollowJointTrajectory,
                          '/arm_trajectory_controller/follow_joint_trajectory')
+    controllers = navigator.create_client(ListControllers,
+                                          '/controller_manager/list_controllers')
+
+    def arm_controller_running():
+        """Whether ros2_control has activated the controller, not merely loaded it.
+
+        It advertises the action as soon as it is loaded and rejects every goal
+        until activated, so waiting on the action alone races the spawners and
+        the first home fails with "Controller is not running".
+        """
+        if not controllers.service_is_ready():
+            return False
+        future = controllers.call_async(ListControllers.Request())
+        rclpy.spin_until_future_complete(navigator, future,
+                                         timeout_sec=min(1., remaining()))
+        if not future.done():
+            controllers.remove_pending_request(future)
+            return False
+        return any(state.name == 'arm_trajectory_controller' and state.state == 'active'
+                   for state in future.result().controller)
+
     try:
         wait('arm trajectory action', client.server_is_ready)
+        wait('arm_trajectory_controller active', arm_controller_running)
         goal = home_goal()
         print('[HOME] moving arm to home pose', flush=True)
         # Reuse the navigator's bounded action wait and cancellation handling.
@@ -76,6 +99,7 @@ def home_arm(navigator, wait):
         print('[READY] arm home pose reached', flush=True)
     finally:
         client.destroy()
+        navigator.destroy_client(controllers)
 
 
 def waiter(navigator, deadline):

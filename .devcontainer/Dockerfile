@@ -78,7 +78,7 @@ RUN pip install --no-cache-dir \
     trimesh \
     octomap-python==1.10.0.0 \
     pycollada \
-    eclipse-zenoh \
+    "eclipse-zenoh==1.9.0" \
     "rerun-sdk==0.22.1"
 
 # Source ROS environment automatically

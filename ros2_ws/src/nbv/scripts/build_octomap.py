@@ -14,22 +14,29 @@ PointCloud2 and the whole map on /nbv/octomap, to view in RViz, and answers
 """
 
 import array
+import sys
+from pathlib import Path
+
 import numpy as np
 import octomap
 import rclpy
 import tf2_ros
 from cv_bridge import CvBridge
-from nbv.srv import UnknownFraction
+from nbv.srv import NextView, UnknownFraction
 from octomap_msgs.msg import Octomap
 from rclpy.duration import Duration
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
+from rclpy.time import Time
 from scipy.spatial.transform import Rotation
 from sensor_msgs.msg import CameraInfo, Image, PointCloud2, PointField
 from sensor_msgs_py.point_cloud2 import create_cloud
 from std_msgs.msg import Header
 from visualization_msgs.msg import Marker
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import next_view  # noqa: E402
 
 # The depth image, not the cloud topic: a third of the bytes for the same
 # points, and the stride below then skips pixels before they are ever
@@ -45,13 +52,15 @@ MAX_RANGE = 2.5
 # Rays with no return end at MAX_RANGE. OctoMap truncates rays past this, so
 # those come out free along their length with nothing occupied at the end.
 FREE_RANGE = MAX_RANGE - 0.01
+# What tree.getLabels reports for each cell it is asked about.
+UNKNOWN, FREE, OCCUPIED = -1, 0, 1
 
 
-def deproject(rows, columns, depth, info):
+def deproject(rows, columns, depth, info, stride=STRIDE):
     """Pixel indices and their depth to (n, 3) points in the camera frame."""
     # Intrinsics index the full image, so undo the stride.
-    x = (columns * STRIDE - info.k[2]) * depth / info.k[0]
-    y = (rows * STRIDE - info.k[5]) * depth / info.k[4]
+    x = (columns * stride - info.k[2]) * depth / info.k[0]
+    y = (rows * stride - info.k[5]) * depth / info.k[4]
     return np.stack([x, y, depth], axis=1)
 
 
@@ -61,9 +70,7 @@ def sphere_cells(tree, centre, radius):
     centre = np.asarray(centre, dtype=np.float64)
     low = np.asarray(tree.keyToCoord(tree.coordToKey(centre - radius)))
     steps = np.arange(-resolution, 2 * radius + resolution, resolution)
-    axes = []
-    for axis in range(3):
-        axes.append(low[axis] + steps)
+    axes = [low[axis] + steps for axis in range(3)]
     cells = np.stack(np.meshgrid(*axes, indexing="ij"), axis=-1).reshape(-1, 3)
     return cells[np.linalg.norm(cells - centre, axis=1) <= radius]
 
@@ -73,7 +80,7 @@ def unknown_in_sphere(tree, centre, radius):
     cells = sphere_cells(tree, centre, radius)
     if len(cells) == 0:
         return (0, 0)
-    return (int(np.sum(tree.getLabels(cells) == -1)), len(cells))
+    return (int(np.sum(tree.getLabels(cells) == UNKNOWN)), len(cells))
 
 
 class OctomapBuilder(Node):
@@ -86,6 +93,8 @@ class OctomapBuilder(Node):
         self.centre = np.array(centre, dtype=np.float64)
         self.radius = float(radius)
         self.tree = octomap.OcTree(RESOLUTION)
+        # Fixed for the node's life, and every tick asks about all of them.
+        self.cells = sphere_cells(self.tree, self.centre, self.radius)
         self.bridge = CvBridge()
         self.info = None
 
@@ -98,6 +107,7 @@ class OctomapBuilder(Node):
         self.octomap_publisher = self.create_publisher(Octomap, "/nbv/octomap", 1)
         # Callbacks run one at a time, so a query never sees a half-inserted frame.
         self.create_service(UnknownFraction, "/nbv/unknown_fraction", self.on_unknown_fraction)
+        self.create_service(NextView, "/nbv/next_view", self.on_next_view)
         # The camera publishes best effort, and a reliable subscription would
         # match nothing at all.
         self.create_subscription(CameraInfo, INFO, self.on_info, qos_profile_sensor_data)
@@ -105,7 +115,7 @@ class OctomapBuilder(Node):
         self.create_timer(1.0, self.publish)
         self.get_logger().info(
             f"sphere r={radius} at {centre} in {self.frame}, "
-            f"{len(sphere_cells(self.tree, self.centre, self.radius))} cells")
+            f"{len(self.cells)} cells")
 
     def on_info(self, msg):
         self.info = msg
@@ -141,42 +151,75 @@ class OctomapBuilder(Node):
         # Every other one of those: free space is bulk, and even at this
         # density the rays stay under a cell apart across the sphere.
         rows, columns = np.nonzero(~seen[::2, ::2])
-        empty = deproject(rows * 2, columns * 2,
-                          np.full(len(rows), MAX_RANGE, np.float32), self.info)
+        empty = deproject(rows, columns, np.full(len(rows), MAX_RANGE),
+                          self.info, 2 * STRIDE)
 
-        sensor = np.float32([getattr(transform.translation, axis) for axis in "xyz"])
+        sensor = np.array([getattr(transform.translation, axis) for axis in "xyz"])
         rotation = Rotation.from_quat(
-            [getattr(transform.rotation, axis) for axis in "xyzw"]).as_matrix()
-        rotation = rotation.T.astype(np.float32)
-        cloud = np.vstack([points @ rotation + sensor, empty @ rotation + sensor])
-        self.tree.insertPointCloud(cloud.astype(np.float64), sensor.astype(np.float64),
-                                   maxrange=FREE_RANGE)
+            [getattr(transform.rotation, axis) for axis in "xyzw"]).as_matrix().T
+        cloud = np.vstack([points, empty]) @ rotation + sensor
+        self.tree.insertPointCloud(cloud, sensor, maxrange=FREE_RANGE)
 
     def publish(self):
-        occupied, _ = self.tree.extractPointCloud()
-        occupied = occupied[np.linalg.norm(occupied - self.centre, axis=1) <= self.radius]
+        # One label per cell of the sphere, which is both what to draw and how
+        # much is still unseen. Asking the map only about these cells keeps the
+        # tick independent of how far the robot has driven.
+        labels = self.tree.getLabels(self.cells)
+        occupied = self.cells[labels == OCCUPIED]
         # Carry each cell's probability as intensity, so a cell can be read off
         # in RViz (colour by intensity, or click it) instead of only seen.
-        probability = []
-        for point in occupied:
-            probability.append(self.tree.search(point).getOccupancy())
-        points = np.column_stack([occupied, probability]).reshape(-1, 4)
+        probability = [self.tree.search(cell).getOccupancy() for cell in occupied]
+        points = np.column_stack([occupied, probability])
         header = Header(frame_id=self.frame, stamp=self.get_clock().now().to_msg())
         fields = [PointField(name=name, offset=4 * index,
                              datatype=PointField.FLOAT32, count=1)
                   for index, name in enumerate(("x", "y", "z", "intensity"))]
         self.publisher.publish(create_cloud(header, fields, points))
         self.sphere_publisher.publish(self.sphere(header))
-        self.octomap_publisher.publish(self.octomap(header))
-        unknown, _ = unknown_in_sphere(self.tree, self.centre, self.radius)
-        self.get_logger().info(f"occupied {len(occupied)}  unknown {unknown}",
-                               throttle_duration_sec=5.0)
+        # Serialising the whole map costs tens of milliseconds and grows with
+        # it, so only pay when an RViz is attached to see the result.
+        if self.octomap_publisher.get_subscription_count():
+            self.octomap_publisher.publish(self.octomap(header))
+        self.get_logger().info(
+            f"occupied {len(occupied)}  unknown {int(np.sum(labels == UNKNOWN))}",
+            throttle_duration_sec=5.0)
 
     def on_unknown_fraction(self, request, response):
         centre = [request.centre.x, request.centre.y, request.centre.z]
         response.unknown, response.total = unknown_in_sphere(self.tree, centre, request.radius)
         if response.total:
             response.fraction = response.unknown / response.total
+        return response
+
+    def standing_at(self):
+        """Where the base is now, as (x, y, yaw) in the map's frame."""
+        transform = self.buffer.lookup_transform(self.frame, "base_footprint",
+                                                 Time()).transform
+        rotation = Rotation.from_quat(
+            [getattr(transform.rotation, axis) for axis in "xyzw"])
+        return (transform.translation.x, transform.translation.y,
+                rotation.as_euler("xyz")[2])
+
+    def on_next_view(self, request, response):
+        if self.info is None:
+            self.get_logger().warn("no camera_info yet, so no view can be scored")
+            return response
+        try:
+            standing = self.standing_at()
+        except tf2_ros.TransformException as error:
+            self.get_logger().warn(f"no base transform: {error}")
+            return response
+        centre = np.array([request.centre.x, request.centre.y, request.centre.z])
+        cells = sphere_cells(self.tree, centre, request.radius)
+        options = next_view.candidates(self.tree, centre, standing)
+        best, response.bits = next_view.best_view(self.tree, cells, self.info,
+                                                  options, standing)
+        if best is None:
+            self.get_logger().warn(f"nowhere to stand that sees {centre}")
+            return response
+        response.found = True
+        response.base_x, response.base_y, response.base_yaw = best.base
+        response.lift, response.pan, response.tilt = best.lift, best.pan, best.tilt
         return response
 
     def sphere(self, header):

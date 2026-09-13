@@ -17,7 +17,9 @@ RUN git clone https://github.com/facebookresearch/sam3.git /opt/sam3 \
     && pip install --no-cache-dir -e "/opt/sam3[train]"
 
 
-RUN pip install --no-cache-dir eclipse-zenoh pillow "numpy<2" \
+# zenoh is pinned to match the ROS 2 side and the graspgenx container; the
+# three only talk to each other, so they move together or not at all.
+RUN pip install --no-cache-dir "eclipse-zenoh==1.9.0" pillow "numpy<2" \
     opencv-python-headless huggingface_hub einops pycocotools pandas psutil
 
 ARG HF_TOKEN=""
@@ -25,7 +27,7 @@ ENV HF_TOKEN=$HF_TOKEN
 
 WORKDIR /app
 COPY docker/sam3/app.py /app/app.py
+# The healthcheck in docker/compose.yaml runs this inside the container.
+COPY core/utils/zenoh_rpc.py /app/zenoh_rpc.py
 
 CMD ["python3", "app.py"]
-
-COPY core/utils/zenoh_rpc.py ./zenoh_rpc.py
