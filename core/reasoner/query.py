@@ -5,6 +5,7 @@ from dataclasses import asdict, dataclass
 from typing import Literal
 from pydantic import BaseModel, StrictInt
 from core.scene_graph import graph as sg
+from core.scene_graph.instance import normalize
 from core.utils import events
 from .deepseek import DEFAULT_MODEL, ask_json, get_client, have_key
 
@@ -60,6 +61,20 @@ def remembered(scene, obj, near=None):
     return locations
 
 
+def _guessed(scene, furniture_id, relation, reason):
+    """A furniture location DeepSeek picked, fresh or cached."""
+    data = scene.nodes[furniture_id]
+    return Location(
+        furniture_id=furniture_id,
+        label=data["label"],
+        room=data["room"],
+        relation=relation,
+        source="llm",
+        centroid=list(data["centroid"]),
+        reason=reason,
+    )
+
+
 def predict(scene, obj, client=None, top_k=3, hint="", exclude=(), model=DEFAULT_MODEL):
     """Rank eligible furniture; reject invented IDs, duplicates and missing entries."""
     sg.require_map(scene)
@@ -90,19 +105,13 @@ def predict(scene, obj, client=None, top_k=3, hint="", exclude=(), model=DEFAULT
         )
     result = []
     for guess in answer.locations:
-        data = scene.nodes[guess.furniture_id]
-        result.append(
-            Location(
-                furniture_id=guess.furniture_id,
-                label=data["label"],
-                room=data["room"],
-                relation=guess.relation,
-                source="llm",
-                centroid=list(data["centroid"]),
-                reason=guess.reason,
-            )
-        )
+        result.append(_guessed(scene, guess.furniture_id, guess.relation, guess.reason))
     return result
+
+
+def forget(scene, obj):
+    """Drop DeepSeek's cached picks for `obj`, so the next query asks afresh."""
+    scene.graph.get("llm_guesses", {}).pop(normalize(obj), None)
 
 
 def described(scene, locations):
@@ -130,13 +139,30 @@ def search_order(
         yield location
         if location.furniture_id is not None:
             excluded.append(location.furniture_id)
-    # Both of these run only if the caller is still searching.
+    # All of these run only if the caller is still searching.
+    # DeepSeek's picks per object live in the graph and are saved with it, so a repeat
+    # query skips the model. Their furniture IDs hold only for this graph; a rebuild starts empty.
+    cache = scene.graph.setdefault("llm_guesses", {})
+    key = normalize(obj)
+    if key in cache:
+        guesses = []
+        for picked in cache[key]:
+            if picked["furniture_id"] not in excluded:
+                guesses.append(_guessed(scene, picked["furniture_id"], picked["relation"], picked["reason"]))
+        events.emit("reason", target=obj, source="cache", top_k=top_k,
+                    locations=described(scene, guesses))
+        yield from guesses
+        return
     if client is None and not have_key():
         print("No DEEPSEEK_API_KEY set; searching remembered locations only.")
         events.emit("reason", target=obj, source="no_key")
         return
     events.emit("reason", target=obj, source="asking", top_k=top_k)
     guesses = predict(scene, obj, client, top_k, hint, tuple(excluded), model)
+    cache[key] = []
+    for guess in guesses:
+        cache[key].append({"furniture_id": guess.furniture_id, "relation": guess.relation,
+                           "reason": guess.reason})
     events.emit("reason", target=obj, source="llm", top_k=top_k,
                 locations=described(scene, guesses))
     yield from guesses

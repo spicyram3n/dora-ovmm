@@ -175,7 +175,9 @@ def find_objects(graph, label, near=None):
     scored_objects = []
     best_score = 0.0
     for node_id, data in objects(graph).items():
-        score = match_score(data["label"], label)
+        # A class such as "container" cannot tell a pringles can from a jar; the
+        # model or instance name can.
+        score = max(match_score(data["label"], label), match_score(data["name"], label))
         scored_objects.append((score, node_id))
         best_score = max(best_score, score)
     if best_score == 0.0:

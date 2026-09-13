@@ -68,6 +68,7 @@ RUN pip install --no-cache-dir \
     networkx \
     pandas \
     openai \
+    "brotli>=1.2" \
     graphviz \
     requests \
     flask \

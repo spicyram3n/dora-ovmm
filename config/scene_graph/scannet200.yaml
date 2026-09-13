@@ -1,0 +1,102 @@
+# The scene graph's label dictionary: the 198 ScanNet200 classes OpenYOLO3D
+# prompts with (network2d.text_prompts in its pretrained/config.yaml), grouped
+# by how the graph uses them. Every Gazebo model and scan label becomes one of
+# these, so a simulated and a scanned room share one vocabulary.
+#
+#   furniture  stays put and holds things; search goes to it, objects relate to it
+#   object     anything else worth remembering, graspable or not
+#   structure  part of the building; dropped, Nav2's costmaps already hold it
+
+furniture: [
+  chair, table, couch, cabinet, shelf, desk, office chair, bed, sink, toilet,
+  bookshelf, armchair, coffee table, refrigerator, kitchen cabinet, nightstand,
+  counter, dresser, stool, bathtub, end table, dining table, tv stand, closet,
+  microwave, stove, ottoman, bench, washing machine, copier, sofa chair,
+  file cabinet, shower, oven, rack, piano, radiator, wardrobe, stand,
+  clothes dryer, seat, dishwasher, machine, windowsill, ironing board, fireplace,
+  kitchen counter, mini fridge, water cooler, ledge, toaster oven, furniture,
+  cart, dish rack, music stand, bathroom counter, bathroom vanity,
+  bathroom cabinet, keyboard piano, coat rack, storage organizer, folded chair,
+  mattress,
+]
+
+object: [
+  pillow, picture, monitor, book, box, lamp, towel, clothes, tv, cushion, plant,
+  keyboard, bag, backpack, toilet paper, printer, whiteboard, blanket, trash can,
+  shoe, computer tower, bottle, bin, board, mirror, basket, fan, laptop, paper,
+  person, paper towel dispenser, plate, blackboard, suitcase, recycling bin,
+  container, soap dispenser, telephone, bucket, clock, light, laundry basket,
+  guitar, toilet paper holder, speaker, bicycle, ladder, cup, jacket,
+  storage bin, coffee maker, paper towel roll, mat, toaster, bulletin board,
+  soap dish, toilet paper dispenser, fire extinguisher, ball, hat, paper cutter,
+  tray, mouse, toilet seat cover dispenser, storage container, scale,
+  tissue box, crate, decoration, sign, projector, vacuum cleaner, candle,
+  plunger, stuffed animal, headphones, broom, guitar case, dustpan, hair dryer,
+  water bottle, purse, water pitcher, mailbox, bowl, paper bag, alarm clock,
+  projector screen, laundry detergent, object, laundry hamper, trash bin,
+  dumbbell, tube, cd case, coffee kettle, case of water bottles, power strip,
+  calendar, poster, potted plant, luggage,
+]
+
+structure: [
+  door, window, curtain, ceiling, shower curtain, stairs, blinds, rail, pipe,
+  column, bathroom stall, shower wall, bar, doorframe, shower curtain rod,
+  shower door, pillar, light switch, power outlet, closet door, range hood,
+  handicap bar, vent, shower floor, divider, closet wall, bathroom stall door,
+  ceiling light, stair rail, closet rod, structure, shower head, fire alarm,
+]
+
+# Other names, as class: [names]. Names match after lowercasing, splitting into
+# words and dropping trailing digits, first whole, then by their last word, so
+# "kitchen_chair", "office_desk" and "plant1" need no entry here.
+
+# tmc_gazebo models whose name does not already say their class, for every world.
+# ScanNet200 has no fruit, snack or wallet: those take the nearest class, and the
+# graph keeps the model name in `name`, where object search still finds it.
+gazebo:
+  book: [artbook_chagall, artbook_fauvism, artbook_german, artbook_utrillo,
+         book1_h2, book1_v1, book1_v2, book1_v4, book1_v5, book1_v6,
+         book2_h2, book2_h3, book2_h4, book2_v1, book2_v2, book2_v3,
+         book3_h1, book3_h2, book3_v1, book3_v2, book3_v4, book3_v5]
+  bottle: [bottle2_1b, bottle2_2a]
+  bowl: [basin, bowl2_1a, bowl2_1b]
+  box: [box1_1b, box1_5a, box2_1b, box3_1a, nasal_inflammation_capsul]
+  container: [hsr_pringles, jar2_1, jar2_2, metal1_1, metal1_2, metal1_3,
+              metal2_1a, metal3_1]
+  object: [apple, banana, pear, hsr_orange]
+  purse: [wallet]
+  plate: [dish, dish2_1, dish2_2b]
+  shoe: [shoes1]
+  decoration: [bird, vase3]
+  potted plant: [tree_large_h, tree_large_l]
+  couch: [sofa-fix]
+  coffee table: [kitchen_lowtable]
+  nightstand: [bed_table]
+  table: [centralunit]
+  cart: [wagon_with_marker]
+  door: [openable_hinged_door_z_normally, openable_hinged_door_z_reversely,
+         openable_sliding_door_with_marker1, openable_sliding_door_with_marker2]
+  doorframe: [hinged_door_stopper]
+  divider: [picket_m, picket_s, picket_t]
+  structure: [apartment_wall_collision, full_wall_55_900_2090_with_marker,
+              wall_frame_55_55_2090, lawn_garden, room]
+
+# Everyday words for the same classes, so custom prompts and older labels agree.
+synonyms:
+  couch: [sofa]
+  refrigerator: [fridge, freezer]
+  trash can: [trashcan]
+  tv: [television]
+  bookshelf: [bookcase]
+  cabinet: [cupboard, pantry, sideboard]
+  counter: [countertop, worktop]
+  kitchen counter: [island]
+  dresser: [drawers]
+  shelf: [shelves]
+  cart: [trolley, wagon]
+  bathroom vanity: [vanity]
+  washing machine: [washer]
+  stairs: [staircase]
+  rail: [railing]
+  stair rail: [banister]
+  structure: [wall, floor, ground, roof, beam]

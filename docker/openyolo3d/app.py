@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 
 import numpy as np
+import yaml
 
 
 def validate_scene(scene):
@@ -83,7 +84,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--scene', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
-    parser.add_argument('--labels', nargs='+', required=True)
+    parser.add_argument('--labels', nargs='+',
+                        help="Classes to find; default: the checkpoint's 198 ScanNet200 prompts")
     parser.add_argument('--source-frame', required=True)
     parser.add_argument('--depth-scale', type=float, default=1000.0,
                         help='Raw depth units per metre (1000 for millimetres)')
@@ -111,6 +113,10 @@ def main():
     for name in ['scannet200_val.ckpt', 'yolo_world_v2_x_obj365v1_goldg_cc3mlite_pretrain_1280ft-14996a36.pth']:
         if not (Path('pretrained/checkpoints') / name).is_file():
             raise FileNotFoundError('Run run_openyolo3d.sh --download-checkpoints first')
+    if args.labels is None:
+        # The prompts scannet200_val.ckpt was evaluated with. The scene graph's
+        # config/scene_graph/scannet200.yaml sorts these same classes by role.
+        args.labels = yaml.safe_load(Path('pretrained/config.yaml').read_text())['network2d']['text_prompts']
     model = OpenYolo3D('pretrained/config.yaml')
     with torch.inference_mode():
         prediction = model.predict(str(args.scene), depth_scale=args.depth_scale, text=args.labels)

@@ -9,8 +9,10 @@ from pathlib import Path
 import numpy as np
 import rclpy
 import yaml
-from moveit_msgs.msg import PlanningSceneWorld
+from geometry_msgs.msg import Pose
+from moveit_msgs.msg import CollisionObject, PlanningSceneWorld
 from nav_msgs.msg import OccupancyGrid
+from shape_msgs.msg import SolidPrimitive
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from rclpy.time import Time
 from sensor_msgs.msg import JointState
@@ -183,6 +185,24 @@ def _obstacle_map(node, obstacles, goal_frame):
     if obstacles is None:
         return None
     return _grid_in_frame(node, obstacles, goal_frame)
+
+
+def collision_world(boxes, frame_from_map):
+    """Furniture boxes (centre, dimensions, yaw) in map, as solver obstacles in the hand
+    goal's frame. The solver checks the whole robot against them, arm included, and
+    does not transform them itself."""
+    world = PlanningSceneWorld()
+    for index, (centre, dimensions, yaw) in enumerate(boxes):
+        placed = np.eye(4)
+        placed[:2, :2] = [[math.cos(yaw), -math.sin(yaw)], [math.sin(yaw), math.cos(yaw)]]
+        placed[:3, 3] = centre
+        box = CollisionObject(id=f"furniture_{index}", operation=CollisionObject.ADD)
+        box.pose = pose_from_matrix(frame_from_map @ placed)
+        box.primitives.append(SolidPrimitive(
+            type=SolidPrimitive.BOX, dimensions=[float(size) for size in dimensions]))
+        box.primitive_poses.append(Pose())
+        world.collision_objects.append(box)
+    return world
 
 
 def _ik_request(hand_goal, obstacle_map, environment):

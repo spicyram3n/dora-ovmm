@@ -7,7 +7,7 @@ import trimesh
 from scipy.spatial.transform import Rotation
 from core.perception.pointcloud import transform_points
 from core.utils.geometry import box_corners
-from .instance import Instance
+from .instance import LABELS, Instance, scannet_class
 
 
 def _pose(element):
@@ -147,6 +147,16 @@ def _models(world, roots):
         yield (model, model, model.get("name"), model.get("name"))
 
 
+def _scannet_label(model):
+    """A model's ScanNet200 class, so sim and scan graphs share one vocabulary."""
+    label = scannet_class(model)
+    if label is None:
+        raise ValueError(
+            f"Gazebo model {model!r} has no ScanNet200 class; add it under gazebo: in {LABELS}"
+        )
+    return label
+
+
 def load_world(path):
     """Read initial collision geometry in Gazebo world coordinates, in metres."""
     roots = _roots(path)
@@ -161,5 +171,5 @@ def load_world(path):
             pose = pose @ _pose(model)
         points = _collision_points(model, pose, roots)
         if len(points):
-            instances.append(Instance(label, points, name=name))
+            instances.append(Instance(_scannet_label(label), points, name=name))
     return instances

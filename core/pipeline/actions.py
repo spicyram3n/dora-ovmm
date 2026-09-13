@@ -1,27 +1,37 @@
-"""Search remembered or LLM-ranked locations with Nav2 and SAM3, park the base
-where the arm can reach what was found, and with --grasp pick it up."""
+"""The actions core.pipeline.mission_tree runs, built from core's tools: wait for the
+stack, home the arm, search remembered or LLM-ranked locations with Nav2 and SAM3,
+park where the arm can reach what was found, and pick it up."""
 
-import argparse
 import subprocess
 import sys
+import time
 from pathlib import Path
 import numpy as np
-from core.navigation import standoff
+import rclpy
+from action_msgs.msg import GoalStatus
+from builtin_interfaces.msg import Duration
+from control_msgs.action import FollowJointTrajectory
+from lifecycle_msgs.srv import GetState
+from rclpy.action import ActionClient
+from tmc_manipulation_msgs.srv import SolveIkWithCollision
+from trajectory_msgs.msg import JointTrajectoryPoint
+from core.navigation import graspable, standoff
+from core.perception import pointcloud, sam3_client
+from core.perception.camera_ros2 import grab_rgbd
 from core.scene_graph import graph as sg
+from core.scene_graph.instance import Instance, from_box
+from core.scene_graph.relations import classify
 from core.reasoner.query import Location, described, search_order
 from core.utils import events
 
 ROOT = Path(__file__).resolve().parents[2]
 # Mission outcomes, from the object never being seen to standing ready to grasp.
 NOT_FOUND = "not_found"
-ARRIVED = "arrived"
 FOUND = "found"
 NOT_GRASPABLE = "not_graspable"
 READY = "ready"
 PICKED = "picked"
 NOT_PICKED = "not_picked"
-EXIT_CODES = {NOT_FOUND: 1, ARRIVED: 0, FOUND: 0, NOT_GRASPABLE: 2, READY: 0,
-              PICKED: 0, NOT_PICKED: 4}
 # A same-label detection further than this from a remembered one is another instance.
 SAME_INSTANCE = 1.0
 # Nothing the HSR gripper can pick up measures more than this across.
@@ -33,6 +43,121 @@ STORAGE_WORDS = ("shelf", "shelves", "bookcase", "rack")
 # look at the same place (another query, active perception) can reuse them.
 # Held in memory only: they go when the run ends.
 VIEWS = {}
+
+
+def home_goal():
+    """The user's navigation home pose, as an arm trajectory goal."""
+    goal = FollowJointTrajectory.Goal()
+    goal.trajectory.joint_names = [
+        'arm_lift_joint', 'arm_flex_joint', 'arm_roll_joint',
+        'wrist_flex_joint', 'wrist_roll_joint',
+    ]
+    goal.trajectory.points = [JointTrajectoryPoint(
+        positions=[0.0, 0.0, -1.57, -1.57, 0.0],
+        time_from_start=Duration(sec=3),
+    )]
+    return goal
+
+
+def home_arm(navigator, wait):
+    """Complete the user's navigation home pose before starting the search."""
+    client = ActionClient(navigator, FollowJointTrajectory,
+                         '/arm_trajectory_controller/follow_joint_trajectory')
+    try:
+        wait('arm trajectory action', client.server_is_ready)
+        goal = home_goal()
+        print('[HOME] moving arm to home pose', flush=True)
+        # Reuse the navigator's bounded action wait and cancellation handling.
+        outcome = navigator._run(client, goal, timeout=30)
+        if outcome is None or outcome.status != GoalStatus.STATUS_SUCCEEDED:
+            raise RuntimeError('Arm homing did not succeed; search will not start')
+        if outcome.result.error_code != FollowJointTrajectory.Result.SUCCESSFUL:
+            raise RuntimeError(f'Arm homing failed: {outcome.result.error_string}')
+        print('[READY] arm home pose reached', flush=True)
+    finally:
+        client.destroy()
+
+
+def waiter(navigator, deadline):
+    """(remaining, wait) for readiness checks that share one deadline."""
+    def remaining():
+        seconds = deadline - time.monotonic()
+        if seconds <= 0:
+            raise TimeoutError('Startup deadline exceeded; see the last WAIT message')
+        return seconds
+
+    def wait(label, check):
+        print(f'[WAIT] {label}', flush=True)
+        while True:
+            remaining()
+            if check():
+                print(f'[READY] {label}', flush=True)
+                return
+            rclpy.spin_once(navigator, timeout_sec=min(0.5, remaining()))
+
+    return remaining, wait
+
+
+def get_ready(navigator, target, timeout, perception=True):
+    """Wait for every service the mission uses; skip SAM3 without perception."""
+    remaining, wait = waiter(navigator, time.monotonic() + timeout)
+    navigator.resume_navigation_if_paused()
+    for name in ('amcl', 'planner_server', 'controller_server', 'behavior_server', 'bt_navigator'):
+        client = navigator.create_client(GetState, f'/{name}/get_state')
+        try:
+            def active():
+                if not client.service_is_ready():
+                    return False
+                future = client.call_async(GetState.Request())
+                rclpy.spin_until_future_complete(navigator, future, timeout_sec=min(1., remaining()))
+                if not future.done():
+                    client.remove_pending_request(future)
+                    return False
+                return future.result().current_state.id == 3  # lifecycle ACTIVE
+            wait(name + ' active', active)
+        finally:
+            navigator.destroy_client(client)
+    wait('Nav2 actions', lambda: navigator.planner.server_is_ready() and navigator.driver.server_is_ready())
+    head = ActionClient(navigator, FollowJointTrajectory,
+                        '/head_trajectory_controller/follow_joint_trajectory')
+    try:
+        wait('head trajectory action', head.server_is_ready)
+    finally:
+        head.destroy()
+    ik = navigator.create_client(SolveIkWithCollision, '/ik_solver_node/solve_ik_with_collision')
+    try:
+        wait('IK service', ik.service_is_ready)
+    finally:
+        navigator.destroy_client(ik)
+
+    def localized():
+        try:
+            navigator.robot_pose(timeout=min(1., remaining()))
+            return True
+        except RuntimeError:
+            return False
+    wait('fresh map-to-base localization', localized)
+
+    print('[WAIT] synchronized RGB-D and camera TF', flush=True)
+    while True:
+        try:
+            rgb, _, _, _ = grab_rgbd(target_frame='map', timeout=min(5., remaining()))
+            break
+        except RuntimeError as error:
+            print(f'[WAIT] {error}', flush=True)
+    print('[READY] RGB-D and camera TF', flush=True)
+    if perception:
+        print('[WAIT] SAM3 response (start docker/sam3/run_sam3.sh on host)', flush=True)
+        while True:
+            try:
+                sam3_client.detect(rgb, target, timeout=min(30., remaining()))
+                break
+            except sam3_client.ObjectNotFound:
+                break  # A valid negative detection still proves the server is ready.
+            except RuntimeError as error:
+                print(f'[WAIT] SAM3: {error}', flush=True)
+                rclpy.spin_once(navigator, timeout_sec=min(1., remaining()))
+        print('[READY] SAM3; startup detection discarded', flush=True)
 
 
 def box(data):
@@ -149,9 +274,6 @@ def look_points(scene, location, pose):
 
 
 def observed_furniture(scene, points):
-    from core.scene_graph.instance import Instance, from_box
-    from core.scene_graph.relations import classify
-
     ids = []
     pieces = []
     for node, data in sg.furniture(scene).items():
@@ -165,9 +287,6 @@ def observed_furniture(scene, points):
 
 
 def locate(obj):
-    from core.perception import pointcloud, sam3_client
-    from core.perception.camera_ros2 import grab_rgbd
-
     rgb, depth, intrinsics, transform = grab_rgbd(target_frame="map")
     try:
         mask, score = sam3_client.detect(rgb, obj)
@@ -190,15 +309,18 @@ def locate(obj):
 
 def make_graspable(scene, node_id, navigator, obstacles="--costmap", bearings=6):
     """Refine the observation pose into one the IK solver certifies for the arm."""
-    from core.navigation import graspable
-
     centre, dimensions = box(scene.nodes[node_id])
+    holder, relation = sg.location_of(scene, node_id)
     blockers = []
-    for data in sg.furniture(scene).values():
+    solid = []
+    for furniture_id, data in sg.furniture(scene).items():
         blockers.append(sg.footprint(data))
+        # Graph boxes are solid: the piece the object is on or in would swallow the hand.
+        if furniture_id != holder or relation == "near":
+            solid.append(sg.footprint(data))
     outcome = graspable.reposition(
         navigator, centre, dimensions, obstacles=obstacles, bearings=bearings,
-        blockers=blockers,
+        blockers=blockers, solid=solid,
     )
     if outcome is None:
         print(
@@ -233,7 +355,7 @@ def pick_up(obj):
     return PICKED if pick.returncode == 0 else NOT_PICKED
 
 
-def search(scene, obj, navigator, furniture=None, top_k=3, observe=locate, views=2):
+def search(scene, obj, navigator, top_k=3, observe=locate, views=2):
     """Try at least `views` viewpoints per location, more when the furniture is too
     large for them to cover. Perception/server errors stop the run.
 
@@ -241,7 +363,7 @@ def search(scene, obj, navigator, furniture=None, top_k=3, observe=locate, views
     if views < 1:
         raise ValueError("views must be positive")
     # Advancing this iterator requests LLM fallback only when needed.
-    for location in targets(scene, obj, furniture, navigator.robot_xy(), top_k):
+    for location in targets(scene, obj, robot_xy=navigator.robot_xy(), top_k=top_k):
         poses, needed = plan(scene, location, navigator.robot_xy())
         limit = max(views, needed)
         outcomes = VIEWS[view_key(location)]["outcomes"]
@@ -253,8 +375,6 @@ def search(scene, obj, navigator, furniture=None, top_k=3, observe=locate, views
             if not navigator.drive_to(*pose):
                 outcomes[pose] = "drive failed"
                 continue
-            if not obj:
-                return (ARRIVED, None)
             # A spent view is spent whether the head or the detector failed;
             # otherwise an unaimable target burns every candidate pose.
             observations += 1
@@ -331,108 +451,3 @@ def search(scene, obj, navigator, furniture=None, top_k=3, observe=locate, views
         else:
             print("Object not detected in completed views; trying the next location.")
     return (NOT_FOUND, None)
-
-
-def execute_mission(scene, obj, navigator, graph_path, *, furniture=None, top_k=3,
-                    bearings=6, obstacles="--costmap", refine=True, grasp=True):
-    """Search, persist the observation, park, then optionally perform a verified pick.
-
-    Both CLI entry points use this sequence. Errors propagate so a failed stage
-    cannot silently advance to robot motion in the next stage.
-    """
-    if grasp and not refine:
-        raise ValueError("Pickup requires arm-reachable base placement")
-    navigator.resume_navigation_if_paused()
-    print(f"[SEARCH] target={obj!r}; graph={graph_path}", flush=True)
-    status, object_id = search(scene, obj, navigator, furniture, top_k)
-    if object_id is not None:
-        # Preserve the observation even if the subsequent IK/model call fails.
-        sg.save(scene, graph_path)
-    if status == FOUND and refine:
-        if object_id is None:
-            raise RuntimeError("Search reported found without a recorded object")
-        print('[APPROACH] finding and reaching an arm-reachable base pose', flush=True)
-        status = make_graspable(scene, object_id, navigator, obstacles, bearings)
-    if status == READY and grasp:
-        navigator.pause_navigation()
-        print('[GRASP] generating grasps and picking the object up', flush=True)
-        status = pick_up(obj)
-    print(f'[RESULT] {status}', flush=True)
-    return status
-
-
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("object", nargs="?", default="")
-    parser.add_argument(
-        "--graph", type=Path, default=ROOT / "outputs/scene_graph/apartment.json"
-    )
-    parser.add_argument("--furniture", help="unique furniture instance name or node ID")
-    parser.add_argument("--top-k", type=int, default=3)
-    parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="show first location; unknown objects still call DeepSeek",
-    )
-    parser.add_argument(
-        "--grasp",
-        action="store_true",
-        help="generate grasps and pick the object up once parked",
-    )
-    parser.add_argument(
-        "--no-refine",
-        action="store_true",
-        help="stop at detection instead of parking where the arm can reach",
-    )
-    parser.add_argument(
-        "--bearings",
-        type=int,
-        default=6,
-        help="horizontal probe directions asked of the IK solver",
-    )
-    obstacles = parser.add_mutually_exclusive_group()
-    obstacles.add_argument("--map", action="store_const", const="--map", dest="source")
-    obstacles.add_argument(
-        "--costmap", action="store_const", const="--costmap", dest="source"
-    )
-    parser.set_defaults(source="--costmap")
-    args = parser.parse_args()
-    if not args.object and (not args.furniture):
-        parser.error("give an object or --furniture")
-    if args.top_k < 1:
-        parser.error("--top-k must be positive")
-    if args.bearings < 1:
-        parser.error("--bearings must be positive")
-    if args.grasp and (args.no_refine or not args.object):
-        parser.error("--grasp requires an object and base refinement")
-    scene = sg.load(args.graph)
-    if args.dry_run:
-        first = next(
-            targets(scene, args.object, args.furniture, top_k=args.top_k), None
-        )
-        if first is None:
-            return 1
-        poses, _ = plan(scene, first)
-        for pose in poses[:3]:
-            print(" ", pose)
-        return 0
-    import rclpy
-    from core.navigation.nav2_client import Navigator
-
-    rclpy.init()
-    navigator = Navigator()
-    try:
-        status = execute_mission(
-            scene, args.object, navigator, args.graph, furniture=args.furniture,
-            top_k=args.top_k, bearings=args.bearings, obstacles=args.source,
-            refine=not args.no_refine, grasp=args.grasp,
-        )
-        return EXIT_CODES[status]
-    finally:
-        navigator.destroy_node()
-        if rclpy.ok():
-            rclpy.shutdown()
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

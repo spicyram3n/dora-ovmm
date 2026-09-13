@@ -4,8 +4,10 @@ import URDFLoader from 'urdf-loader';
 
 const $ = id => document.getElementById(id);
 const esc = text => String(text).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
-// The steps of the navigate-only tree the server runs, and the stage view of each.
-const LEAF_STAGE = { 'Home arm': 'home', 'Choose location': 'reason', 'Go there': 'navigate' };
+// The tree's steps and the stage view of each: navigate-only's, and the full mission's drives.
+// The reasoner floats over every stage, so choosing a location opens the map it lands on.
+const LEAF_STAGE = { 'Home arm': 'home', 'Choose location': 'navigate', 'Go there': 'navigate',
+                     'Find target': 'navigate', 'Park': 'navigate' };
 const ARM = ['arm_lift_joint', 'arm_flex_joint', 'arm_roll_joint', 'wrist_flex_joint', 'wrist_roll_joint'];
 const COLOR = { goal: 0xff3d8b, ok: 0x2f9e6e, fail: 0xd64545, chosen: 0x4353d6, other: 0xb9b5ad };
 
@@ -25,7 +27,7 @@ function show(stage) {
   lastSwitch = performance.now();
   replayFrom = lastSwitch;
   for (const button of $('tabs').children) button.classList.toggle('on', button.dataset.stage === stage);
-  for (const id of ['home', 'reason', 'navigate']) $(id).hidden = id !== stage;
+  for (const id of ['home', 'navigate']) $(id).hidden = id !== stage;
 }
 
 function choose(stage) {
@@ -132,10 +134,11 @@ function tickHome(now) {
   }
 }
 
-// ---------- 2 · Reason: the thought cloud ----------
+// ---------- the reasoner, floating over every stage like the camera ----------
 function renderReason() {
   const reasons = runEvents().filter(e => e.kind === 'reason');
-  let html = '<p class="empty">The reasoner speaks once the arm is home.</p>';
+  $('reasoner').hidden = !reasons.length;
+  let html = '';
   if (reasons.length) {
     const all = plans();
     const same = (a, b) => b && a.furniture_id === b.furniture_id && a.object_id === b.object_id;
@@ -162,14 +165,15 @@ function renderReason() {
         html += `<p>Asking DeepSeek for the ${r.top_k} likeliest places<span class="dots"><i></i><i></i><i></i></span></p>`;
       } else if (r.source === 'llm') {
         html += `<p>DeepSeek's top ${r.locations.length}, visited in its order:</p><ol>${r.locations.map(item).join('')}</ol>`;
+      } else if (r.source === 'cache') {
+        html += `<p>DeepSeek's top ${r.locations.length} from an earlier query, visited in its order:</p><ol>${r.locations.map(item).join('')}</ol>`;
       }
     }
-    html = `<div class="cloud">${html}</div>`;
   }
-  if ($('reason').innerHTML !== html) $('reason').innerHTML = html;
+  if ($('reasoner').innerHTML !== html) $('reasoner').innerHTML = html;
 }
 
-// ---------- 3 · Navigate: the place, its neighbours, where the base parks ----------
+// ---------- 2 · Navigate: the place, its neighbours, where the base parks ----------
 const nav = viewer($('navigate'));
 const scenery = new THREE.Group();
 nav.world.add(scenery);
@@ -352,7 +356,6 @@ function render() {
   if ($('tree').innerHTML !== html) $('tree').innerHTML = html;
 
   const cached = { home: (state?.homing.length ?? 0) > 1,
-                   reason: runEvents().some(e => e.kind === 'reason'),
                    navigate: plans().length > 0 };
   for (const button of $('tabs').children) {
     const name = button.dataset.stage;

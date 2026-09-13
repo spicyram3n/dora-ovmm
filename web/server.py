@@ -41,7 +41,7 @@ from sensor_msgs.msg import Image, JointState
 from tf2_ros import Buffer, TransformException, TransformListener
 
 from core.perception.camera_ros2 import RGB_TOPIC
-from core.pipeline.mission import home_goal
+from core.pipeline.actions import home_goal
 from core.utils.events import PREFIX
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -51,8 +51,9 @@ HOST, PORT = "127.0.0.1", 8080
 RUNS = ROOT / "outputs/web_runs"
 # Joint samples kept while the arm homes: enough for a smooth replay, and small.
 SAMPLE_PERIOD = 0.1
-# The step that drives the base to the place; the path and track are kept for it.
-DRIVE_STEP = "Go there"
+# The steps that drive the base; the path and track are kept for them. Navigate-only
+# drives in "Go there", the full mission inside its search and when parking.
+DRIVE_STEPS = ("Go there", "Find target", "Park")
 # How often the base's map pose is read, and how far apart path waypoints are drawn.
 TRACK_PERIOD = 0.2
 WAYPOINT_SPACING = 0.25
@@ -135,7 +136,7 @@ def on_plan(message):
         if not points or math.hypot(x - points[-1][0], y - points[-1][1]) >= WAYPOINT_SPACING:
             points.append([x, y])
     with lock:
-        if run["running"] and run["leaf"] == DRIVE_STEP:
+        if run["running"] and run["leaf"] in DRIVE_STEPS:
             run["path"] = points
 
 
@@ -165,7 +166,7 @@ def on_tick():
     pose = [transform.translation.x, transform.translation.y, yaw]
     with lock:
         run["pose"] = pose
-        if run["running"] and run["leaf"] == DRIVE_STEP:
+        if run["running"] and run["leaf"] in DRIVE_STEPS:
             run["track"].append({"t": time.monotonic(), "pose": pose})
 
 
@@ -193,7 +194,8 @@ def start():
         run["running"] = True
         run["id"] = time.strftime("%Y%m%d-%H%M%S")
         RUNS.mkdir(parents=True, exist_ok=True)
-        # The page covers home, reasoning and navigation so far: no SAM3 or GraspGenX.
+        # Navigate-only by default: no SAM3 or GraspGenX. The server's own arguments come
+        # later and win, so `python3 -m web.server --navigate-only false` runs the full mission.
         # Its own session, so Stop reaches anything the mission starts, as Ctrl+C would.
         process = subprocess.Popen(
             [sys.executable, "-u", "-m", "core.pipeline.mission_tree", "--target", target,

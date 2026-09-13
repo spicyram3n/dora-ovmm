@@ -128,10 +128,20 @@ def _approach(navigator, pose):
     return navigator.residual(*pose)
 
 
-def reposition(navigator, centre, dimensions, obstacles="--costmap", bearings=6,
-               timeout=30.0, blockers=()):
+def reposition(
+    navigator,
+    centre,
+    dimensions,
+    obstacles="--costmap",
+    bearings=6,
+    timeout=30.0,
+    blockers=(),
+    solid=(),
+):
     """Park at a base pose the IK solver certified.
 
+    `blockers` keep the base clear; the solver checks the whole robot, arm
+    included, against the `solid` boxes. Both are (centre, dimensions, yaw) in map.
     Returns (pose, offset) only when the final measured position and yaw meet
     the approach tolerances; otherwise returns None. Reach probes still do not
     prove grasp feasibility at the measured joint/base configuration."""
@@ -141,7 +151,11 @@ def reposition(navigator, centre, dimensions, obstacles="--costmap", bearings=6,
     # The IK service takes an unstamped hand goal: transform to odom ourselves.
     odom_from_map = navigator.frame_transform("odom", "map")
     results = base_placement.solve(
-        odom_from_map @ poses, obstacles=obstacles, goal_frame="odom", timeout=timeout
+        odom_from_map @ poses,
+        obstacles=obstacles,
+        goal_frame="odom",
+        timeout=timeout,
+        environment=base_placement.collision_world(solid, odom_from_map),
     )
     map_from_odom = navigator.frame_transform("map", "odom")
     options = rank(results, navigator.robot_xy(), map_from_odom)

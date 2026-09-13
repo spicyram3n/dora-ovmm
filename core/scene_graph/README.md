@@ -15,11 +15,12 @@ Needs the sim and Nav2 running for `register` ([root README, step 2](../../READM
 | Add `--rooms` | Let DeepSeek name the rooms (needs `DEEPSEEK_API_KEY`) |
 | Add `--output path.json` | Save somewhere else |
 | Add `--world path.world` | Use another Gazebo world |
-| `python3 -m core.pipeline.search pringles --dry-run` | Check the result: where would a query search first? |
+| `python3 visualization/viewpoints.py pringles` | Check the result: where would a query search first? |
 
 - The builder reads the **initial** world file, not objects moved during the sim.
 - Walls stay in Nav2's costmaps, not in the graph.
-- ⚠️ `--world-base` is the robot's current Gazebo `base_footprint` x, y, yaw. `5.0 6.6 0.0` is the fresh-spawn value only.
+- Every model becomes a [ScanNet200 class](../../config/scene_graph/scannet200.yaml). An unknown model stops the build: add it under `gazebo:` there.
+- Warning: `--world-base` is the robot's current Gazebo `base_footprint` x, y, yaw. `5.0 6.6 0.0` is the fresh-spawn value only.
 
 ## Build it from a scan
 
@@ -58,6 +59,7 @@ first = next(locations)
 ```
 
 - **Order:** remembered objects first, then DeepSeek.
+- **Cache:** DeepSeek's picks per object are saved in the graph (`llm_guesses`); a repeat query reuses them. A search that finds nothing forgets them, so the next query asks again.
 - **One at a time:** take the next location only after a look fails. `list(locations)` asks DeepSeek too early.
 - **Not goals:** returned centroids are object or furniture positions, **not** places to drive to. Navigation picks the viewing pose.
 - **Bad answers:** an invalid DeepSeek answer raises an error.
@@ -85,7 +87,7 @@ Use a trusted localized pose and keep the transform fixed; do not recompute it f
 
 | Field | Meaning |
 | --- | --- |
-| `label`, `name` | Class and instance name |
+| `label`, `name` | ScanNet200 class; instance or Gazebo model name. Object search matches both |
 | `movable` | `true` = object, `false` = furniture |
 | `centroid`, `dimensions`, `bounds` | Map-frame box; `bounds` are axis-aligned |
 | `room` | Room name (with `--rooms`) |
@@ -104,7 +106,8 @@ Use a trusted localized pose and keep the transform fixed; do not recompute it f
 | [build.py](build.py) | CLI: register the transform, build the apartment graph |
 | [openyolo3d.py](openyolo3d.py) | CLI: build a graph from OpenYOLO3D output |
 | [graph.py](graph.py) | Build, update, validate, save and load graphs |
-| [instance.py](instance.py) | Labelled source-frame points |
+| [instance.py](instance.py) | Labelled source-frame points; label lookup |
+| [scannet200.yaml](../../config/scene_graph/scannet200.yaml) | Label dictionary: 198 classes by role, Gazebo and synonym aliases |
 | [gazebo.py](gazebo.py) | Read the world's initial collision geometry |
 | [relations.py](relations.py) | Estimate object–furniture relations |
 | [query.py](../reasoner/query.py) | Choose search locations |

@@ -45,8 +45,7 @@ On the **GPU host**, from the repository root:
 bash docker/openyolo3d/run_openyolo3d.sh --download-checkpoints
 bash docker/openyolo3d/run_openyolo3d.sh \
   --scene /data/room1 --output /output/room1 \
-  --source-frame room1_scan --depth-scale 1000 \
-  --labels chair table sofa cabinet cup bottle
+  --source-frame room1_scan --depth-scale 1000
 ```
 
 | Flag | Use it to |
@@ -55,7 +54,7 @@ bash docker/openyolo3d/run_openyolo3d.sh \
 | `--output /output/room1` | Choose the output folder. **Use a new one per run.** |
 | `--source-frame room1_scan` | Name the scan's frame; the registration must use the same name |
 | `--depth-scale 1000` | Convert raw depth to metres |
-| `--labels ...` | Choose the object classes to look for |
+| `--labels ...` | Choose the classes to look for. Default: the 198 [ScanNet200 classes](../../config/scene_graph/scannet200.yaml) |
 | `--check-only` | Validate the inputs without loading the model |
 
 | Environment variable | Use it to |

@@ -49,15 +49,16 @@ nav button.on { background: var(--bg); color: var(--ink); }
 footer { border-top: 1px solid var(--line); padding: 9px 16px; font: 12px ui-monospace, Menlo, monospace; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 footer a { color: var(--ink); }
 
-#reason { display: grid; place-items: center; padding: 24px 24px 72px; overflow: auto; }
-.cloud { position: relative; max-width: 560px; background: var(--bg); border-radius: 44px; padding: 26px 34px; }
-.cloud::before, .cloud::after { content: ""; position: absolute; background: var(--bg); border-radius: 50%; }
-.cloud::before { width: 24px; height: 24px; left: 40px; bottom: -32px; }
-.cloud::after { width: 13px; height: 13px; left: 24px; bottom: -52px; }
-.cloud h2 { margin-left: 0; }
-.cloud p { margin: 0 0 8px; }
-.cloud ol { margin: 4px 0 12px; padding-left: 20px; }
-.cloud li { margin: 6px 0; }
+/* Floats over every stage, beside the camera, so the reasoning stays in view. */
+.reasoner { position: absolute; left: 14px; bottom: 14px; width: 360px; max-width: calc(100% - 282px); max-height: calc(100% - 64px);
+            overflow: auto; padding: 14px 18px; border-radius: 12px; border: 1px solid rgb(255 255 255 / .6);
+            background: rgb(255 255 255 / .62); backdrop-filter: blur(12px) saturate(1.4); -webkit-backdrop-filter: blur(12px) saturate(1.4);
+            box-shadow: 0 6px 18px rgb(0 0 0 / .1); }
+.reasoner h2 { margin-left: 0; }
+.reasoner p { margin: 0 0 8px; }
+.reasoner ol { margin: 4px 0 12px; padding-left: 20px; }
+.reasoner li { margin: 6px 0; }
+.reasoner > :last-child { margin-bottom: 0; }
 .why { display: block; color: var(--muted); font-size: 13px; }
 .tag { font-size: 11px; padding: 2px 8px; border-radius: 999px; margin-left: 6px; background: var(--goal); color: #fff; }
 .tag.done { background: var(--idle); color: var(--ink); }
@@ -72,4 +73,5 @@ footer a { color: var(--ink); }
   nav button { white-space: nowrap; }
   .stage { flex: none; height: 60vh; }
   .camera { width: 140px; }
+  .reasoner { max-width: calc(100% - 182px); }
 }

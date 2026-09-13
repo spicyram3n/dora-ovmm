@@ -2,7 +2,7 @@
 
 Usage: python3 visualization/viewpoints.py 'pringles' [--index 0] [--output plot.png]
 
-The poses drawn come from search_object.plan, the same call the mission drives,
+The poses drawn come from core.pipeline.actions.plan, the same call the mission drives,
 so this shows the real choice rather than a redrawing of it. Nothing here talks
 to ROS: reachability is Nav2's answer at run time and is not known yet."""
 
@@ -18,7 +18,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from core.navigation import graspable, standoff
 from core.scene_graph import graph as sg
-from core.pipeline.search import ROOT, box, is_storage, look_points, plan, targets
+from core.pipeline.actions import ROOT, box, is_storage, look_points, plan, targets
 from core.utils import geometry
 
 ARROW = 0.35

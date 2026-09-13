@@ -43,7 +43,7 @@ RX connects to the robot's TX, and data comes back over that connection. No port
 - **Keys:** set them in [rx.yaml](deployment/config/rx.yaml).
 - **RX `listen` port:** keep it at `7451`.
 
-⚠️ *Confirm the shared TX keys with Sagar's config: each full key, stream type and codec must match, not just the prefix. Enable only the point-cloud stream you use; `rx.yaml` currently lists Draco and Cloudini on the same ROS topic.*
+Warning: *Confirm the shared TX keys with Sagar's config: each full key, stream type and codec must match, not just the prefix. Enable only the point-cloud stream you use; `rx.yaml` currently lists Draco and Cloudini on the same ROS topic.*
 
 ## 2. Build on your PC
 
@@ -87,7 +87,7 @@ ros2 topic hz /remote/head_rgbd_sensor/rgb/image_rect_color
 | Depth | `/remote/head_rgbd_sensor/depth_registered/image_rect_raw` |
 | Point cloud | `/remote/head_rgbd_sensor/depth_registered/rectified_points` |
 
-⚠️ **Not wired into the pipeline yet:**
+**Not wired into the pipeline yet:**
 
 - **Topic names:** the camera code reads `/head_rgbd_sensor/...`, so align it with RX's `/remote/...` outputs.
 - **CameraInfo and TF** must also reach the PC; this config carries images, depth and clouds only.

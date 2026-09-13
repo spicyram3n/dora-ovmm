@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 
 import numpy as np
-from .instance import Instance
+from .instance import Instance, scannet_class
 from . import graph as sg
 
 
@@ -14,9 +14,10 @@ def load_instances(manifest):
     data = json.loads(manifest.read_text())
     if data["units"] != "m" or not data["source_frame"]:
         raise ValueError("Instances require metre units and an explicit source frame")
+    # A custom prompt such as "sofa" joins its class; one outside the dictionary stays.
     instances = [
         Instance(
-            item["label"],
+            scannet_class(item["label"]) or item["label"],
             np.load(manifest.parent / item["points"], allow_pickle=False),
             confidence=item["confidence"],
             name=item["name"],

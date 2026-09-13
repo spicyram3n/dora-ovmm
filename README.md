@@ -79,16 +79,16 @@ python3 -m core.scene_graph.build register \
   --world-base 5.0 6.6 0.0 --output config/map/world_to_map.json
 python3 -m core.scene_graph.build \
   --transform config/map/world_to_map.json --rooms
-python3 -m core.pipeline.search pringles --dry-run
+python3 visualization/viewpoints.py pringles
 ```
 
 | Command | Why |
 | --- | --- |
 | `build register --world-base X Y YAW` | Measures the Gazebo-world → map transform from where the robot stands |
 | `build --transform ... --rooms` | Builds the graph from the world file; DeepSeek names the rooms |
-| `search pringles --dry-run` | Shows the first place a query would search. No motion. |
+| `viewpoints.py pringles` | Plots the first place a query would search and its poses. No motion. |
 
-⚠️ `5.0 6.6 0.0` is the default fresh spawn only. If the robot moved, use its Gazebo `base_footprint` x, y, yaw.
+Warning: `5.0 6.6 0.0` is the default fresh spawn only. If the robot moved, use its Gazebo `base_footprint` x, y, yaw.
 
 Then **Ctrl+C terminals 1 and 2** before the full launch.
 
@@ -217,7 +217,7 @@ Type a query in the browser and watch each stage. Runs **navigate-only** for now
 - **Saved runs:** each query is saved to `outputs/web_runs/` (`<start time>.json` + `.log`). Open any under **Runs**, with or without the sim.
 - **Replays:** a stage replays once when you open its tab. Click the tab to replay.
 - **Options:** extra mission options go after the server command, e.g. `python3 -m web.server --top-k 5`.
-- ⚠️ The browser needs internet (three.js comes from a CDN). The server listens on localhost only.
+- Warning: The browser needs internet (three.js comes from a CDN). The server listens on localhost only.
 
 ---
 
@@ -238,7 +238,7 @@ Type a query in the browser and watch each stage. Runs **navigate-only** for now
 | `config/moveit/sensors_xtion.yaml` | 1 cm octomap from `hsr_rgbd`'s 1 Hz depth relay |
 | `move_group/ExecuteTaskSolutionCapability` | Runs MoveIt Task Constructor plans |
 
-- ⚠️ `ros2 launch hsrb_moveit_config demo.py` ignores these files. Run only one MoveIt. Config changes need only a MoveIt restart.
+- Warning: `ros2 launch hsrb_moveit_config demo.py` ignores these files. Run only one MoveIt. Config changes need only a MoveIt restart.
 - **RViz preset:** `config/rviz/moveit.rviz` shows `odom`, the planning scene, occupied octomap voxels and `whole_body`. The octomap is separate from Nav2's 2D costmap.
 - **Before a pick**, the mission pauses Nav2's motion nodes (localization stays on) and refuses to pick if that fails. Nav2 stays paused afterwards; the next mission resumes it.
 - **After a pick**, the robot keeps holding the object. The next pick opens the hand first.
@@ -269,7 +269,7 @@ Run them from `/home/ws` in a sourced terminal.
 
 | Folder | What it does |
 | --- | --- |
-| `core/pipeline/` | The mission tree, readiness checks, object search |
+| `core/pipeline/` | `mission_tree.py` decides when each step runs; `actions.py` does each step |
 | `core/navigation/` | Nav2 client, viewing poses, arm-reachable parking ([README](core/navigation/README.md)) |
 | `core/perception/` | RGB-D capture, SAM3 client, point clouds |
 | `core/reasoner/` | Search order and DeepSeek predictions |
@@ -284,7 +284,6 @@ Run them from `/home/ws` in a sourced terminal.
 | --- | --- |
 | `python3 -m core.pipeline.mission_tree --target pringles` | Run the mission on an already running stack (`--grasp false`, `--navigate-only true`) |
 | `python3 -m core.pipeline.mission_tree --render` | Save a picture of the tree to `outputs/` (no ROS) |
-| `python3 -m core.pipeline.search pringles --dry-run` | See where a query would search, without moving |
 | `python3 -m core.scene_graph.build --transform ...` | Rebuild the scene graph |
 | `python3 -m core.grasping.pick "pringles can"` | Pick from where the robot stands |
 | `python3 -m web.server` | Start the dashboard |

@@ -3,74 +3,13 @@
 from __future__ import annotations
 import re
 from dataclasses import dataclass, field
+from pathlib import Path
 import numpy as np
+import yaml
 from core.utils.geometry import box_corners
 
-FURNITURE = frozenset(
-    {
-        "armchair",
-        "bed",
-        "bench",
-        "bookcase",
-        "bookshelf",
-        "cabinet",
-        "cart",
-        "chair",
-        "counter",
-        "countertop",
-        "couch",
-        "cupboard",
-        "desk",
-        "dishwasher",
-        "drawers",
-        "dresser",
-        "freezer",
-        "fridge",
-        "island",
-        "microwave",
-        "nightstand",
-        "oven",
-        "pantry",
-        "rack",
-        "refrigerator",
-        "shelf",
-        "shelves",
-        "sideboard",
-        "sink",
-        "sofa",
-        "stand",
-        "stool",
-        "stove",
-        "table",
-        "trolley",
-        "vanity",
-        "wagon",
-        "wardrobe",
-        "washer",
-        "worktop",
-    }
-)
-STRUCTURE = frozenset(
-    {
-        "banister",
-        "beam",
-        "blinds",
-        "ceiling",
-        "column",
-        "curtain",
-        "door",
-        "doorframe",
-        "floor",
-        "ground",
-        "pillar",
-        "railing",
-        "roof",
-        "stairs",
-        "staircase",
-        "wall",
-        "window",
-    }
-)
+LABELS = Path(__file__).resolve().parents[2] / "config/scene_graph/scannet200.yaml"
+ROLES = ("furniture", "object", "structure")
 
 
 def normalize(label):
@@ -86,25 +25,48 @@ def normalize(label):
     return " ".join(clean_words)
 
 
-def _matches(label, vocabulary):
-    """Match natural-language nouns or words in a Gazebo asset name."""
-    text = normalize(label)
-    if text in vocabulary:
-        return True
-    words = text.split()
+def _load(path):
+    """ScanNet200 class -> role, and every other name, normalized -> its class."""
+    data = yaml.safe_load(Path(path).read_text())
+    classes = {}
+    for role_name in ROLES:
+        for name in data[role_name]:
+            if name in classes:
+                raise ValueError(f"{name!r} is listed under two roles in {path}")
+            classes[name] = role_name
+    aliases = {}
+    for section in ("gazebo", "synonyms"):
+        for target, names in data[section].items():
+            if target not in classes:
+                raise ValueError(f"{target!r} in {path} is not a ScanNet200 class")
+            for name in names:
+                if aliases.setdefault(normalize(name), target) != target:
+                    raise ValueError(f"{name!r} names two classes in {path}")
+    return classes, aliases
+
+
+CLASSES, ALIASES = _load(LABELS)
+
+
+def scannet_class(label):
+    """The ScanNet200 class a label names, or None. The whole name is tried
+    first, then its last word: English puts the noun last, so a kitchen chair
+    is a chair, while "tv stand" stays a class of its own."""
+    words = normalize(label).split()
     if not words:
-        return False
-    if re.search("[_-]", label):
-        candidates = words
-    else:
-        candidates = words[-1:]
-    for word in candidates:
-        if word in vocabulary:
-            return True
-        for term in vocabulary:
-            if len(term) >= 4 and word.endswith(term):
-                return True
-    return False
+        return None
+    for candidate in (" ".join(words), words[-1]):
+        if candidate in CLASSES:
+            return candidate
+        if candidate in ALIASES:
+            return ALIASES[candidate]
+    return None
+
+
+def role(label):
+    """furniture, object or structure. A label outside the dictionary, such as a
+    search query, names an object."""
+    return CLASSES.get(scannet_class(label), "object")
 
 
 def match_score(label, wanted):
@@ -125,12 +87,12 @@ def same_object(label, wanted):
     return match_score(label, wanted) > 0.0
 
 
-def is_furniture(label, vocabulary=FURNITURE):
-    return _matches(label, vocabulary)
+def is_furniture(label):
+    return role(label) == "furniture"
 
 
-def is_structure(label, vocabulary=STRUCTURE):
-    return _matches(label, vocabulary)
+def is_structure(label):
+    return role(label) == "structure"
 
 
 @dataclass

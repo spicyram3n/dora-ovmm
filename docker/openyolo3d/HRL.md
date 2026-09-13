@@ -56,10 +56,10 @@ bash docker/openyolo3d/run_hrl.sh --check-only
 bash docker/openyolo3d/run_hrl.sh
 ```
 
-`run_hrl.sh` supplies a starting vocabulary of furniture and household objects.
-Open vocabulary means you can choose those category names; it does not mean the
-model invents names for every unknown object. Customize the script's labels or
-override them, for example `bash docker/openyolo3d/run_hrl.sh --labels chair table cup`.
+`run_hrl.sh` looks for the 198 ScanNet200 classes the checkpoint was evaluated
+with ([label dictionary](../../config/scene_graph/scannet200.yaml)). The model
+only names classes it is prompted with; it does not invent names for unknown
+objects. Override them with, for example, `bash docker/openyolo3d/run_hrl.sh --labels chair table cup`.
 For a second run, use `--output /output/hrl_run2` to avoid overwriting results.
 
 Output: `docker/openyolo3d/output/hrl/instances.json` and one XYZ `.npy` per

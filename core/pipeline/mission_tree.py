@@ -1,10 +1,10 @@
-"""The query-to-grasp mission as a behaviour tree, alongside core.pipeline.mission.
+"""The query-to-grasp mission as a behaviour tree over core.pipeline.actions.
 
     python3 -m core.pipeline.mission_tree --target pringles
     python3 -m core.pipeline.mission_tree --target pringles --navigate-only true
     python3 -m core.pipeline.mission_tree --render      # picture of the tree, no ROS
 
-Same stack, checks and steps as mission.py; the tree decides what runs next.
+The tree decides when each action runs; core.pipeline.actions holds what each does.
 Each leaf runs one existing step to its end within a single tick. The mission
 is a strict sequence, and Ctrl+C still cancels a Nav2 goal inside the step.
 
@@ -35,7 +35,8 @@ import rclpy
 from rclpy.executors import SingleThreadedExecutor
 
 from core.navigation.nav2_client import Navigator
-from core.pipeline import mission, search
+from core.pipeline import actions
+from core.reasoner import query
 from core.scene_graph import graph as sg
 from core.utils import events
 
@@ -43,7 +44,7 @@ ROOT = Path(__file__).resolve().parents[2]
 # Each pick re-segments the object and asks for fresh grasps, so a retry is a new try.
 ATTEMPTS = 3
 # The failing leaf decides the exit code, matching core.pipeline's, which
-# launch/search.launch.py reads. Anything unexpected raises and exits 3.
+# launch/actions.launch.py reads. Anything unexpected raises and exits 3.
 EXIT_CODES = {"Choose location": 1, "Find target": 1, "Go there": 2, "Park": 2, "Pick": 4}
 
 
@@ -109,17 +110,19 @@ def mission_steps(navigator, scene, target, graph_path, top_k, bearings, timeout
     chosen = {}
 
     def ready():
-        mission.get_ready(navigator, target, timeout, perception=perception)
+        actions.get_ready(navigator, target, timeout, perception=perception)
         return True
 
     def home():
-        _, wait = mission.waiter(navigator, time.monotonic() + 60)
-        mission.home_arm(navigator, wait)
+        _, wait = actions.waiter(navigator, time.monotonic() + 60)
+        actions.home_arm(navigator, wait)
         return True
 
     def choose():
-        chosen["location"] = next(search.targets(scene, target, robot_xy=navigator.robot_xy(),
+        chosen["location"] = next(actions.targets(scene, target, robot_xy=navigator.robot_xy(),
                                                  top_k=top_k), None)
+        # DeepSeek's picks are cached in the graph; keep them for the next query.
+        sg.save(scene, graph_path)
         if chosen["location"] is None:
             print(f"[REASON] no location to search for {target!r}", flush=True)
             return False
@@ -129,11 +132,11 @@ def mission_steps(navigator, scene, target, graph_path, top_k, bearings, timeout
 
     def go():
         location = chosen["location"]
-        poses, _ = search.plan(scene, location, navigator.robot_xy())
+        poses, _ = actions.plan(scene, location, navigator.robot_xy())
         for pose in poses:
             if navigator.reachable(*pose) and navigator.drive_to(*pose):
                 # Face where the target should be, as the search does before looking.
-                for aim in search.look_points(scene, location, pose):
+                for aim in actions.look_points(scene, location, pose):
                     if navigator.look_at(aim):
                         break
                 return True
@@ -141,15 +144,18 @@ def mission_steps(navigator, scene, target, graph_path, top_k, bearings, timeout
 
     def find():
         navigator.resume_navigation_if_paused()
-        status, chosen["object"] = search.search(scene, target, navigator, top_k=top_k)
-        if chosen["object"] is not None:
-            # Keep the observation even if a later step fails.
-            sg.save(scene, graph_path)
-        return status == search.FOUND
+        status, chosen["object"] = actions.search(scene, target, navigator, top_k=top_k)
+        if status == actions.NOT_FOUND:
+            # Every place failed, DeepSeek's cached picks included: ask afresh next time.
+            query.forget(scene, target)
+        # Keep the observation, and DeepSeek's cached picks, even if nothing was found
+        # or a later step fails.
+        sg.save(scene, graph_path)
+        return status == actions.FOUND
 
     def park():
-        status = search.make_graspable(scene, chosen["object"], navigator, bearings=bearings)
-        return status == search.READY
+        status = actions.make_graspable(scene, chosen["object"], navigator, bearings=bearings)
+        return status == actions.READY
 
     def pause():
         # MoveIt moves the base during the pick; Nav2 must not fight it.
@@ -157,7 +163,7 @@ def mission_steps(navigator, scene, target, graph_path, top_k, bearings, timeout
         return True
 
     def pick():
-        return search.pick_up(target) == search.PICKED
+        return actions.pick_up(target) == actions.PICKED
 
     return {"ready": ready, "home": home, "choose": choose, "go": go,
             "find": find, "park": park, "pause": pause, "pick": pick}

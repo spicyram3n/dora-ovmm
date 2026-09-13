@@ -40,6 +40,6 @@ docs/
 data_hrl/
 /outputs
 /tests
-
+/docs
 #vscode
 .vscode
