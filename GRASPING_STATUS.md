@@ -46,3 +46,13 @@ does not apply these patches automatically.
 
 These results do not establish universal grasping. Large diagnostic recordings,
 local test scenes and experimental pressure-maintenance scripts are excluded.
+
+## Branch integration
+
+The prior feat/grasp history is preserved by a merge. Older grasp entrypoints
+and C++ execution sources remain available for reference, with their original
+README in LEGACY_GRASP_README.md. The current supported path is
+core.pipeline.mission and core.grasping.pick; the legacy overlay installer is
+not invoked by the current postCreate script. Follow the vendor patch setup
+above for this pipeline. The historical entrypoints have not been revalidated
+against the reorganized pipeline.

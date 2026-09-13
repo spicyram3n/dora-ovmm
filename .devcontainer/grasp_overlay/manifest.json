@@ -1,0 +1,18 @@
+{
+  "hsrb_moveit": {
+    "tested_revision": "f6887b5d99d67ced8ace9a229f67a35356967f2b",
+    "files": [
+      "hsrb_moveit_config/CMakeLists.txt",
+      "hsrb_moveit_config/config/hsrb.srdf",
+      "hsrb_moveit_config/config/kinematics.yaml",
+      "hsrb_moveit_config/config/ompl_planning.yaml",
+      "hsrb_moveit_config/config/sensors_xtion.yaml",
+      "hsrb_moveit_config/launch/move_group.py",
+      "hsrb_moveit_config/launch/robot_description.py",
+      "hsrb_moveit_config/package.xml",
+      "hsrb_moveit_config/configured_depth_updater.xml",
+      "hsrb_moveit_config/scripts/depth_camera_relay.py",
+      "hsrb_moveit_config/src/configured_depth_updater.cpp"
+    ]
+  }
+}
