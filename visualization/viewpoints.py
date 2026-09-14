@@ -18,7 +18,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from core.navigation import graspable, standoff
 from core.scene_graph import graph as sg
-from core.pipeline.search import ROOT, box, is_storage, look_points, plan, targets
+from core.pipeline.actions import ROOT, box, is_storage, look_points, plan, targets
 from core.utils import geometry
 
 ARROW = 0.35

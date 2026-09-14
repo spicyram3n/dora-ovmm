@@ -1,4 +1,4 @@
-"""Simulation bringup for the core.pipeline query-to-grasp mission."""
+"""Simulation bringup for the behaviour-tree query-to-grasp mission."""
 
 import subprocess
 import sys
@@ -7,7 +7,7 @@ from pathlib import Path
 from launch import LaunchDescription
 from launch.actions import (DeclareLaunchArgument, EmitEvent, ExecuteProcess, LogInfo,
                             OpaqueFunction, RegisterEventHandler)
-from launch.conditions import IfCondition, UnlessCondition
+from launch.conditions import IfCondition
 from launch.event_handlers import OnProcessExit, OnShutdown
 from launch.events import Shutdown
 from launch.substitutions import LaunchConfiguration as Arg
@@ -39,10 +39,10 @@ def generate_launch_description():
         DeclareLaunchArgument('params_file', default_value=str(ROOT / 'config/nav2/nav2_params.yaml')),
         DeclareLaunchArgument('grasp', default_value='true', choices=['true', 'false'],
                               description='Generate grasps and pick the object up once parked.'),
-        DeclareLaunchArgument('use_tree', default_value='false', choices=['true', 'false'],
-                              description='Run the behaviour-tree mission instead of core.pipeline.'),
+        DeclareLaunchArgument('mode', default_value='auto', choices=['auto', 'pickup', 'grasp'],
+                              description='Auto lifts cylinders; grasp holds contact; pickup verifies lift.'),
         DeclareLaunchArgument('navigate_only', default_value='false', choices=['true', 'false'],
-                              description='Tree only: reason and drive to the target; no SAM3 or GraspGenX.'),
+                              description='Reason and drive to the target; no SAM3 or GraspGenX.'),
         DeclareLaunchArgument('shutdown_when_done', default_value='false', choices=['true', 'false'],
                               description='Shut every launched process down when the mission ends.'),
     ]
@@ -68,15 +68,10 @@ def generate_launch_description():
     common = ['--target', Arg('target'), '--graph', Arg('graph'),
               '--top-k', Arg('top_k'), '--bearings', Arg('bearings'),
               '--startup-timeout', Arg('startup_timeout'), '--grasp', Arg('grasp')]
-    # One of the two runs, picked by use_tree.
-    script = ExecuteProcess(
-        cmd=[sys.executable, '-u', '-m', 'core.pipeline', *common],
-        name='search', output='both', cwd=str(ROOT), condition=UnlessCondition(Arg('use_tree')),
-    )
     tree = ExecuteProcess(
         cmd=[sys.executable, '-u', '-m', 'core.pipeline.mission_tree', *common,
-             '--navigate-only', Arg('navigate_only')],
-        name='mission_tree', output='both', cwd=str(ROOT), condition=IfCondition(Arg('use_tree')),
+             '--navigate-only', Arg('navigate_only'), '--mode', Arg('mode')],
+        name='mission_tree', output='both', cwd=str(ROOT),
     )
 
     def finished(event, context):
@@ -91,8 +86,7 @@ def generate_launch_description():
         return actions
 
     return LaunchDescription(arguments + [
-        RegisterEventHandler(OnProcessExit(target_action=script, on_exit=finished)),
         RegisterEventHandler(OnProcessExit(target_action=tree, on_exit=finished)),
         RegisterEventHandler(OnShutdown(on_shutdown=[OpaqueFunction(function=stop_gazebo)])),
-        *processes, script, tree,
+        *processes, tree,
     ])

@@ -8,7 +8,8 @@ and stop at contact for other shapes. Visual servoing is disabled by default.
 All grasping implementation helpers (geometry, contact closure, pregrasp routes,
 scene compaction and visual-servo utilities) are consolidated in
 `core/grasping/pick.py`. Visual servoing remains disabled. The consolidation
-passed the 62-test suite; no new live robot trial was run.
+passed its original 62-test suite. The current structure removes eight tests
+exclusive to the deleted legacy helpers; no new live robot trial was run.
 
 ## Required simulator and MoveIt source changes
 
@@ -37,8 +38,9 @@ does not apply these patches automatically.
 
 ## Validation and limitations
 
-- Grasping Python suite: 62 tests pass in the sourced ROS environment with
-  `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest core/grasping/test -q`.
+- Current structure: 59 tests pass (54 grasping and 5 pipeline integration) with
+  `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest core/grasping/test core/pipeline/test -q`.
+  ROS launch argument inspection and the mission-tree CLI passed without motion.
 - Simulator package built; native mimic tracking regression passed. Loaded
   finger linkage measurements agreed with the URDF within 6.1e-7 rad.
 - Spray bottle grasp-only trial succeeded using unchanged grasp logic:
@@ -52,12 +54,16 @@ does not apply these patches automatically.
 These results do not establish universal grasping. Large diagnostic recordings,
 local test scenes and experimental pressure-maintenance scripts are excluded.
 
-## Branch integration
+## Pipeline structure
 
-The prior feat/grasp history is preserved by a merge. Older grasp entrypoints
-and C++ execution sources remain available for reference, with their original
-README in LEGACY_GRASP_README.md. The current supported path is
-core.pipeline.mission and core.grasping.pick; the legacy overlay installer is
-not invoked by the current postCreate script. Follow the vendor patch setup
-above for this pipeline. The historical entrypoints have not been revalidated
-against the reorganized pipeline.
+The supported entry point is `launch/search.launch.py`, matching the
+`feat/pipeline` layout: `core/pipeline/mission_tree.py` calls actions in
+`core/pipeline/actions.py`, which dispatches `core/grasping/pick.py`.
+Use `mode:=grasp` for a contact hold, `mode:=pickup` for a verified lift, or
+`mode:=auto` for geometry-dependent behavior. The tree stops after one pick
+attempt and never executes an unconditional home after a hold.
+
+The old standalone pipeline, finish/recovery scripts, grasp_execution C++
+package, and overlay copies have been removed. Their history remains in Git.
+The simulator and MoveIt vendor patches above remain required. The live review
+checkout is separate from this published source; do not assume it was updated.

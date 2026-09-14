@@ -60,7 +60,7 @@ python3 -m core.scene_graph.build register \
   --world-base 5.0 6.6 0.0 --output config/map/world_to_map.json
 python3 -m core.scene_graph.build \
   --transform config/map/world_to_map.json --rooms
-python3 -m core.pipeline.search pringles --dry-run
+python3 visualization/viewpoints.py pringles --output outputs/viewpoints.png
 ```
 
 The spawn coordinates above apply only to the default fresh apartment. Check graph alignment before using it. Output: `outputs/scene_graph/apartment.json`.
@@ -140,17 +140,16 @@ The launch starts simulation, Nav2, IK, and MoveIt; waits for services, localiza
 
 Watch **`[WAIT]` → `[READY]` → `[HOME]` → `[SEARCH]` → `[APPROACH]` → `[GRASP]` → `[RESULT]`**. Process logs are labelled individually. Simulation stays open after completion; **Ctrl+C** stops the launched processes.
 
-You can also execute a target directly through `run_pipeline.py`:
+Use the same launch for a contact-only grasp:
 
 ```bash
-python3 core/run_pipeline.py "spray bottle" --execute --mode grasp
+ros2 launch /home/ws/launch/search.launch.py target:="spray bottle" mode:=grasp
 ```
 
-This delegates to `core.grasping.pick`. Use `--mode pickup` for a verified lift,
-or `--mode auto` to lift cylinders and hold other shapes. Exit code 3 means
-contact-only success; 0 means verified pickup. Without `--execute`, it saves
-perception previews. The older `--lift`, `--retreat`, and `--attempts` options
-are removed; the consolidated picker controls the lift and performs one attempt.
+`mode:=pickup` requests a verified lift; `mode:=auto` lifts cylinders and holds
+other shapes. The tree makes one pick attempt and leaves the resulting hold
+in place, with navigation paused. It does not home the arm after grasping.
+The picker reports `picked`, `grasped`, or failure separately in the logs.
 
 Pickup ([core/grasping/pick.py](core/grasping/pick.py)) keeps SAM3, GraspGenX and
 MoveIt Task Constructor. Calibrated finger geometry places side grasps on fitted
@@ -272,12 +271,21 @@ Rebuild both model images after shared protocol changes. Direct Docker builds no
 Run the complete mission against an already running ROS stack from the repository root:
 
 ```bash
-python3 -m core.pipeline --target "pringles"
+python3 -m core.pipeline.mission_tree --target "pringles"
 # Search and park only:
-python3 -m core.pipeline --target "pringles" --grasp false
+python3 -m core.pipeline.mission_tree --target "pringles" --grasp false
 ```
 
-The ROS launch above brings up the stack and invokes this same entry point.
+The main entry point is `launch/search.launch.py`, following the `feat/pipeline` layout:
+
+```text
+launch/search.launch.py
+└── core/pipeline/mission_tree.py
+    └── core/pipeline/actions.py
+        └── core/grasping/pick.py
+```
+
+The ROS launch above brings up the stack and invokes this behavior tree.
 The mission waits for readiness, homes the arm, queries remembered/LLM locations,
 searches with Nav2 and SAM3, saves the observation, parks within reach, generates
 fresh grasps, and picks the object up with MoveIt Task Constructor.

@@ -1,10 +1,10 @@
-"""The query-to-grasp mission as a behaviour tree, alongside core.pipeline.mission.
+"""The query-to-grasp mission as a behaviour tree, over core.pipeline.actions.
 
     python3 -m core.pipeline.mission_tree --target pringles
     python3 -m core.pipeline.mission_tree --target pringles --navigate-only true
     python3 -m core.pipeline.mission_tree --render      # picture of the tree, no ROS
 
-Same stack, checks and steps as mission.py; the tree decides what runs next.
+The actions module holds readiness, navigation and grasp dispatch.
 Each leaf runs one existing step to its end within a single tick. The mission
 is a strict sequence, and Ctrl+C still cancels a Nav2 goal inside the step.
 
@@ -14,8 +14,7 @@ is a strict sequence, and Ctrl+C still cancels a Nav2 goal inside the step.
     ├─ Find target                            ├─ Choose location   target reasoning
     ├─ Park            once                   └─ Go there          first reachable view
     ├─ Pause Nav2
-    ├─ Pick            up to ATTEMPTS tries
-    └─ Home arm after pick
+    └─ Pick            once; leave the resulting hold in place
 
 Watch it live, with ROS sourced, once this is running:
     py-trees-tree-watcher      # in the terminal
@@ -35,12 +34,10 @@ import rclpy
 from rclpy.executors import SingleThreadedExecutor
 
 from core.navigation.nav2_client import Navigator
-from core.pipeline import mission, search
+from core.pipeline import actions
 from core.scene_graph import graph as sg
 
 ROOT = Path(__file__).resolve().parents[2]
-# Each pick re-segments the object and asks for fresh grasps, so a retry is a new try.
-ATTEMPTS = 3
 # The failing leaf decides the exit code, matching core.pipeline's, which
 # launch/search.launch.py reads. Anything unexpected raises and exits 3.
 EXIT_CODES = {"Choose location": 1, "Find target": 1, "Go there": 2, "Park": 2, "Pick": 4}
@@ -81,9 +78,7 @@ def build(steps, grasp=True, navigate_only=False):
     children.append(Step("Park", steps["park"]))
     if grasp:
         children.append(Step("Pause Nav2", steps["pause"]))
-        children.append(py_trees.decorators.Retry(
-            "Pick, retried", Step("Pick", steps["pick"]), num_failures=ATTEMPTS))
-        children.append(Step("Home arm after pick", steps["home"]))
+        children.append(Step("Pick", steps["pick"]))
     return py_trees.composites.Sequence("Mission", memory=True, children=children)
 
 
@@ -93,21 +88,21 @@ def exit_code(root):
     return EXIT_CODES.get(root.tip().name, 3)
 
 
-def mission_steps(navigator, scene, target, graph_path, top_k, bearings, timeout, perception):
+def mission_steps(navigator, scene, target, graph_path, top_k, bearings, timeout, perception, mode="auto"):
     """The existing pipeline functions, as the tree's actions."""
     chosen = {}
 
     def ready():
-        mission.get_ready(navigator, target, timeout, perception=perception)
+        actions.get_ready(navigator, target, timeout, perception=perception)
         return True
 
     def home():
-        _, wait = mission.waiter(navigator, time.monotonic() + 60)
-        mission.home_arm(navigator, wait)
+        _, wait = actions.waiter(navigator, time.monotonic() + 60)
+        actions.home_arm(navigator, wait)
         return True
 
     def choose():
-        chosen["location"] = next(search.targets(scene, target, robot_xy=navigator.robot_xy(),
+        chosen["location"] = next(actions.targets(scene, target, robot_xy=navigator.robot_xy(),
                                                  top_k=top_k), None)
         if chosen["location"] is None:
             print(f"[REASON] no location to search for {target!r}", flush=True)
@@ -118,11 +113,11 @@ def mission_steps(navigator, scene, target, graph_path, top_k, bearings, timeout
 
     def go():
         location = chosen["location"]
-        poses, _ = search.plan(scene, location, navigator.robot_xy())
+        poses, _ = actions.plan(scene, location, navigator.robot_xy())
         for pose in poses:
             if navigator.reachable(*pose) and navigator.drive_to(*pose):
                 # Face where the target should be, as the search does before looking.
-                for aim in search.look_points(scene, location, pose):
+                for aim in actions.look_points(scene, location, pose):
                     if navigator.look_at(aim):
                         break
                 return True
@@ -130,15 +125,15 @@ def mission_steps(navigator, scene, target, graph_path, top_k, bearings, timeout
 
     def find():
         navigator.resume_navigation_if_paused()
-        status, chosen["object"] = search.search(scene, target, navigator, top_k=top_k)
+        status, chosen["object"] = actions.search(scene, target, navigator, top_k=top_k)
         if chosen["object"] is not None:
             # Keep the observation even if a later step fails.
             sg.save(scene, graph_path)
-        return status == search.FOUND
+        return status == actions.FOUND
 
     def park():
-        status = search.make_graspable(scene, chosen["object"], navigator, bearings=bearings)
-        return status == search.READY
+        status = actions.make_graspable(scene, chosen["object"], navigator, bearings=bearings, target=target)
+        return status == actions.READY
 
     def pause():
         # MoveIt moves the base during the pick; Nav2 must not fight it.
@@ -146,7 +141,9 @@ def mission_steps(navigator, scene, target, graph_path, top_k, bearings, timeout
         return True
 
     def pick():
-        return search.pick_up(target) == search.PICKED
+        status = actions.pick_up(target, mode=mode)
+        print(f"[GRASP RESULT] {status}", flush=True)
+        return status in (actions.PICKED, actions.GRASPED)
 
     return {"ready": ready, "home": home, "choose": choose, "go": go,
             "find": find, "park": park, "pause": pause, "pick": pick}
@@ -177,6 +174,7 @@ def run(argv=None):
     parser.add_argument("--grasp", default="true", choices=["true", "false"])
     parser.add_argument("--navigate-only", default="false", choices=["true", "false"],
                         help="reason and drive to the target's place; no SAM3 or GraspGenX")
+    parser.add_argument("--mode", default="auto", choices=["auto", "pickup", "grasp"])
     parser.add_argument("--render", action="store_true", help="save a picture of the tree and exit")
     args = parser.parse_args(argv)
     grasp, navigate_only = args.grasp == "true", args.navigate_only == "true"
@@ -193,7 +191,7 @@ def run(argv=None):
     rclpy.init()
     navigator = Navigator()
     steps = mission_steps(navigator, scene, args.target, args.graph, args.top_k,
-                          args.bearings, args.startup_timeout, perception=not navigate_only)
+                          args.bearings, args.startup_timeout, perception=not navigate_only, mode=args.mode)
     tree = py_trees_ros.trees.BehaviourTree(build(steps, grasp=grasp, navigate_only=navigate_only))
     viewers = SingleThreadedExecutor()
     try:

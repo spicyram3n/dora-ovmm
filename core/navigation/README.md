@@ -15,12 +15,11 @@ With the ROS and workspace setup sourced, run:
 ros2 launch /home/ws/launch/search.launch.py target:=pringles top_k:=3
 ```
 
-The same mission as a behaviour tree ([core/pipeline/mission_tree.py](../pipeline/mission_tree.py)):
-add `use_tree:=true`. Same checks and steps; the base parks once, a failed
-pick is tried again from there (fresh segmentation and grasps), up to 3 times,
-and the arm goes home after the pick. Watch it live in
-another terminal with `py-trees-tree-watcher` (ROS sourced; it is a plain
-command, not a `ros2 run` executable).
+The launch runs [mission_tree.py](../pipeline/mission_tree.py) over
+[actions.py](../pipeline/actions.py). Use `grasp:=false` for search and parking
+only, or `mode:=grasp` to close and hold without lifting. Grasping runs once;
+the arm remains in the resulting pose. Watch the tree with
+`py-trees-tree-watcher` in another sourced ROS terminal.
 
 This starts simulation, Nav2 with `config/nav2/nav2_params.yaml`, and IK. The search
 worker waits for active Nav2 lifecycle nodes, navigation/head actions, IK,
@@ -107,7 +106,7 @@ In **ROS terminal 3**, before moving the freshly spawned robot:
 python3 -m core.scene_graph.build register \
   --world-base 5.0 6.6 0.0 --output config/map/world_to_map.json
 python3 -m core.scene_graph.build --transform config/map/world_to_map.json
-python3 -m core.pipeline.search 'pringles' --dry-run
+python3 visualization/viewpoints.py 'pringles' --output outputs/viewpoints.png
 ```
 
 `5.0 6.6 0.0` is only for the default fresh apartment spawn. If the robot has moved, use its current Gazebo base-footprint X/Y/yaw. Registration needs correct AMCL localization; check graph furniture against the map and rebuild after changing the transform.
@@ -155,14 +154,14 @@ ros2 launch /home/ws/launch/ik_solver.launch.py
 In ROS terminal 3:
 
 ```bash
-python3 -m core.pipeline.search 'pringles' --top-k 3
+python3 -m core.pipeline.mission_tree --target 'pringles' --top-k 3 --grasp false
 ```
 
 | Option | Use it to |
 | --- | --- |
-| `--dry-run` | Print search choices without moving |
-| `--no-refine` | Stop after detection; no IK solver needed |
-| `--furniture high_table01` | Test navigation without SAM3 or DeepSeek |
+| `--grasp false` | Stop after search and parking |
+| `--navigate-only true` | Reason and navigate without object detection |
+| `--mode grasp` | Hold contact without lifting |
 | `--graph /path/to/graph.json` | Use a different scene graph |
 | `--bearings 6` | Set horizontal reach-probe directions |
 
@@ -170,7 +169,7 @@ Exit codes: **0** ready/arrived, **1** not found, **2** found but not graspable 
 
 ## Preview the viewpoints
 
-No robot, no ROS. Draws what the query selects, using the same `plan()` call the mission drives:
+No robot motion; source ROS before running. Draws what the query selects, using the same `plan()` call the mission drives:
 
 ```bash
 python3 visualization/viewpoints.py 'pringles' --output outputs/viewpoints.png
