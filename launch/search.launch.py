@@ -30,13 +30,14 @@ def stop_gazebo(context):
 def generate_launch_description():
     arguments = [
         DeclareLaunchArgument('target', description='Object to search for, e.g. pringles'),
-        DeclareLaunchArgument('graph', default_value=str(ROOT / 'outputs/scene_graph/apartment.json')),
+        DeclareLaunchArgument('graph', default_value=str(ROOT / 'config/scene_graph/kitchen_objects.json')),
+        DeclareLaunchArgument('world', default_value=str(ROOT / 'worlds/kitchen_objects.world')),
         DeclareLaunchArgument('use_rviz', default_value='false', choices=['true', 'false']),
         DeclareLaunchArgument('top_k', default_value='3'),
         DeclareLaunchArgument('bearings', default_value='6'),
         DeclareLaunchArgument('startup_timeout', default_value='180'),
-        DeclareLaunchArgument('map', default_value=str(ROOT / 'config/map/apartment_world_map.yaml')),
-        DeclareLaunchArgument('params_file', default_value=str(ROOT / 'config/nav2/nav2_params.yaml')),
+        DeclareLaunchArgument('map', default_value=str(ROOT / 'config/map/kitchen_objects.yaml')),
+        DeclareLaunchArgument('params_file', default_value=str(ROOT / 'config/nav2/kitchen_objects.yaml')),
         DeclareLaunchArgument('grasp', default_value='true', choices=['true', 'false'],
                               description='Generate grasps and pick the object up once parked.'),
         DeclareLaunchArgument('mode', default_value='auto', choices=['auto', 'pickup', 'grasp'],
@@ -48,9 +49,7 @@ def generate_launch_description():
     ]
     processes = []
     for name, command in [
-        ('simulation', ['hsrb_gazebo_launch', 'hsrb_apartment_world.launch.py',
-                        'use_sim_time:=true', 'use_navigation:=false', 'robot_name:=hsrc',
-                        'description_package:=hsrc_description', 'description_file:=hsrc1s.urdf.xacro']),
+        ('simulation', [str(ROOT / 'launch/apartment.launch.py'), ['world:=', Arg('world')]]),
         ('navigation', ['hsrb_rosnav_config', 'navigation_launch.py', 'use_sim_time:=true',
                         ['map:=', Arg('map')], ['params_file:=', Arg('params_file')]]),
         ('ik', [str(ROOT / 'launch/ik_solver.launch.py'), 'use_sim_time:=true']),

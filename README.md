@@ -2,6 +2,21 @@
 
 **One command:** home the arm → search scene-graph/LLM locations → navigate → detect with SAM3 → park within arm reach → generate grasps with GraspGenX → approach, close on finger feedback, lift, and verify the hold.
 
+The default scene is now [the door-free kitchen-object world](worlds/README.md).
+The robot starts in the **high-table room**, then navigates to the requested
+object on the kitchen table. Seven table objects and their assets are saved.
+The launch uses the matching map, scene graph, and AMCL startup pose.
+
+```bash
+ros2 launch /home/ws/launch/search.launch.py target:="spray bottle" mode:=grasp
+# NVIDIA workstation, with GPU access enabled for the ROS container:
+bash /home/ws/launch/search_nvidia.sh target:="spray bottle" mode:=grasp
+```
+
+`mode:=grasp` holds contact; `mode:=pickup` requests a verified lift.
+For the packaged scene, skip the manual scene-registration section below;
+that section describes preparing an alternative apartment scene.
+
 ## 1. Clone
 
 ```bash

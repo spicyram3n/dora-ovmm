@@ -51,6 +51,22 @@ class MissionTests(unittest.TestCase):
             self.assertTrue(steps['pick']())
             pick.assert_called_once_with('spray bottle', mode='grasp')
 
+    def test_readiness_captures_rgbd_and_checks_sam3(self):
+        navigator = Mock()
+        navigator.create_client.return_value.service_is_ready.return_value = True
+        def ready_check(label, check):
+            if label != 'fresh map-to-base localization' and not label.endswith(' active'):
+                self.assertTrue(check())
+        from contextlib import ExitStack
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(actions, 'waiter', return_value=(lambda: 30., ready_check)))
+            stack.enter_context(patch.object(actions, 'ActionClient'))
+            capture = stack.enter_context(patch.object(actions, 'grab_rgbd', return_value=('image', None, None, None)))
+            detect = stack.enter_context(patch.object(actions.sam3_client, 'detect'))
+            actions.get_ready(navigator, 'spray bottle', 30.)
+            capture.assert_called_once_with(target_frame='map', timeout=5.)
+            detect.assert_called_once_with('image', 'spray bottle', timeout=30.)
+
     def test_search_launch_routes_to_tree_with_grasp_mode(self):
         spec = importlib.util.spec_from_file_location('search_launch', actions.ROOT / 'launch/search.launch.py')
         module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)

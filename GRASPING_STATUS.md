@@ -38,7 +38,7 @@ does not apply these patches automatically.
 
 ## Validation and limitations
 
-- Current structure: 59 tests pass (54 grasping and 5 pipeline integration) with
+- Current structure: 60 tests pass (54 grasping and 6 pipeline integration) with
   `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest core/grasping/test core/pipeline/test -q`.
   ROS launch argument inspection and the mission-tree CLI passed without motion.
 - Simulator package built; native mimic tracking regression passed. Loaded
@@ -67,3 +67,16 @@ The old standalone pipeline, finish/recovery scripts, grasp_execution C++
 package, and overlay copies have been removed. Their history remains in Git.
 The simulator and MoveIt vendor patches above remain required. The live review
 checkout is separate from this published source; do not assume it was updated.
+
+## September 14 live test and saved world
+
+Fixed a missing readiness camera import found by the live run, with a regression
+test. The kitchen-start spray-bottle trial passed readiness, search, parking,
+Nav2 pause and MTC approach, but failed closure: minimum motor position was
+reached without bilateral contact (left 0.047, right 0.171 rad at the last saved
+sample). It exited with code 4; no verified grasp or pickup is claimed.
+
+The packaged world removes room doors/stoppers and keeps seven kitchen-table
+objects. The new default robot spawn is in the high-table room. World loading,
+asset paths and spawn are checked separately; cross-room navigation and pickup
+in the door-free world have not yet been validated. See worlds/README.md.

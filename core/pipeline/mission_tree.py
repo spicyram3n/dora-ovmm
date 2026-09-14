@@ -167,7 +167,7 @@ def run(argv=None):
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--target")
-    parser.add_argument("--graph", type=Path, default=ROOT / "outputs/scene_graph/apartment.json")
+    parser.add_argument("--graph", type=Path, default=ROOT / "config/scene_graph/kitchen_objects.json")
     parser.add_argument("--top-k", type=int, default=3)
     parser.add_argument("--bearings", type=int, default=6)
     parser.add_argument("--startup-timeout", type=float, default=180)

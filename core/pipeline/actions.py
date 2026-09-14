@@ -12,6 +12,7 @@ from tmc_manipulation_msgs.srv import SolveIkWithCollision
 from trajectory_msgs.msg import JointTrajectoryPoint
 from core.navigation.nav2_client import Navigator
 from core.perception import sam3_client
+from core.perception.camera_ros2 import grab_rgbd
 
 import subprocess
 import sys
