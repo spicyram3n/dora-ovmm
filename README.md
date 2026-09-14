@@ -152,7 +152,7 @@ This starts the sim, Nav2, IK and MoveIt, then runs the [behaviour tree](core/pi
 | **Park** | Drives to an IK-certified pose within arm reach |
 | **Pause Nav2** | So MoveIt can move the base |
 | **Pick** (up to 3 tries) | GraspGenX grasps + MoveIt Task Constructor; checks the hand closed on something |
-| **Home arm after pick** | Arm back home, still holding the object |
+| **Stow** (inside Pick) | Backs the palm straight out, then folds to the carry pose through move_group, with the octomap and the held object in the planning scene. Not a separate tree step: a raw joint command here would drag the load through the surface it was picked from. |
 
 **Launch arguments:**
 
@@ -164,7 +164,7 @@ This starts the sim, Nav2, IK and MoveIt, then runs the [behaviour tree](core/pi
 | `top_k:=5` | Ask DeepSeek for more places |
 | `graph:=/path/to/scenario.json` | Use another scene graph |
 | `startup_timeout:=300` | Allow slower startup |
-| `bearings:=6` | Set the reach-probe directions for parking |
+| `bearings:=12` | Set the reach-probe directions for parking (30 deg apart) |
 | `use_rviz:=true` | Open RViz with MoveIt |
 | `shutdown_when_done:=true` | Close everything when the mission ends |
 | `web:=true` | Start the stack with no mission ([dashboard](#5-web-dashboard)) |
@@ -191,7 +191,8 @@ ros2 launch /home/ws/launch/search.launch.py target:="pringles" \
 | `1` | Not found |
 | `2` | Found, but could not park within reach |
 | `3` | Startup or service error |
-| `4` | Parked, but the pick failed |
+| `4` | Parked, but the pick failed; the arm is folded back to the carry pose |
+| `5` | The pick failed **and** the arm could not be stowed -- it is still extended, clear it by hand |
 | `130` | Stopped with Ctrl+C |
 
 ---
@@ -204,7 +205,7 @@ Type a query in the browser and watch each stage. Runs **navigate-only** for now
 | --- | --- | --- | --- |
 | 1 | Container A | `python3 -m web.server` | The dashboard. Keep it running; it outlives the sim. |
 | 2 | Container B | `ros2 launch /home/ws/launch/search.launch.py web:=true` | The stack, with no mission. Restart it freely. |
-| 3 | Browser | <http://localhost:8080> | Type the object, press **Fetch** |
+| 3 | Browser | <http://localhost:8090> | Type the object, press **Fetch** |
 
 | On the page | Shows |
 | --- | --- |

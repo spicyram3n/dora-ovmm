@@ -21,6 +21,8 @@ import rclcpp  # the C++ node MTC runs on (py_binding_tools), separate from rclp
 import rclpy
 import yaml
 from action_msgs.msg import GoalStatus
+from builtin_interfaces.msg import Duration
+from control_msgs.action import FollowJointTrajectory
 from geometry_msgs.msg import Pose, PoseStamped, Vector3Stamped
 from moveit.task_constructor import core, stages
 from moveit_msgs.msg import (
@@ -44,6 +46,7 @@ from shape_msgs.msg import SolidPrimitive
 from std_srvs.srv import Empty
 from tf2_ros import Buffer, TransformListener
 from tmc_control_msgs.action import GripperApplyEffort
+from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 
 from core.grasping import graspgenx_client
 from core.perception import pointcloud, sam3_client
@@ -54,6 +57,11 @@ import planning_model  # noqa: E402
 
 # The 5-DOF arm alone cannot reach most grasp orientations; the base adds three.
 GROUP = "whole_body"
+# Stowing plans over whole_body, not whole_body_weighted: weighted pins the base,
+# and pinned at the shelf the arm can only fold back through the table it reached
+# over. Bounded instead -- room to reverse out, not room to drive off.
+STOW_GROUP = "whole_body"
+STOW_SLACK = {"odom_x": 0.5, "odom_y": 0.5, "odom_t": 0.8}
 HAND = "hand_palm_link"
 FINGERS = [
     f"hand_{side}_{part}_link"
@@ -64,14 +72,32 @@ TARGET = "target"
 GRIPPER = "hsrc_hand"
 CANDIDATES = 20  # best-scored GraspGenX grasps offered to MTC
 APPROACH = 0.08  # m, straight final approach along the palm's z axis
-# Where the pads close on a 1-8 cm object, in front of the palm (closing profile).
+# Object centre depth in front of the palm. The fingertips are 7.6 cm apart at
+# 8.0 cm (motor 0.6) and shut at 9.2 cm, so they close across a 6-8 cm can just
+# behind its widest point.
 PAD_DEPTH = 0.075
 MAX_CLOUD_POINTS = 8192  # bounds GraspGenX GPU memory
 OPEN_HAND = 1.1  # hand_motor_joint; wider breaks the distal finger limit
 CLOSE_EFFORT = -0.3  # Nm, negative closes
 # Fingertips closer than this hold nothing: 0 cm empty, 2.1 cm around a pringles
-# can. The motor angle cannot tell; the springs let it close past contact.
+# can.
 EMPTY_GAP = 0.01
+# hand_motor_joint at or below this holds nothing, whatever the gap: the
+# fingertips meet at 0 and cross below it. An empty close logged "fingertips
+# 8.2 cm apart, hand_motor_joint -0.80", on the -0.798 stop; a held can reads +0.60.
+HELD_MOTOR = 0.0
+# actions.home_goal()'s pose, reached through move_group rather than as a raw
+# controller goal: after a pick the arm is in a shelf holding a load, and a
+# blind joint interpolation drags both back through the surface.
+HOME_JOINTS = {
+    "arm_lift_joint": 0.0,
+    "arm_flex_joint": 0.0,
+    "arm_roll_joint": -1.57,
+    "wrist_flex_joint": -1.57,
+    "wrist_roll_joint": 0.0,
+}
+RETREAT = 0.12  # m straight back before folding; clears the shelf lip
+
 BASE_SLACK = {
     "odom_x": 0.1,
     "odom_y": 0.1,
@@ -98,7 +124,10 @@ def perceive(prompt):
         f"{prompt}: SAM3 score {score:.2f}, {len(points)} points, best grasp {scores[best[0]]:.2f}"
     )
     points = solid(points)
-    # GraspGenX stops with the object at the fingertips. Slide each grasp along
+    # Raw GraspGenX poses leave the object past the open fingertips: its near
+    # surface 7-8 cm from the palm, so the closing tips pinch only its front
+    # (bugs/grasp-pose-convention.md). The hsrc_hand sweep volumes the model is
+    # conditioned on are thin slabs at the fingertips. Slide each grasp along
     # its approach axis (palm z) until the object's centre is between the pads.
     grasps = poses[best]
     approach = grasps[:, :3, 2]
@@ -111,12 +140,14 @@ def perceive(prompt):
 
 
 def solid(points):
-    """The camera sees only an object's front. Assume it is as deep as it is
-    wide and mirror that surface behind it (camera frame: x right, z depth)."""
+    """The camera sees only an object's front. Assume it is as deep as its
+    narrower visible side and mirror that surface behind it (camera frame:
+    x right, y down, z depth). A can lying down reads 20 cm across and 6 cm
+    tall; its depth is the 6, and taking the 20 put the centre 6.6 cm too far."""
     front = np.percentile(points[:, 2], 2)
-    left, right = np.percentile(points[:, 0], [2, 98])
+    widths = np.ptp(np.percentile(points[:, :2], [2, 98], axis=0), axis=0)
     back = points.copy()
-    back[:, 2] = 2 * front + (right - left) - points[:, 2]
+    back[:, 2] = 2 * front + widths.min() - points[:, 2]
     return np.vstack([points, back])
 
 
@@ -237,10 +268,34 @@ def run_action(node, kind, name, goal, seconds):
 
 
 def close_hand(node):
+    """Squeeze with CLOSE_EFFORT; if that closed on nothing, let go and fail."""
     goal = GripperApplyEffort.Goal(effort=CLOSE_EFFORT)
     closed = run_action(node, GripperApplyEffort, "/gripper_controller/grasp", goal, 30.0)
     if closed.status != GoalStatus.STATUS_SUCCEEDED:
         raise RuntimeError("the hand did not close")
+    hand = joint_positions(node)["hand_motor_joint"]
+    print(f"closed, hand_motor_joint {hand:.2f}")
+    if hand <= HELD_MOTOR:
+        release_hand(node)
+        raise RuntimeError(f"the hand closed on nothing (hand_motor_joint {hand:.2f})")
+
+
+def release_hand(node):
+    """Reopen by position. An effort goal has no position bound, so an empty
+    close sits on the -0.798 stop holding CLOSE_EFFORT until another goal
+    replaces it. Open is how the hand arrived, so it is clear of the scene."""
+    point = JointTrajectoryPoint(positions=[OPEN_HAND], time_from_start=Duration(sec=2))
+    goal = FollowJointTrajectory.Goal(
+        trajectory=JointTrajectory(joint_names=["hand_motor_joint"], points=[point])
+    )
+    try:
+        run_action(
+            node, FollowJointTrajectory, "/gripper_controller/follow_joint_trajectory",
+            goal, 10.0,
+        )
+        print(f"released, hand_motor_joint {joint_positions(node)['hand_motor_joint']:.2f}")
+    except RuntimeError as error:
+        print(f"WARNING: hand left squeezing: {error}")
 
 
 def mtc_node():
@@ -267,10 +322,10 @@ def stamped(frame, matrix=np.eye(4)):
     return pose
 
 
-def move_hand(name, planner, direction, frame, min_distance, max_distance):
+def move_hand(name, planner, direction, frame, min_distance, max_distance, group=GROUP):
     """A straight hand motion along direction, of at least min_distance."""
     stage = stages.MoveRelative(name, planner)
-    stage.group = GROUP
+    stage.group = group
     stage.ik_frame = stamped(HAND)
     stage.min_distance = min_distance
     stage.max_distance = max_distance
@@ -281,15 +336,45 @@ def move_hand(name, planner, direction, frame, min_distance, max_distance):
     return stage
 
 
+def _scale(planner):
+    """Execution speed, as a fraction of the joint limits."""
+    planner.max_velocity_scaling_factor = 0.15
+    planner.max_acceleration_scaling_factor = 0.15
+    return planner
+
+
+def _parked(base, slacks=BASE_SLACK):
+    """Joint constraints holding the base within `slacks` of where it parked."""
+    return Constraints(
+        joint_constraints=[
+            JointConstraint(
+                joint_name=joint,
+                position=base[joint],
+                tolerance_above=slack,
+                tolerance_below=slack,
+                weight=1.0,
+            )
+            for joint, slack in slacks.items()
+        ]
+    )
+
+
 class Pick:
     def __init__(self, node):
         self.node = node
-        self.ompl = core.PipelinePlanner(node, "move_group")
         self.cartesian = core.CartesianPath()
         self.cartesian.step_size = 0.005  # enough steps for MoveIt's joint-jump check
-        for planner in (self.ompl, self.cartesian):
-            planner.max_velocity_scaling_factor = 0.15
-            planner.max_acceleration_scaling_factor = 0.15
+        _scale(self.cartesian)
+
+    def ompl(self):
+        """One OMPL planner per task; never share them.
+
+        task() calls loadRobotModel(), so each task owns a fresh robot model and
+        a PipelinePlanner binds to the first one it plans for. Sharing across
+        tasks fails the second time with "the robot model of the planning
+        pipeline isn't the same as the task's". CartesianPath has no pipeline
+        and stays shared."""
+        return _scale(core.PipelinePlanner(self.node, "move_group"))
 
     def task(self, name):
         task = core.Task()
@@ -302,36 +387,26 @@ class Pick:
         """Open the hand, then reach the first grasp that has a collision-free
         path to its pregrasp and a straight approach from there."""
         task = self.task("reach")
+        ompl = self.ompl()
         # The box is only a coarse hull of the visible surface; let the fingers enter it.
         allow = stages.ModifyPlanningScene("allow finger contact")
         allow.allowCollisions(TARGET, FINGERS, True)
         task.add(allow)
         # OMPL, unlike joint interpolation, tolerates a start state slightly out
         # of bounds, as when the finger springs jitter below 0 rad in simulation.
-        open_hand = stages.MoveTo("open hand", self.ompl)
+        open_hand = stages.MoveTo("open hand", ompl)
         open_hand.group = "gripper"
         open_hand.setGoal({"hand_motor_joint": OPEN_HAND})
         task.add(open_hand)
         # Keep the base near where Nav2 parked it.
-        parked = Constraints(
-            joint_constraints=[
-                JointConstraint(
-                    joint_name=joint,
-                    position=base[joint],
-                    tolerance_above=slack,
-                    tolerance_below=slack,
-                    weight=1.0,
-                )
-                for joint, slack in BASE_SLACK.items()
-            ]
-        )
+        parked = _parked(base)
         back_off = np.eye(4)
         back_off[2, 3] = -APPROACH
         # Best-scored first; stop at the first grasp that works.
         candidates = core.Fallbacks("grasp candidates")
         for index, grasp in enumerate(grasps):
             candidate = core.SerialContainer(f"grasp {index}")
-            pregrasp = stages.MoveTo("pregrasp", self.ompl)
+            pregrasp = stages.MoveTo("pregrasp", ompl)
             pregrasp.group = GROUP
             pregrasp.ik_frame = stamped(HAND)
             pregrasp.setGoal(stamped(BASE_FRAME, grasp @ back_off))
@@ -361,6 +436,30 @@ class Pick:
         task.add(
             move_hand("lift", self.cartesian, (0.0, 0.0, 1.0), BASE_FRAME, 0.03, 0.08)
         )
+        return task
+
+    def stow(self, base):
+        """Back the hand out, then fold to the carry pose, both collision-checked.
+
+        The object attached in lift() is still on the hand, so the load comes out
+        of the shelf rather than through it. Cartesian first: a straight retreat
+        along the palm axis is the one motion guaranteed to leave the way it came
+        in. The base is bounded rather than pinned, so it can reverse out from
+        under a surface the arm reached over."""
+        task = self.task("stow")
+        nearby = _parked(base, STOW_SLACK)
+        retreat = move_hand(
+            "retreat", self.cartesian, (0.0, 0.0, -1.0), HAND,
+            RETREAT - 0.04, RETREAT, group=STOW_GROUP,
+        )
+        retreat.path_constraints = nearby
+        task.add(retreat)
+        carry = stages.MoveTo("carry pose", self.ompl())
+        carry.group = STOW_GROUP
+        carry.setGoal(HOME_JOINTS)
+        carry.path_constraints = nearby
+        carry.timeout = 10.0
+        task.add(carry)
         return task
 
 
@@ -399,9 +498,19 @@ def pick(prompt):
         gap = fingertip_gap(node)
         hand = joint_positions(node)["hand_motor_joint"]
         print(f"fingertips {gap * 100:.1f} cm apart, hand_motor_joint {hand:.2f}")
-        if gap < EMPTY_GAP:
-            raise RuntimeError("the hand closed on nothing")
+        if hand <= HELD_MOTOR or gap < EMPTY_GAP:
+            release_hand(node)
+            raise RuntimeError("the hand is empty after the lift")
         print(f"holding the {prompt}")
+        # Fold up here, not as a tree step: the load and the planner only exist
+        # in this process, so this is the one place it can be collision checked
+        # against the octomap and what the hand is carrying. A stow failure
+        # still keeps the object; the arm is just left out for the operator.
+        try:
+            execute(node, planner.stow(joint_positions(node)))
+            print("stowed in the carry pose", flush=True)
+        except RuntimeError as error:
+            print(f"WARNING: holding the {prompt}, arm left extended: {error}", flush=True)
         return True
     except RuntimeError as error:
         print(f"pick failed: {error}")

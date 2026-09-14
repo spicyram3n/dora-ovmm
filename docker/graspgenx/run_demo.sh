@@ -6,10 +6,15 @@
 # Usage:
 #   ./run_demo.sh                        # inference on hsrc_hand, gripper mesh shown
 #   ./run_demo.sh --vis-top-grasp-meshes --num-top-grasp-meshes 10   # more than 5
+# The demo defaults to --planner graspmoe, which adds rule-placed top-down
+# candidates; app.py serves diffusion only. Pass --planner diffusion to see
+# the grasps pick.py actually gets.
 set -e
 
 cd "$(dirname "$0")"
-docker build -t hrl/graspgenx:latest .
+# Repo root as the build context: the Dockerfile COPYs docker/graspgenx/app.py
+# and core/utils/zenoh_rpc.py, the same paths compose.yaml builds it with.
+docker build -t hrl/graspgenx:latest -f Dockerfile ../..
 docker run --gpus all -it --rm \
     --net=host \
     -v "$(pwd)/checkpoints:/opt/graspgenx/ext/graspgenx_checkpoints" \

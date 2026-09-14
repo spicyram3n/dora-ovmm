@@ -35,7 +35,7 @@ config/targets/
 bags/
 docs/
 .image_fingerprint
-
+config/reconstruction
 # generic files 
 data_hrl/
 /outputs

@@ -10,7 +10,9 @@
 set -e
 
 cd "$(dirname "$0")"
-docker build -t hrl/graspgenx:latest .
+# Repo root as the build context: the Dockerfile COPYs docker/graspgenx/app.py
+# and core/utils/zenoh_rpc.py, the same paths compose.yaml builds it with.
+docker build -t hrl/graspgenx:latest -f Dockerfile ../..
 docker run --gpus all -it --rm \
     --net=host \
     -v "$(pwd)/checkpoints:/opt/graspgenx/ext/graspgenx_checkpoints" \

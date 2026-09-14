@@ -22,6 +22,10 @@ services:
     build:
       context: ..
       dockerfile: docker/sam3/Dockerfile
+    environment:
+      PYTHONUNBUFFERED: "1"
+      MODEL_QUEUE_SIZE: "2"
+      HF_HOME: /root/.cache/huggingface
     env_file:
       - path: sam3/.env
         required: false

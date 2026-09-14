@@ -59,7 +59,7 @@ ros2 launch hsrb_rosnav_config navigation_launch.py \
 | `--grasp false` | Stop once parked; no pick |
 | `--navigate-only true` | Reason and drive to the first place; no SAM3 or GraspGenX |
 | `--graph /path/to/graph.json` | Use another scene graph |
-| `--bearings 6` | Set the horizontal reach-probe directions |
+| `--bearings 12` | Set the horizontal reach-probe directions (30 deg apart) |
 | `--startup-timeout 180` | Wait this long for the stack at startup |
 | `--render` | Save a picture of the tree to `outputs/` (no ROS) |
 

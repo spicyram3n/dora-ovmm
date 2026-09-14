@@ -14,8 +14,7 @@ is a strict sequence, and Ctrl+C still cancels a Nav2 goal inside the step.
     ├─ Find target                            ├─ Choose location   target reasoning
     ├─ Park            once                   └─ Go there          first reachable view
     ├─ Pause Nav2
-    ├─ Pick            up to ATTEMPTS tries
-    └─ Home arm after pick
+    └─ Pick            up to ATTEMPTS tries; stows through move_group on success
 
 Watch it live, with ROS sourced, once this is running:
     py-trees-tree-watcher      # in the terminal
@@ -86,7 +85,9 @@ def build(steps, grasp=True, navigate_only=False):
         children.append(Step("Pause Nav2", steps["pause"]))
         children.append(py_trees.decorators.Retry(
             "Pick, retried", Step("Pick", steps["pick"]), num_failures=ATTEMPTS))
-        children.append(Step("Home arm after pick", steps["home"]))
+        # No raw home here: core.grasping.pick stows through move_group with the
+        # octomap and the carried object in scene. steps["home"] is the startup
+        # controller goal, which interpolates through whatever the arm is in.
     return py_trees.composites.Sequence("Mission", memory=True, children=children)
 
 
@@ -192,7 +193,7 @@ def run(argv=None):
     parser.add_argument("--target")
     parser.add_argument("--graph", type=Path, default=ROOT / "outputs/scene_graph/apartment.json")
     parser.add_argument("--top-k", type=int, default=3)
-    parser.add_argument("--bearings", type=int, default=6)
+    parser.add_argument("--bearings", type=int, default=12)
     parser.add_argument("--startup-timeout", type=float, default=180)
     parser.add_argument("--grasp", default="true", choices=["true", "false"])
     parser.add_argument("--navigate-only", default="false", choices=["true", "false"],

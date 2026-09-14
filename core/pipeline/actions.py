@@ -13,6 +13,8 @@ from builtin_interfaces.msg import Duration
 from control_msgs.action import FollowJointTrajectory
 from controller_manager_msgs.srv import ListControllers
 from lifecycle_msgs.srv import GetState
+from moveit_msgs.srv import GetPlanningScene
+from moveit_task_constructor_msgs.action import ExecuteTaskSolution
 from rclpy.action import ActionClient
 from tmc_manipulation_msgs.srv import SolveIkWithCollision
 from trajectory_msgs.msg import JointTrajectoryPoint
@@ -153,6 +155,32 @@ def get_ready(navigator, target, timeout, perception=True):
         wait('IK service', ik.service_is_ready)
     finally:
         navigator.destroy_client(ik)
+
+    if perception:
+        scene = navigator.create_client(GetPlanningScene, '/get_planning_scene')
+        try:
+            def answers():
+                if not scene.service_is_ready():
+                    return False
+                future = scene.call_async(GetPlanningScene.Request())
+                rclpy.spin_until_future_complete(navigator, future, timeout_sec=min(1., remaining()))
+                if not future.done():
+                    scene.remove_pending_request(future)
+                    return False
+                return True
+            # Advertised is not enough: move_group aborts on an oversized scene
+            # publish and leaves its services up but unanswered.
+            wait('move_group planning scene', answers)
+        finally:
+            navigator.destroy_client(scene)
+        # The pick executes through MTC, whose capability move_group only loads
+        # when launch/move_group.launch.py passes it. Missing, the mission would
+        # drive the whole way and fail at the last step.
+        solution = ActionClient(navigator, ExecuteTaskSolution, '/execute_task_solution')
+        try:
+            wait('MoveIt task solution action', solution.server_is_ready)
+        finally:
+            solution.destroy()
 
     def localized():
         try:
@@ -331,7 +359,7 @@ def locate(obj):
     return pointcloud.transform_points(transform, points)
 
 
-def make_graspable(scene, node_id, navigator, obstacles="--costmap", bearings=6):
+def make_graspable(scene, node_id, navigator, obstacles="--costmap", bearings=12):
     """Refine the observation pose into one the IK solver certifies for the arm."""
     centre, dimensions = box(scene.nodes[node_id])
     holder, relation = sg.location_of(scene, node_id)

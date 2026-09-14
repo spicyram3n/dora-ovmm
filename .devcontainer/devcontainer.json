@@ -49,7 +49,7 @@
     "mounts": [
         "source=/tmp/.X11-unix,target=/tmp/.X11-unix,type=bind,consistency=cached",
         "source=/dev/dri,target=/dev/dri,type=bind,consistency=cached",
-        "source=${localEnv:HOME}/rosbags/playable_bag,target=/home/ws/bags/playable_bag,type=bind,readonly"
+        "source=/home/user/yelchuriv1/rosbag2_2026_08_11-12_58_21/rosbag2_2026_08_11-12_58_21/playable_bag,target=/home/ws/bags/playable_bag,type=bind,readonly"
     ],
     "initializeCommand": "sh ./.devcontainer/initialize.sh",
     "postCreateCommand": "bash ./.devcontainer/postCreate.sh"

@@ -47,7 +47,7 @@ def generate_launch_description():
             "use_rviz", default_value="false", choices=["true", "false"]
         ),
         DeclareLaunchArgument("top_k", default_value="3"),
-        DeclareLaunchArgument("bearings", default_value="6"),
+        DeclareLaunchArgument("bearings", default_value="12"),
         DeclareLaunchArgument("startup_timeout", default_value="180"),
         DeclareLaunchArgument(
             "map", default_value=str(ROOT / "config/map/apartment_world_map.yaml")
@@ -167,6 +167,7 @@ def generate_launch_description():
             2: "FOUND but placement failed",
             3: "STARTUP / SERVICE ERROR",
             4: "PARKED but pickup failed",
+            5: "PICKUP FAILED and the arm could not be stowed -- clear it by hand",
         }
         done = context.launch_configurations["shutdown_when_done"] == "true"
         after = (

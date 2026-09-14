@@ -1,7 +1,7 @@
 """Web dashboard for the behaviour-tree mission: type what to fetch, watch it run.
 
     python3 -m web.server
-    # then open http://localhost:8080
+    # then open http://localhost:8090  (override with WEB_PORT=...)
 
 Run it in its own terminal, so it outlives the sim: `ros2 launch
 launch/search.launch.py web:=true` starts the stack without a mission, and the
@@ -46,7 +46,10 @@ from core.utils.events import PREFIX
 
 ROOT = Path(__file__).resolve().parents[1]
 # Local only: anyone who can open the page can drive the robot.
-HOST, PORT = "127.0.0.1", 8080
+# Override with WEB_PORT when 8090 is taken. Stay above 1024 (binding lower
+# needs root) and clear of 6665-6669, which Chrome and Firefox refuse to open.
+HOST = os.environ.get("WEB_HOST", "127.0.0.1")
+PORT = int(os.environ.get("WEB_PORT", "8090"))
 # Every run is saved here when it ends, to inspect after the sim is gone.
 RUNS = ROOT / "outputs/web_runs"
 # Joint samples kept while the arm homes: enough for a smooth replay, and small.
@@ -194,12 +197,14 @@ def start():
         run["running"] = True
         run["id"] = time.strftime("%Y%m%d-%H%M%S")
         RUNS.mkdir(parents=True, exist_ok=True)
-        # Navigate-only by default: no SAM3 or GraspGenX. The server's own arguments come
-        # later and win, so `python3 -m web.server --navigate-only false` runs the full mission.
+        # The full mission by default: search, park and pick, so SAM3 and GraspGenX
+        # must be up. The server's own arguments come later and win, so
+        # `python3 -m web.server --navigate-only true` still gets drive-only runs,
+        # as does any other mission_tree flag passed to the server.
         # Its own session, so Stop reaches anything the mission starts, as Ctrl+C would.
         process = subprocess.Popen(
             [sys.executable, "-u", "-m", "core.pipeline.mission_tree", "--target", target,
-             "--navigate-only", "true", *mission_args],
+             "--navigate-only", "false", *mission_args],
             cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace",
             env=dict(os.environ, MISSION_EVENTS="1"), start_new_session=True,
         )

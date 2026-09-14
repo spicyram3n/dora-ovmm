@@ -4,7 +4,7 @@
 #
 # Usage:
 #   ./run_vis.sh                              # visualize hsrc_hand
-#   ./run_vis.sh hsrc_hand --show-sweep-volume # with the sweep volume box
+#   ./run_vis.sh hsrc_hand --port 8090        # when 8080 is taken (ggx_dev holds it)
 #   ./run_vis.sh some_other_gripper            # a different registered gripper
 set -e
 
@@ -12,7 +12,9 @@ GRIPPER="${1:-hsrc_hand}"
 [ $# -gt 0 ] && shift
 
 cd "$(dirname "$0")"
-docker build -t hrl/graspgenx:latest .
+# Repo root as the build context: the Dockerfile COPYs docker/graspgenx/app.py
+# and core/utils/zenoh_rpc.py, the same paths compose.yaml builds it with.
+docker build -t hrl/graspgenx:latest -f Dockerfile ../..
 docker run --gpus all -it --rm \
     --net=host \
     -v "$(pwd)/checkpoints:/opt/graspgenx/ext/graspgenx_checkpoints" \
