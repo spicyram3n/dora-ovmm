@@ -20,6 +20,13 @@ let shown = null;
 let follow = true;      // switch to each stage as it goes live, until the user picks one
 let lastSwitch = 0;
 let replayFrom = 0;     // when the stage on screen started playing its recording
+let resetting = false;  // while Reset waits for the server, before the page reloads
+let notice = { text: '', until: 0 };  // an error in the status line, kept past the next poll
+
+function flash(text) {
+  notice = { text, until: performance.now() + 4000 };
+  render();
+}
 
 // ---------- stages ----------
 function show(stage) {
@@ -98,7 +105,7 @@ let manualHome = 0; // until when the view follows a Home button press live
 $('home-button').onclick = async () => {
   const reply = await fetch('/home', { method: 'POST' });
   if (!reply.ok) {
-    $('status').textContent = (await reply.json()).error;
+    flash((await reply.json()).error);
     return;
   }
   manualHome = performance.now() + 6000;
@@ -331,6 +338,70 @@ function renderNav() {
   if ($('nav-caption').innerHTML !== caption) $('nav-caption').innerHTML = caption;
 }
 
+// ---------- GraspGenX: the surface SAM3 saw and the grasps offered to MTC ----------
+// The hand drawn in hand_palm_link: approach along +z, fingers apart along y, ~8 cm open.
+const GRIPPER = new THREE.Float32BufferAttribute([
+  0, 0, -0.06, 0, 0, 0.02,         // wrist to palm
+  0, -0.04, 0.02, 0, 0.04, 0.02,   // across the palm
+  0, -0.04, 0.02, 0, -0.04, 0.1,   // one finger
+  0, 0.04, 0.02, 0, 0.04, 0.1,     // the other
+], 3);
+const grasp = viewer($('grasp-view'));
+grasp.grid.visible = false;   // 0.5 m cells dwarf a can
+const graspScene = new THREE.Group();
+grasp.world.add(graspScene);
+let drawnGrasps = '';         // run and attempt on screen
+
+function drawGrasps(shot) {
+  graspScene.traverse(child => { child.geometry?.dispose(); child.material?.dispose(); });
+  graspScene.clear();
+  if (!shot) return;
+  const cloud = new THREE.BufferGeometry();
+  cloud.setAttribute('position', new THREE.Float32BufferAttribute(shot.points.flat(), 3));
+  graspScene.add(new THREE.Points(cloud, new THREE.PointsMaterial({ color: 0xcfccc5, size: 0.004 })));
+  const glyph = new THREE.BufferGeometry();
+  glyph.setAttribute('position', GRIPPER);
+  const top = shot.scores[0], bottom = shot.scores.at(-1);
+  // Worst first, so the best is drawn over the rest.
+  for (let rank = shot.poses.length - 1; rank >= 0; rank--) {
+    const t = top > bottom ? (shot.scores[rank] - bottom) / (top - bottom) : 1;
+    const color = rank === 0 ? COLOR.ok : new THREE.Color(COLOR.other).lerp(new THREE.Color(0x7fd6ae), t);
+    const lines = new THREE.LineSegments(glyph, new THREE.LineBasicMaterial(
+      { color, transparent: true, opacity: rank === 0 ? 1 : 0.25 + 0.5 * t }));
+    lines.matrixAutoUpdate = false;
+    lines.matrix.set(...shot.poses[rank].flat());   // row-major 4x4, palm in odom
+    graspScene.add(lines);
+  }
+  // Frame the object from above and to the side; after that the view is the user's to orbit.
+  const n = shot.points.length;
+  const [x, y, z] = [0, 1, 2].map(i => shot.points.reduce((sum, p) => sum + p[i], 0) / n);
+  grasp.controls.target.set(x, z, -y);
+  grasp.camera.position.set(x + 0.35, z + 0.3, -y + 0.35);
+}
+
+function renderGrasps() {
+  const shots = runEvents().filter(e => e.kind === 'grasps');
+  const shot = shots.at(-1);
+  const key = shot ? `${state.id}:${shots.length}` : '';
+  if (key !== drawnGrasps) {
+    drawnGrasps = key;
+    drawGrasps(shot);
+  }
+  grasp.renderer.domElement.hidden = !shot;
+  $('grasp-note').hidden = !!shot;
+  let note = 'The top-scored grasps appear here once a pick starts', badge = 'none yet', info = ' ';
+  if (shot) {
+    badge = `${shot.poses.length} poses`;
+    info = `best ${shot.scores[0].toFixed(2)} · top ${shot.poses.length} of ${shot.generated} · attempt ${shots.length}`;
+  } else if (state?.running && state.leaf === 'Pick') {
+    [note, badge] = ['Segmenting the object and asking GraspGenX', 'waiting'];
+  }
+  if ($('grasp-note').textContent !== note) $('grasp-note').textContent = note;
+  if ($('grasp-badge').textContent !== badge) $('grasp-badge').textContent = badge;
+  $('grasp-badge').classList.toggle('streaming', !!shot);
+  if ($('grasp-info').textContent !== info) $('grasp-info').textContent = info;
+}
+
 // ---------- tree, status, tabs ----------
 function treeHtml(node) {
   const glyph = { Sequence: '→', Selector: '?', Retry: '↻', Parallel: '⇉' }[node.type] ?? '';
@@ -367,18 +438,24 @@ function render() {
   else if (state?.exit != null) [text, dot] = [`${state.target} · ${outcome(state)}`, state.exit === 0 ? 'SUCCESS' : 'FAILURE'];
   // The page keeps what it last had, so a run can still be inspected with the sim gone.
   if (offline && !viewing) [text, dot] = ['server offline', 'FAILURE'];
-  $('status').textContent = text;
+  if (resetting) [text, dot] = [live?.running ? 'stopping the mission to reset' : 'resetting', 'RUNNING'];
+  if (performance.now() < notice.until) [text, dot] = [notice.text, 'FAILURE'];
+  if ($('status').textContent !== text) $('status').textContent = text;
   $('status-dot').className = 'dot ' + dot;
   $('go').textContent = live?.running ? 'Stop' : 'Fetch';
   $('go').classList.toggle('stop', !!live?.running);
-  $('go').disabled = offline;
+  $('go').disabled = offline || resetting;
+  $('reset').disabled = offline || resetting;
   $('target').disabled = !!live?.running;
   $('home-button').disabled = offline || !!viewing || live.running;
+  const topic = live?.camera_topic || ' ';
+  if ($('camera-topic').textContent !== topic) $('camera-topic').textContent = topic;
   const log = (viewing ? `<a href="/runs/${viewing}.log" target="_blank">full log</a> · ` : '') + (state?.log ? esc(state.log) : '&nbsp;');
   if ($('log').innerHTML !== log) $('log').innerHTML = log;
 
   renderReason();
   renderNav();
+  renderGrasps();
 }
 
 function when(id) {
@@ -429,10 +506,29 @@ $('query').onsubmit = async event => {
   const reply = await fetch('/run', { method: 'POST', headers: { 'Content-Type': 'application/json' },
                                       body: JSON.stringify({ target }) });
   if (!reply.ok) {
-    $('status').textContent = (await reply.json()).error;
+    flash((await reply.json()).error);
     return;
   }
   view(null);
+};
+
+$('reset').onclick = async () => {
+  // The server forgets the run on screen; a reload then starts every view, caption and
+  // camera angle over. Saved runs stay in the list, and the robot is not moved.
+  if (live?.running && !confirm(`Stop the mission fetching "${live.target}" and reset the page?`)) return;
+  resetting = true;
+  render();
+  let reply = null;
+  try {
+    reply = await fetch('/reset', { method: 'POST' });
+  } catch {}
+  if (reply?.ok) {
+    $('target').value = '';
+    location.reload();
+    return;
+  }
+  resetting = false;
+  flash(reply ? (await reply.json()).error : 'server offline');
 };
 
 async function poll() {
@@ -462,18 +558,28 @@ function frame(now) {
   }
   if (shown === 'home') draw(home);
   if (shown === 'navigate') draw(nav);
+  if (drawnGrasps) draw(grasp);
+}
+
+function showCamera(streaming, note) {
+  $('camera').hidden = !streaming;
+  $('camera-note').hidden = streaming;
+  if ($('camera-note').textContent !== note) $('camera-note').textContent = note;
+  $('camera-badge').textContent = streaming ? 'live' : viewing ? 'saved run' : 'no signal';
+  $('camera-badge').classList.toggle('streaming', streaming);
 }
 
 function pollCamera() {
-  // The head camera, frame by frame; hidden while no image arrives.
+  // The head camera in its own window, frame by frame. It is live only: a saved run keeps none.
   const next = new Image();
+  const saved = 'Saved runs keep no camera; choose Live to see it';
   next.onload = () => {
     $('camera').src = next.src;
-    $('camera').hidden = !!viewing;   // the camera is live; a saved run has none
+    showCamera(!viewing, saved);
     setTimeout(pollCamera, 250);
   };
   next.onerror = () => {
-    $('camera').hidden = true;
+    showCamera(false, viewing ? saved : offline ? 'Server offline' : 'No frames from the head camera; is the sim running?');
     setTimeout(pollCamera, 1000);
   };
   next.src = '/camera.jpg?' + Date.now();

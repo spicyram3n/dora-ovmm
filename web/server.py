@@ -62,8 +62,12 @@ TRACK_PERIOD = 0.2
 WAYPOINT_SPACING = 0.25
 # A base transform that has not changed for this long means the sim stopped or restarted.
 STALE_TF = 2.0
-# Width of the head camera image in the page's small window.
-CAMERA_WIDTH = 320
+# Width the head camera image is sent at, for the page's camera window; never upscaled.
+CAMERA_WIDTH = 640
+# A frame older than this, in wall seconds, means the camera stopped: the sim closed or hung.
+CAMERA_STALE = 2.0
+# How long Reset, and quitting the server, wait for a stopped mission to exit and be saved.
+STOP_TIMEOUT = 30
 # Sent with every state: a page that sees it change reloads, so it never runs old code.
 BOOT = time.time()
 
@@ -83,6 +87,7 @@ tf_stamp = None     # stamp of the last base transform, and when it last changed
 tf_seen = 0.0
 bridge = CvBridge()
 image = None        # the latest head camera frame, encoded only when the page asks
+image_seen = 0.0    # when it arrived, on the monotonic clock
 
 
 def fresh(target=None):
@@ -144,8 +149,8 @@ def on_plan(message):
 
 
 def on_image(message):
-    global image
-    image = message
+    global image, image_seen
+    image, image_seen = message, time.monotonic()
 
 
 def on_tick():
@@ -181,7 +186,7 @@ def index():
 @app.get("/state")
 def state():
     with lock:
-        return jsonify(dict(run, boot=BOOT))
+        return jsonify(dict(run, boot=BOOT, camera_topic=RGB_TOPIC))
 
 
 @app.post("/run")
@@ -222,6 +227,33 @@ def stop():
     return jsonify(ok=True)
 
 
+@app.post("/reset")
+def reset():
+    """Clear the page's current run, stopping the mission first if one is going.
+
+    Saved runs are kept, a stopped one included: it is saved before the clear."""
+    global run
+    with lock:
+        running = run["running"]
+        if running:
+            try:
+                # The mission cancels its Nav2 goal on SIGINT, exactly as for Stop.
+                os.killpg(process.pid, signal.SIGINT)
+            except ProcessLookupError:
+                pass  # already exiting; the follower has yet to notice
+    if running:
+        # The follower marks the run over and saves it once the mission has exited.
+        follower.join(timeout=STOP_TIMEOUT)
+        if follower.is_alive():
+            return jsonify(error="The mission has not stopped yet; try Reset again"), 504
+    with lock:
+        # Another page may have started a mission while this one waited.
+        if run["running"]:
+            return jsonify(error="A mission is already running"), 409
+        run = fresh()
+    return jsonify(ok=True)
+
+
 @app.get("/runs")
 def saved_runs():
     """Saved runs, newest first, for the page's list."""
@@ -252,11 +284,13 @@ def home():
 
 @app.get("/camera.jpg")
 def camera():
-    if image is None:
+    # The last frame outlives the sim; an old one means the camera has stopped.
+    if image is None or time.monotonic() - image_seen > CAMERA_STALE:
         abort(503)
     frame = bridge.imgmsg_to_cv2(image, desired_encoding="bgr8")
-    height = round(frame.shape[0] * CAMERA_WIDTH / frame.shape[1])
-    _, jpeg = cv2.imencode(".jpg", cv2.resize(frame, (CAMERA_WIDTH, height)))
+    width = min(CAMERA_WIDTH, frame.shape[1])
+    height = round(frame.shape[0] * width / frame.shape[1])
+    _, jpeg = cv2.imencode(".jpg", cv2.resize(frame, (width, height)))
     return jpeg.tobytes(), 200, {"Content-Type": "image/jpeg", "Cache-Control": "no-store"}
 
 
@@ -303,7 +337,7 @@ def main():
         if running:
             os.killpg(process.pid, signal.SIGINT)
             # The follower saves the run once the mission has exited.
-            follower.join(timeout=30)
+            follower.join(timeout=STOP_TIMEOUT)
         # Exiting while the thread is still inside spin() aborts the process in C++.
         executor.shutdown()
         spinner.join()

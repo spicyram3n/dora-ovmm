@@ -95,6 +95,11 @@ def generate_launch_description():
             {
                 "use_sim_time": sim_time,
                 "depth_topic": LaunchConfiguration("depth_topic"),
+                # Paused until core/grasping/pick.py rebuilds the octomap for a
+                # pick. Fed from startup, move_group spent every callback on
+                # depth frames and answered no service, so the mission's
+                # readiness check timed out before the robot moved.
+                "enabled": False,
             }
         ],
     )

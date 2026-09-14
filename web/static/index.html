@@ -15,12 +15,13 @@
 </head>
 <body>
 <header>
-  <div class="brand">HSR <span>fetch</span></div>
+  <div class="brand">DORA <span>ovmm</span></div>
   <form id="query">
     <input id="target" placeholder="What should I fetch?" autocomplete="off">
     <button id="go">Fetch</button>
   </form>
   <div class="status"><span class="dot" id="status-dot"></span><span id="status">connecting</span></div>
+  <button class="ghost" id="reset" title="Start the page over; stops a running mission first. Saved runs are kept.">Reset</button>
 </header>
 <main>
   <aside class="card">
@@ -40,11 +41,28 @@
         <button class="corner" id="home-button">Home arm</button>
       </div>
       <div class="view" id="navigate"><div class="caption" id="nav-caption"></div></div>
-      <img class="camera" id="camera" alt="head camera" hidden>
       <div class="reasoner" id="reasoner" hidden></div>
     </div>
     <footer id="log">&nbsp;</footer>
   </section>
+  <div class="side">
+    <section class="card">
+      <div class="card-head"><h2>Head camera</h2><span class="badge" id="camera-badge">no signal</span></div>
+      <div class="feed">
+        <img id="camera" alt="head camera" hidden>
+        <p class="empty" id="camera-note">Waiting for the head camera</p>
+      </div>
+      <footer id="camera-topic">&nbsp;</footer>
+    </section>
+    <!-- The object's points and the top grasps, from core.grasping.pick's "grasps" event. -->
+    <section class="card">
+      <div class="card-head"><h2>GraspGenX poses</h2><span class="badge" id="grasp-badge">none yet</span></div>
+      <div class="feed" id="grasp-view">
+        <p class="empty" id="grasp-note">The top-scored grasps appear here once a pick starts</p>
+      </div>
+      <footer id="grasp-info">&nbsp;</footer>
+    </section>
+  </div>
 </main>
 
 <script type="module" src="app.js"></script>

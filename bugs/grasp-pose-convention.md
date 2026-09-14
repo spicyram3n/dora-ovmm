@@ -144,3 +144,14 @@ Tooling notes:
   such flag. Port 8080 is held by the `ggx_dev` container; use `--port 8090`.
 - `run_demo.sh` defaults to `--planner graspmoe`, which adds rule-placed OBB
   candidates the server never returns. Use `--planner diffusion`.
+
+Sim checks (`grasp.launch.py`):
+- Empty close, nothing in the hand (bugs 2 and 3): `closed, hand_motor_joint
+  -0.34`, then the gate raised "the hand closed on nothing"; `released,
+  hand_motor_joint 1.09`, still 1.1 three seconds later, so the position goal
+  replaced the effort goal.
+- The full pick has **not** been run to a grasp yet. From the `grasp.launch.py`
+  spawn (world 5.0, 6.6, facing +x, head level) no can is in view: SAM3 found
+  no "pringles can". `hsr_pringles_01` is at world (4.337, 12.999, 0.77) on
+  `high_shelf02`, front face at y 12.895. Standing at (4.337, 12.40) facing +y
+  with head tilt -0.35 should frame it (untested).

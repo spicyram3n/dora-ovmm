@@ -51,6 +51,7 @@ from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 from core.grasping import graspgenx_client
 from core.perception import pointcloud, sam3_client
 from core.perception.camera_ros2 import BASE_FRAME, grab_rgbd
+from core.utils import events
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "launch"))
 import planning_model  # noqa: E402
@@ -71,6 +72,7 @@ FINGERS = [
 TARGET = "target"
 GRIPPER = "hsrc_hand"
 CANDIDATES = 20  # best-scored GraspGenX grasps offered to MTC
+SHOWN_POINTS = 1500  # object points sent to the web dashboard with its grasps
 APPROACH = 0.08  # m, straight final approach along the palm's z axis
 # Object centre depth in front of the palm. The fingertips are 7.6 cm apart at
 # 8.0 cm (motor 0.6) and shut at 9.2 cm, so they close across a 6-8 cm can just
@@ -123,6 +125,8 @@ def perceive(prompt):
     print(
         f"{prompt}: SAM3 score {score:.2f}, {len(points)} points, best grasp {scores[best[0]]:.2f}"
     )
+    # The surface the camera saw, before solid() mirrors a guessed back onto it.
+    seen = pointcloud.transform_points(odom_from_camera, points)
     points = solid(points)
     # Raw GraspGenX poses leave the object past the open fingertips: its near
     # surface 7-8 cm from the palm, so the closing tips pinch only its front
@@ -133,10 +137,12 @@ def perceive(prompt):
     approach = grasps[:, :3, 2]
     to_centre = np.einsum("ij,ij->i", points.mean(axis=0) - grasps[:, :3, 3], approach)
     grasps[:, :3, 3] += (to_centre - PAD_DEPTH)[:, None] * approach
-    return (
-        pointcloud.transform_points(odom_from_camera, points),
-        pointcloud.transform_poses(odom_from_camera, grasps),
-    )
+    grasps = pointcloud.transform_poses(odom_from_camera, grasps)
+    # The dashboard draws what was seen and the grasps MTC is offered, best first.
+    shown = seen[np.random.choice(len(seen), min(len(seen), SHOWN_POINTS), replace=False)]
+    events.emit("grasps", target=prompt, points=shown.round(4), poses=grasps.round(4),
+                scores=scores[best].astype(float).round(3), generated=len(scores))
+    return pointcloud.transform_points(odom_from_camera, points), grasps
 
 
 def solid(points):

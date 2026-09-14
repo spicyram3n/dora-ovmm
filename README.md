@@ -4,7 +4,7 @@ Ask for an object. The HSR homes its arm, picks where to look (scene graph first
 
 | Where | What runs there |
 | --- | --- |
-| **Host** (your PC) | Model servers in Docker: SAM3 (detection), GraspGenX (grasps) |
+| **Host** (your PC) | Model servers in Docker: SAM3 (detection), GraspGenX (grasps), VGN (grasps from a TSDF) |
 | **Dev container** | ROS 2 Humble: Gazebo sim, Nav2, IK, MoveIt, the mission, the web dashboard |
 
 ## Quick start
@@ -13,7 +13,7 @@ Already set up? Two commands.
 
 | # | Where | Command | Why |
 | --- | --- | --- | --- |
-| 1 | Host | `docker compose -f docker/compose.yaml up -d --wait --wait-timeout 900` | Start SAM3 and GraspGenX |
+| 1 | Host | `docker compose -f docker/compose.yaml up -d --wait --wait-timeout 900` | Start SAM3, GraspGenX and VGN |
 | 2 | Container | `ros2 launch /home/ws/launch/search.launch.py target:="pringles"` | Start the sim stack and run one mission |
 
 Prefer clicking? Use the [web dashboard](#5-web-dashboard) instead of step 2.
@@ -112,25 +112,27 @@ Then **Ctrl+C terminals 1 and 2** before the full launch.
 | `docker compose -f docker/compose.yaml up -d --build --wait --wait-timeout 900` | First run, or server code changed: build, start, wait for warmup |
 | `docker compose -f docker/compose.yaml up -d --wait --wait-timeout 900` | Every later run |
 | `docker compose -f docker/compose.yaml up -d --build --wait --wait-timeout 900 sam3` | Search only: start SAM3 alone |
-| `docker compose -f docker/compose.yaml ps sam3 graspgenx` | Health. Both `healthy`; `starting` means still loading |
-| `docker compose -f docker/compose.yaml logs --tail=100 -f sam3 graspgenx` | See why a server failed. Ctrl+C leaves them running |
+| `docker compose -f docker/compose.yaml ps sam3 graspgenx vgn` | Health. All `healthy`; `starting` means still loading |
+| `docker compose -f docker/compose.yaml logs --tail=100 -f sam3 graspgenx vgn` | See why a server failed. Ctrl+C leaves them running |
 | `docker compose -f docker/compose.yaml down` | Stop and remove the containers. Checkpoints and gripper files stay |
 
-Shortcuts that build, start and wait: `bash docker/sam3/run_sam3.sh`, `bash docker/graspgenx/run_graspgenx.sh`.
+Shortcuts that build, start and wait: `bash docker/sam3/run_sam3.sh`, `bash docker/graspgenx/run_graspgenx.sh`, `bash docker/vgn/run_vgn.sh`.
 
 **Readiness probes** (exit code 0 = ready; they check warmup, not a full inference):
 
 ```bash
 docker compose -f docker/compose.yaml exec -T sam3 python3 zenoh_rpc.py tcp/127.0.0.1:7447 sam3
 docker compose -f docker/compose.yaml exec -T graspgenx .venv/bin/python3 zenoh_rpc.py tcp/127.0.0.1:7448 graspgenx
+docker compose -f docker/compose.yaml exec -T vgn python3 zenoh_rpc.py tcp/127.0.0.1:7449 vgn
 ```
 
 | Server | Port | Note |
 | --- | --- | --- |
 | SAM3 | `7447` | TCP only; multicast is off to avoid clashes on UDP `7446` |
 | GraspGenX | `7448` | Same |
+| VGN | `7449` | Same. No setup; weights are baked into the image ([README](docker/vgn/README.md)) |
 
-Models on another machine? Set `ZENOH_CONNECT=tcp/<ip>:7447,tcp/<ip>:7448` in the container terminal.
+Models on another machine? Set `ZENOH_CONNECT=tcp/<ip>:7447,tcp/<ip>:7448,tcp/<ip>:7449` in the container terminal.
 
 ---
 
@@ -262,7 +264,6 @@ Servers restart after a crash unless stopped. Healthchecks only report readiness
 | Command | Tests |
 | --- | --- |
 | `python3 -m pytest -p no:anyio tests` | Mission tree, web server, events, geometry, standoff poses (local `tests/` folder, not in git) |
-| `python3 -m pytest -p no:anyio ros2_ws/src/nbv/test` | The nbv octomap node |
 
 Run them from `/home/ws` in a sourced terminal.
 
@@ -272,10 +273,10 @@ Run them from `/home/ws` in a sourced terminal.
 | --- | --- |
 | `core/pipeline/` | `mission_tree.py` decides when each step runs; `actions.py` does each step |
 | `core/navigation/` | Nav2 client, viewing poses, arm-reachable parking ([README](core/navigation/README.md)) |
-| `core/perception/` | RGB-D capture, SAM3 client, point clouds |
+| `core/perception/` | RGB-D capture, SAM3 client, point clouds, the TSDF VGN reads |
 | `core/reasoner/` | Search order and DeepSeek predictions |
 | `core/scene_graph/` | Build, save and query the graph ([README](core/scene_graph/README.md)) |
-| `core/grasping/` | Pick with MoveIt Task Constructor; GraspGenX client |
+| `core/grasping/` | Pick with MoveIt Task Constructor; GraspGenX and VGN clients |
 | `core/utils/` | Geometry, transforms, model transport, dashboard events |
 | `web/` | The dashboard: `server.py` and `static/` |
 | `launch/` | Sim stack, MoveIt and IK launches |
@@ -295,7 +296,7 @@ Run them from `/home/ws` in a sourced terminal.
 - **Queue:** one inference at a time, two waiting (`MODEL_QUEUE_SIZE`). A full queue answers `BUSY`; a client deadline raises `TimeoutError`. Running GPU work cannot be cancelled.
 - **Sessions:** clients reuse one Zenoh session per process.
 - **Extra outputs:** `sam3_client.detect_all()` returns every mask, box and score. Both clients take optional `metadata` (`frame_id`, `stamp`, `object_id`); pass `return_metadata=True` to GraspGenX to get it back.
-- **Rebuilds:** rebuild both images after protocol changes. Direct builds use the repository root as context: `docker build -f docker/sam3/Dockerfile -t hrl/sam3:latest .`
+- **Rebuilds:** rebuild every model image after protocol changes. Direct builds use the repository root as context: `docker build -f docker/sam3/Dockerfile -t hrl/sam3:latest .`
 
 ## More docs
 
@@ -305,5 +306,5 @@ Run them from `/home/ws` in a sourced terminal.
 | [core/scene_graph/README.md](core/scene_graph/README.md) | Graph building, frames, Python use |
 | [docker/graspgenx/README.md](docker/graspgenx/README.md) | GraspGenX setup for the HSRC hand |
 | [docker/openyolo3d/README.md](docker/openyolo3d/README.md) | Real scans → labelled 3D objects → scene graph |
-| [ros2_ws/src/nbv/README.md](ros2_ws/src/nbv/README.md) | Next-best-view octomap |
+| [docker/vgn/README.md](docker/vgn/README.md) | VGN: TSDF in, grasps out, and which objects it can grasp |
 | [vision-transport-poorna/README.md](vision-transport-poorna/README.md) | Robot camera → PC over Zenoh |

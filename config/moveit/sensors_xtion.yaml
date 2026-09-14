@@ -8,6 +8,7 @@ head_rgbd_sensor:
   sensor_plugin: occupancy_map_monitor/DepthImageOctomapUpdater
   image_topic: /head_rgbd_sensor/depth_registered/image_rect_raw
   queue_size: 5
+  far_clipping_plane_distance: 2.0
   max_update_rate: 1.0
   skip_vertical_pixels: 0
   skip_horizontal_pixels: 2

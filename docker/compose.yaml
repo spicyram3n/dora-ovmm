@@ -58,3 +58,16 @@ services:
       timeout: 10s
       start_period: 10m
       retries: 3
+
+  vgn:
+    <<: *model
+    image: hrl/vgn:latest
+    build:
+      context: ..
+      dockerfile: docker/vgn/Dockerfile
+    healthcheck:
+      test: ["CMD", "python3", "zenoh_rpc.py", "tcp/127.0.0.1:7449", "vgn"]
+      interval: 30s
+      timeout: 10s
+      start_period: 2m
+      retries: 3

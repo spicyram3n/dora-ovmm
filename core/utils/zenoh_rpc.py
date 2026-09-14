@@ -46,7 +46,7 @@ def query(selector, payload, timeout, *, metadata=None):
             config.insert_json5("transport/shared_memory/enabled", "false")
             config.insert_json5("scouting/multicast/enabled", "false")
             endpoints = [e for e in os.environ.get(
-                "ZENOH_CONNECT", "tcp/127.0.0.1:7447,tcp/127.0.0.1:7448"
+                "ZENOH_CONNECT", "tcp/127.0.0.1:7447,tcp/127.0.0.1:7448,tcp/127.0.0.1:7449"
             ).split(",") if e]
             if endpoints:
                 config.insert_json5("connect/endpoints", json.dumps(endpoints))
