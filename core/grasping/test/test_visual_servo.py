@@ -1,6 +1,6 @@
 import unittest
 import numpy as np
-from core.grasping.visual_servo import image_velocity, hand_image_velocity, project_feature, mask_feature, orientation_velocity, approach_velocity
+from core.grasping.pick import image_velocity, hand_image_velocity, project_feature, mask_feature, orientation_velocity, approach_velocity
 from scipy.spatial.transform import Rotation
 
 

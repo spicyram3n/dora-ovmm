@@ -12,7 +12,7 @@ class ClosureGuards(unittest.TestCase):
                 stack.enter_context(patch.object(pickup,name))
             planner=stack.enter_context(patch.object(pickup,'Pick')).return_value
             execute=stack.enter_context(patch.object(pickup,'execute'))
-            stack.enter_context(patch('core.grasping.contact_closure.close'))
+            stack.enter_context(patch('core.grasping.pick.close'))
             stack.enter_context(patch.object(pickup,'RobotTransforms')).return_value.transform.return_value=np.eye(4)
             stack.enter_context(patch.object(pickup,'perceive',return_value=(
                 np.zeros((100,3)),np.eye(4)[None],np.array([.05]),{'geometry_kind':'cube top'})))
@@ -28,9 +28,9 @@ class ClosureGuards(unittest.TestCase):
                 stack.enter_context(patch.object(pickup,name))
             execute=stack.enter_context(patch.object(pickup,'execute'))
             execute.side_effect=approach_error
-            close=stack.enter_context(patch('core.grasping.contact_closure.close'))
+            close=stack.enter_context(patch('core.grasping.pick.close'))
             feedback=stack.enter_context(patch.object(pickup,'RobotTransforms')).return_value
-            servo=stack.enter_context(patch('core.grasping.visual_servo.VisualServo'))
+            servo=stack.enter_context(patch('core.grasping.pick.VisualServo'))
             pre=np.eye(4);goal=np.eye(4);goal[2,3]=pickup.APPROACH
             end=goal.copy();end[2,3]-=.01 if short_approach else 0
             feedback.transform.return_value=end

@@ -5,6 +5,11 @@ existing mission with `--mode grasp` to stop at bilateral finger contact,
 `--mode pickup` to request a verified lift, or `--mode auto` to lift cylinders
 and stop at contact for other shapes. Visual servoing is disabled by default.
 
+All grasping implementation helpers (geometry, contact closure, pregrasp routes,
+scene compaction and visual-servo utilities) are consolidated in
+`core/grasping/pick.py`. Visual servoing remains disabled. The consolidation
+passed the 62-test suite; no new live robot trial was run.
+
 ## Required simulator and MoveIt source changes
 
 The vendor repositories under `ros2_ws/src` are separately cloned and ignored
@@ -32,7 +37,7 @@ does not apply these patches automatically.
 
 ## Validation and limitations
 
-- Grasping Python suite: 54 tests pass in the sourced ROS environment with
+- Grasping Python suite: 62 tests pass in the sourced ROS environment with
   `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest core/grasping/test -q`.
 - Simulator package built; native mimic tracking regression passed. Loaded
   finger linkage measurements agreed with the URDF within 6.1e-7 rad.

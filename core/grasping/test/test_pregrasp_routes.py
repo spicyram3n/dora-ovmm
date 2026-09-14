@@ -1,6 +1,6 @@
 import unittest
 import numpy as np
-from core.grasping.pregrasp_routes import side_waypoint
+from core.grasping.pick import side_waypoint
 
 
 class SideWaypointTests(unittest.TestCase):

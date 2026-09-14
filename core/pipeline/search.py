@@ -200,7 +200,7 @@ def make_graspable(scene, node_id, navigator, obstacles="--costmap", bearings=6,
     hand_poses = None
     alternate_hand_poses = None
     if target:
-        from core.grasping.contact_geometry import top_rectangle, cylinder, sphere, contact_candidates
+        from core.grasping.pick import top_rectangle, cylinder, sphere, contact_candidates
         measured = locate(target, with_camera=True)
         if measured is not None:
             points, camera = measured

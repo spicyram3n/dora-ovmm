@@ -2,7 +2,7 @@ import unittest
 from types import SimpleNamespace
 from copy import deepcopy
 from moveit_msgs.msg import PlanningScene
-from core.grasping.scene_payload import compact
+from core.grasping.pick import compact
 
 
 class ScenePayload(unittest.TestCase):

@@ -1,6 +1,6 @@
 import unittest
 from unittest.mock import Mock, patch
-from core.grasping.contact_closure import contact_state, wait_for_hold
+from core.grasping.pick import contact_state, wait_for_hold
 
 
 class ContactFeedback(unittest.TestCase):
@@ -11,13 +11,13 @@ class ContactFeedback(unittest.TestCase):
         with self.assertRaises(ValueError):
             contact_state(.19,.19,.19)
 
-    @patch('core.grasping.contact_closure.time.sleep')
+    @patch('core.grasping.pick.time.sleep')
     def test_lift_then_slip_is_failure(self, sleep):
         with self.assertRaisesRegex(RuntimeError, 'slipped'):
             wait_for_hold(Mock(side_effect=[(.12, .12), (.0, .0)]),
                           Mock(side_effect=[0., 1.]))
 
-    @patch('core.grasping.contact_closure.time.sleep')
+    @patch('core.grasping.pick.time.sleep')
     def test_sustained_contact_uses_simulation_time(self, sleep):
         read = Mock(return_value=(.12, .12))
         wait_for_hold(read, Mock(side_effect=[0., 1., 3., 5.]))

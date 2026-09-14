@@ -290,10 +290,8 @@ The grasping package now has this layout:
 ```text
 core/grasping/
 ├── __init__.py
-├── pick.py               # SAM3 + GraspGenX + MoveIt Task Constructor pickup
+├── pick.py               # perception, geometry, MTC, closure and lift verification
 ├── graspgenx_client.py   # model RPC
-├── contact_geometry.py  # observed shape and calibrated pad placement
-├── visual_servo.py      # bounded eye-to-hand IBVS through MoveIt Servo
 └── test/                # geometry, visual-control and closure guards
 ```
 

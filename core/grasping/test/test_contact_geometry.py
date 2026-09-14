@@ -1,6 +1,6 @@
 import unittest
 import numpy as np
-from core.grasping.contact_geometry import cylinder, sphere, contact_candidates, pad_for_width, verify_object_lift, calibrated_palm_pose, SHAPE_POLICIES
+from core.grasping.pick import cylinder, sphere, contact_candidates, pad_for_width, verify_object_lift, calibrated_palm_pose, SHAPE_POLICIES
 from scipy.spatial.transform import Rotation
 
 
