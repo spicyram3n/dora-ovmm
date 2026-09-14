@@ -140,6 +140,18 @@ The launch starts simulation, Nav2, IK, and MoveIt; waits for services, localiza
 
 Watch **`[WAIT]` → `[READY]` → `[HOME]` → `[SEARCH]` → `[APPROACH]` → `[GRASP]` → `[RESULT]`**. Process logs are labelled individually. Simulation stays open after completion; **Ctrl+C** stops the launched processes.
 
+You can also execute a target directly through `run_pipeline.py`:
+
+```bash
+python3 core/run_pipeline.py "spray bottle" --execute --mode grasp
+```
+
+This delegates to `core.grasping.pick`. Use `--mode pickup` for a verified lift,
+or `--mode auto` to lift cylinders and hold other shapes. Exit code 3 means
+contact-only success; 0 means verified pickup. Without `--execute`, it saves
+perception previews. The older `--lift`, `--retreat`, and `--attempts` options
+are removed; the consolidated picker controls the lift and performs one attempt.
+
 Pickup ([core/grasping/pick.py](core/grasping/pick.py)) keeps SAM3, GraspGenX and
 MoveIt Task Constructor. Calibrated finger geometry places side grasps on fitted
 cylinders and top grasps across resolved rectangular tops; other shapes use
