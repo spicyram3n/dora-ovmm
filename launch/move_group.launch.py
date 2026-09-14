@@ -40,6 +40,11 @@ def generate_launch_description():
     model = [planning_model.moveit_params()]
     move_group = Node(
         package="moveit_ros_move_group", executable="move_group", output="screen",
+        # The depth self-filter opens GLX contexts from worker threads. NVIDIA's
+        # X11 path aborted here during a live run; use Mesa for this process.
+        # Gazebo keeps its separate NVIDIA rendering environment.
+        additional_env={"LIBGL_ALWAYS_SOFTWARE": "1", "LIBGL_DRI3_DISABLE": "1",
+                        "__GLX_VENDOR_LIBRARY_NAME": "mesa"},
         parameters=model + [
             ours("sensors_xtion.yaml"),
             {"robot_name": "hsrc",

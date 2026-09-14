@@ -80,3 +80,12 @@ The packaged world removes room doors/stoppers and keeps seven kitchen-table
 objects. The new default robot spawn is in the high-table room. World loading,
 asset paths and spawn are checked separately; cross-room navigation and pickup
 in the door-free world have not yet been validated. See worlds/README.md.
+
+Pringles follow-up: navigation from the high-table room to the kitchen passed.
+MoveIt initially aborted in NVIDIA GLX/X11; a Mesa software-rendered restart
+allowed pickup from the parked pose. The can physically rose about 29 mm and
+retained bilateral contact, independently checked in simulation. The first
+RGB-D lift check passed at 30.8 mm, but the final visual hold verifier rejected
+the later image, so the pipeline still reported failure. No verifier thresholds
+were relaxed. MoveIt now receives its own Mesa rendering environment; Gazebo
+continues to use NVIDIA. This is not yet a clean end-to-end software success.
