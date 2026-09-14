@@ -1,0 +1,694 @@
+<?xml version='1.0' encoding='utf-8'?>
+<sdf version="1.7">
+  <model name="rubiks_cube">
+    <static>false</static>
+    <link name="cube">
+      <inertial>
+        <mass>0.10</mass>
+        <inertia>
+          <ixx>0.00005415</ixx>
+          <iyy>0.00005415</iyy>
+          <izz>0.00005415</izz>
+          <ixy>0</ixy>
+          <ixz>0</ixz>
+          <iyz>0</iyz>
+        </inertia>
+      </inertial>
+      <collision name="cube_collision">
+        <geometry>
+          <box>
+            <size>0.057 0.057 0.057</size>
+          </box>
+        </geometry>
+        <surface>
+          <friction>
+            <ode>
+              <mu>0.8</mu>
+              <mu2>0.8</mu2>
+            </ode>
+          </friction>
+        </surface>
+      </collision>
+      <visual name="black_body">
+        <pose>0 0 0 0 0 0</pose>
+        <geometry>
+          <box>
+            <size>0.057 0.057 0.057</size>
+          </box>
+        </geometry>
+        <material>
+          <ambient>0.018 0.018 0.018 1</ambient>
+          <diffuse>0.018 0.018 0.018 1</diffuse>
+        </material>
+      </visual>
+      <visual name="red_0_0">
+        <pose>0.02855 -0.019 -0.019 0 0 0</pose>
+        <geometry>
+          <box>
+            <size>0.0001 0.0168 0.0168</size>
+          </box>
+        </geometry>
+        <material>
+          <ambient>0.85 0.015 0.015 1</ambient>
+          <diffuse>0.85 0.015 0.015 1</diffuse>
+        </material>
+      </visual>
+      <visual name="red_0_1">
+        <pose>0.02855 -0.019 0.0 0 0 0</pose>
+        <geometry>
+          <box>
+            <size>0.0001 0.0168 0.0168</size>
+          </box>
+        </geometry>
+        <material>
+          <ambient>0.85 0.015 0.015 1</ambient>
+          <diffuse>0.85 0.015 0.015 1</diffuse>
+        </material>
+      </visual>
+      <visual name="red_0_2">
+        <pose>0.02855 -0.019 0.019 0 0 0</pose>
+        <geometry>
+          <box>
+            <size>0.0001 0.0168 0.0168</size>
+          </box>
+        </geometry>
+        <material>
+          <ambient>0.85 0.015 0.015 1</ambient>
+          <diffuse>0.85 0.015 0.015 1</diffuse>
+        </material>
+      </visual>
+      <visual name="red_1_0">
+        <pose>0.02855 0.0 -0.019 0 0 0</pose>
+        <geometry>
+          <box>
+            <size>0.0001 0.0168 0.0168</size>
+          </box>
+        </geometry>
+        <material>
+          <ambient>0.85 0.015 0.015 1</ambient>
+          <diffuse>0.85 0.015 0.015 1</diffuse>
+        </material>
+      </visual>
+      <visual name="red_1_1">
+        <pose>0.02855 0.0 0.0 0 0 0</pose>
+        <geometry>
+          <box>
+            <size>0.0001 0.0168 0.0168</size>
+          </box>
+        </geometry>
+        <material>
+          <ambient>0.85 0.015 0.015 1</ambient>
+          <diffuse>0.85 0.015 0.015 1</diffuse>
+        </material>
+      </visual>
+      <visual name="red_1_2">
+        <pose>0.02855 0.0 0.019 0 0 0</pose>
+        <geometry>
+          <box>
+            <size>0.0001 0.0168 0.0168</size>
+          </box>
+        </geometry>
+        <material>
+          <ambient>0.85 0.015 0.015 1</ambient>
+          <diffuse>0.85 0.015 0.015 1</diffuse>
+        </material>
+      </visual>
+      <visual name="red_2_0">
+        <pose>0.02855 0.019 -0.019 0 0 0</pose>
+        <geometry>
+          <box>
+            <size>0.0001 0.0168 0.0168</size>
+          </box>
+        </geometry>
+        <material>
+          <ambient>0.85 0.015 0.015 1</ambient>
+          <diffuse>0.85 0.015 0.015 1</diffuse>
+        </material>
+      </visual>
+      <visual name="red_2_1">
+        <pose>0.02855 0.019 0.0 0 0 0</pose>
+        <geometry>
+          <box>
+            <size>0.0001 0.0168 0.0168</size>
+          </box>
+        </geometry>
+        <material>
+          <ambient>0.85 0.015 0.015 1</ambient>
+          <diffuse>0.85 0.015 0.015 1</diffuse>
+        </material>
+      </visual>
+      <visual name="red_2_2">
+        <pose>0.02855 0.019 0.019 0 0 0</pose>
+        <geometry>
+          <box>
+            <size>0.0001 0.0168 0.0168</size>
+          </box>
+        </geometry>
+        <material>
+          <ambient>0.85 0.015 0.015 1</ambient>
+          <diffuse>0.85 0.015 0.015 1</diffuse>
+        </material>
+      </visual>
+      <visual name="orange_0_0">
+        <pose>-0.02855 -0.019 -0.019 0 0 0</pose>
+        <geometry>
+          <box>
+            <size>0.0001 0.0168 0.0168</size>
+          </box>
+        </geometry>
+        <material>
+          <ambient>1 0.30 0.005 1</ambient>
+          <diffuse>1 0.30 0.005 1</diffuse>
+        </material>
+      </visual>
+      <visual name="orange_0_1">
+        <pose>-0.02855 -0.019 0.0 0 0 0</pose>
+        <geometry>
+          <box>
+            <size>0.0001 0.0168 0.0168</size>
+          </box>
+        </geometry>
+        <material>
+          <ambient>1 0.30 0.005 1</ambient>
+          <diffuse>1 0.30 0.005 1</diffuse>
+        </material>
+      </visual>
+      <visual name="orange_0_2">
+        <pose>-0.02855 -0.019 0.019 0 0 0</pose>
+        <geometry>
+          <box>
+            <size>0.0001 0.0168 0.0168</size>
+          </box>
+        </geometry>
+        <material>
+          <ambient>1 0.30 0.005 1</ambient>
+          <diffuse>1 0.30 0.005 1</diffuse>
+        </material>
+      </visual>
+      <visual name="orange_1_0">
+        <pose>-0.02855 0.0 -0.019 0 0 0</pose>
+        <geometry>
+          <box>
+            <size>0.0001 0.0168 0.0168</size>
+          </box>
+        </geometry>
+        <material>
+          <ambient>1 0.30 0.005 1</ambient>
+          <diffuse>1 0.30 0.005 1</diffuse>
+        </material>
+      </visual>
+      <visual name="orange_1_1">
+        <pose>-0.02855 0.0 0.0 0 0 0</pose>
+        <geometry>
+          <box>
+            <size>0.0001 0.0168 0.0168</size>
+          </box>
+        </geometry>
+        <material>
+          <ambient>1 0.30 0.005 1</ambient>
+          <diffuse>1 0.30 0.005 1</diffuse>
+        </material>
+      </visual>
+      <visual name="orange_1_2">
+        <pose>-0.02855 0.0 0.019 0 0 0</pose>
+        <geometry>
+          <box>
+            <size>0.0001 0.0168 0.0168</size>
+          </box>
+        </geometry>
+        <material>
+          <ambient>1 0.30 0.005 1</ambient>
+          <diffuse>1 0.30 0.005 1</diffuse>
+        </material>
+      </visual>
+      <visual name="orange_2_0">
+        <pose>-0.02855 0.019 -0.019 0 0 0</pose>
+        <geometry>
+          <box>
+            <size>0.0001 0.0168 0.0168</size>
+          </box>
+        </geometry>
+        <material>
+          <ambient>1 0.30 0.005 1</ambient>
+          <diffuse>1 0.30 0.005 1</diffuse>
+        </material>
+      </visual>
+      <visual name="orange_2_1">
+        <pose>-0.02855 0.019 0.0 0 0 0</pose>
+        <geometry>
+          <box>
+            <size>0.0001 0.0168 0.0168</size>
+          </box>
+        </geometry>
+        <material>
+          <ambient>1 0.30 0.005 1</ambient>
+          <diffuse>1 0.30 0.005 1</diffuse>
+        </material>
+      </visual>
+      <visual name="orange_2_2">
+        <pose>-0.02855 0.019 0.019 0 0 0</pose>
+        <geometry>
+          <box>
+            <size>0.0001 0.0168 0.0168</size>
+          </box>
+        </geometry>
+        <material>
+          <ambient>1 0.30 0.005 1</ambient>
+          <diffuse>1 0.30 0.005 1</diffuse>
+        </material>
+      </visual>
+      <visual name="green_0_0">
+        <pose>-0.019 0.02855 -0.019 0 0 0</pose>
+        <geometry>
+          <box>
+            <size>0.0168 0.0001 0.0168</size>
+          </box>
+        </geometry>
+        <material>
+          <ambient>0.01 0.60 0.06 1</ambient>
+          <diffuse>0.01 0.60 0.06 1</diffuse>
+        </material>
+      </visual>
+      <visual name="green_0_1">
+        <pose>-0.019 0.02855 0.0 0 0 0</pose>
+        <geometry>
+          <box>
+            <size>0.0168 0.0001 0.0168</size>
+          </box>
+        </geometry>
+        <material>
+          <ambient>0.01 0.60 0.06 1</ambient>
+          <diffuse>0.01 0.60 0.06 1</diffuse>
+        </material>
+      </visual>
+      <visual name="green_0_2">
+        <pose>-0.019 0.02855 0.019 0 0 0</pose>
+        <geometry>
+          <box>
+            <size>0.0168 0.0001 0.0168</size>
+          </box>
+        </geometry>
+        <material>
+          <ambient>0.01 0.60 0.06 1</ambient>
+          <diffuse>0.01 0.60 0.06 1</diffuse>
+        </material>
+      </visual>
+      <visual name="green_1_0">
+        <pose>0.0 0.02855 -0.019 0 0 0</pose>
+        <geometry>
+          <box>
+            <size>0.0168 0.0001 0.0168</size>
+          </box>
+        </geometry>
+        <material>
+          <ambient>0.01 0.60 0.06 1</ambient>
+          <diffuse>0.01 0.60 0.06 1</diffuse>
+        </material>
+      </visual>
+      <visual name="green_1_1">
+        <pose>0.0 0.02855 0.0 0 0 0</pose>
+        <geometry>
+          <box>
+            <size>0.0168 0.0001 0.0168</size>
+          </box>
+        </geometry>
+        <material>
+          <ambient>0.01 0.60 0.06 1</ambient>
+          <diffuse>0.01 0.60 0.06 1</diffuse>
+        </material>
+      </visual>
+      <visual name="green_1_2">
+        <pose>0.0 0.02855 0.019 0 0 0</pose>
+        <geometry>
+          <box>
+            <size>0.0168 0.0001 0.0168</size>
+          </box>
+        </geometry>
+        <material>
+          <ambient>0.01 0.60 0.06 1</ambient>
+          <diffuse>0.01 0.60 0.06 1</diffuse>
+        </material>
+      </visual>
+      <visual name="green_2_0">
+        <pose>0.019 0.02855 -0.019 0 0 0</pose>
+        <geometry>
+          <box>
+            <size>0.0168 0.0001 0.0168</size>
+          </box>
+        </geometry>
+        <material>
+          <ambient>0.01 0.60 0.06 1</ambient>
+          <diffuse>0.01 0.60 0.06 1</diffuse>
+        </material>
+      </visual>
+      <visual name="green_2_1">
+        <pose>0.019 0.02855 0.0 0 0 0</pose>
+        <geometry>
+          <box>
+            <size>0.0168 0.0001 0.0168</size>
+          </box>
+        </geometry>
+        <material>
+          <ambient>0.01 0.60 0.06 1</ambient>
+          <diffuse>0.01 0.60 0.06 1</diffuse>
+        </material>
+      </visual>
+      <visual name="green_2_2">
+        <pose>0.019 0.02855 0.019 0 0 0</pose>
+        <geometry>
+          <box>
+            <size>0.0168 0.0001 0.0168</size>
+          </box>
+        </geometry>
+        <material>
+          <ambient>0.01 0.60 0.06 1</ambient>
+          <diffuse>0.01 0.60 0.06 1</diffuse>
+        </material>
+      </visual>
+      <visual name="blue_0_0">
+        <pose>-0.019 -0.02855 -0.019 0 0 0</pose>
+        <geometry>
+          <box>
+            <size>0.0168 0.0001 0.0168</size>
+          </box>
+        </geometry>
+        <material>
+          <ambient>0.015 0.10 0.85 1</ambient>
+          <diffuse>0.015 0.10 0.85 1</diffuse>
+        </material>
+      </visual>
+      <visual name="blue_0_1">
+        <pose>-0.019 -0.02855 0.0 0 0 0</pose>
+        <geometry>
+          <box>
+            <size>0.0168 0.0001 0.0168</size>
+          </box>
+        </geometry>
+        <material>
+          <ambient>0.015 0.10 0.85 1</ambient>
+          <diffuse>0.015 0.10 0.85 1</diffuse>
+        </material>
+      </visual>
+      <visual name="blue_0_2">
+        <pose>-0.019 -0.02855 0.019 0 0 0</pose>
+        <geometry>
+          <box>
+            <size>0.0168 0.0001 0.0168</size>
+          </box>
+        </geometry>
+        <material>
+          <ambient>0.015 0.10 0.85 1</ambient>
+          <diffuse>0.015 0.10 0.85 1</diffuse>
+        </material>
+      </visual>
+      <visual name="blue_1_0">
+        <pose>0.0 -0.02855 -0.019 0 0 0</pose>
+        <geometry>
+          <box>
+            <size>0.0168 0.0001 0.0168</size>
+          </box>
+        </geometry>
+        <material>
+          <ambient>0.015 0.10 0.85 1</ambient>
+          <diffuse>0.015 0.10 0.85 1</diffuse>
+        </material>
+      </visual>
+      <visual name="blue_1_1">
+        <pose>0.0 -0.02855 0.0 0 0 0</pose>
+        <geometry>
+          <box>
+            <size>0.0168 0.0001 0.0168</size>
+          </box>
+        </geometry>
+        <material>
+          <ambient>0.015 0.10 0.85 1</ambient>
+          <diffuse>0.015 0.10 0.85 1</diffuse>
+        </material>
+      </visual>
+      <visual name="blue_1_2">
+        <pose>0.0 -0.02855 0.019 0 0 0</pose>
+        <geometry>
+          <box>
+            <size>0.0168 0.0001 0.0168</size>
+          </box>
+        </geometry>
+        <material>
+          <ambient>0.015 0.10 0.85 1</ambient>
+          <diffuse>0.015 0.10 0.85 1</diffuse>
+        </material>
+      </visual>
+      <visual name="blue_2_0">
+        <pose>0.019 -0.02855 -0.019 0 0 0</pose>
+        <geometry>
+          <box>
+            <size>0.0168 0.0001 0.0168</size>
+          </box>
+        </geometry>
+        <material>
+          <ambient>0.015 0.10 0.85 1</ambient>
+          <diffuse>0.015 0.10 0.85 1</diffuse>
+        </material>
+      </visual>
+      <visual name="blue_2_1">
+        <pose>0.019 -0.02855 0.0 0 0 0</pose>
+        <geometry>
+          <box>
+            <size>0.0168 0.0001 0.0168</size>
+          </box>
+        </geometry>
+        <material>
+          <ambient>0.015 0.10 0.85 1</ambient>
+          <diffuse>0.015 0.10 0.85 1</diffuse>
+        </material>
+      </visual>
+      <visual name="blue_2_2">
+        <pose>0.019 -0.02855 0.019 0 0 0</pose>
+        <geometry>
+          <box>
+            <size>0.0168 0.0001 0.0168</size>
+          </box>
+        </geometry>
+        <material>
+          <ambient>0.015 0.10 0.85 1</ambient>
+          <diffuse>0.015 0.10 0.85 1</diffuse>
+        </material>
+      </visual>
+      <visual name="white_0_0">
+        <pose>-0.019 -0.019 0.02855 0 0 0</pose>
+        <geometry>
+          <box>
+            <size>0.0168 0.0168 0.0001</size>
+          </box>
+        </geometry>
+        <material>
+          <ambient>0.95 0.95 0.95 1</ambient>
+          <diffuse>0.95 0.95 0.95 1</diffuse>
+        </material>
+      </visual>
+      <visual name="white_0_1">
+        <pose>-0.019 0.0 0.02855 0 0 0</pose>
+        <geometry>
+          <box>
+            <size>0.0168 0.0168 0.0001</size>
+          </box>
+        </geometry>
+        <material>
+          <ambient>0.95 0.95 0.95 1</ambient>
+          <diffuse>0.95 0.95 0.95 1</diffuse>
+        </material>
+      </visual>
+      <visual name="white_0_2">
+        <pose>-0.019 0.019 0.02855 0 0 0</pose>
+        <geometry>
+          <box>
+            <size>0.0168 0.0168 0.0001</size>
+          </box>
+        </geometry>
+        <material>
+          <ambient>0.95 0.95 0.95 1</ambient>
+          <diffuse>0.95 0.95 0.95 1</diffuse>
+        </material>
+      </visual>
+      <visual name="white_1_0">
+        <pose>0.0 -0.019 0.02855 0 0 0</pose>
+        <geometry>
+          <box>
+            <size>0.0168 0.0168 0.0001</size>
+          </box>
+        </geometry>
+        <material>
+          <ambient>0.95 0.95 0.95 1</ambient>
+          <diffuse>0.95 0.95 0.95 1</diffuse>
+        </material>
+      </visual>
+      <visual name="white_1_1">
+        <pose>0.0 0.0 0.02855 0 0 0</pose>
+        <geometry>
+          <box>
+            <size>0.0168 0.0168 0.0001</size>
+          </box>
+        </geometry>
+        <material>
+          <ambient>0.95 0.95 0.95 1</ambient>
+          <diffuse>0.95 0.95 0.95 1</diffuse>
+        </material>
+      </visual>
+      <visual name="white_1_2">
+        <pose>0.0 0.019 0.02855 0 0 0</pose>
+        <geometry>
+          <box>
+            <size>0.0168 0.0168 0.0001</size>
+          </box>
+        </geometry>
+        <material>
+          <ambient>0.95 0.95 0.95 1</ambient>
+          <diffuse>0.95 0.95 0.95 1</diffuse>
+        </material>
+      </visual>
+      <visual name="white_2_0">
+        <pose>0.019 -0.019 0.02855 0 0 0</pose>
+        <geometry>
+          <box>
+            <size>0.0168 0.0168 0.0001</size>
+          </box>
+        </geometry>
+        <material>
+          <ambient>0.95 0.95 0.95 1</ambient>
+          <diffuse>0.95 0.95 0.95 1</diffuse>
+        </material>
+      </visual>
+      <visual name="white_2_1">
+        <pose>0.019 0.0 0.02855 0 0 0</pose>
+        <geometry>
+          <box>
+            <size>0.0168 0.0168 0.0001</size>
+          </box>
+        </geometry>
+        <material>
+          <ambient>0.95 0.95 0.95 1</ambient>
+          <diffuse>0.95 0.95 0.95 1</diffuse>
+        </material>
+      </visual>
+      <visual name="white_2_2">
+        <pose>0.019 0.019 0.02855 0 0 0</pose>
+        <geometry>
+          <box>
+            <size>0.0168 0.0168 0.0001</size>
+          </box>
+        </geometry>
+        <material>
+          <ambient>0.95 0.95 0.95 1</ambient>
+          <diffuse>0.95 0.95 0.95 1</diffuse>
+        </material>
+      </visual>
+      <visual name="yellow_0_0">
+        <pose>-0.019 -0.019 -0.02855 0 0 0</pose>
+        <geometry>
+          <box>
+            <size>0.0168 0.0168 0.0001</size>
+          </box>
+        </geometry>
+        <material>
+          <ambient>1 0.85 0.005 1</ambient>
+          <diffuse>1 0.85 0.005 1</diffuse>
+        </material>
+      </visual>
+      <visual name="yellow_0_1">
+        <pose>-0.019 0.0 -0.02855 0 0 0</pose>
+        <geometry>
+          <box>
+            <size>0.0168 0.0168 0.0001</size>
+          </box>
+        </geometry>
+        <material>
+          <ambient>1 0.85 0.005 1</ambient>
+          <diffuse>1 0.85 0.005 1</diffuse>
+        </material>
+      </visual>
+      <visual name="yellow_0_2">
+        <pose>-0.019 0.019 -0.02855 0 0 0</pose>
+        <geometry>
+          <box>
+            <size>0.0168 0.0168 0.0001</size>
+          </box>
+        </geometry>
+        <material>
+          <ambient>1 0.85 0.005 1</ambient>
+          <diffuse>1 0.85 0.005 1</diffuse>
+        </material>
+      </visual>
+      <visual name="yellow_1_0">
+        <pose>0.0 -0.019 -0.02855 0 0 0</pose>
+        <geometry>
+          <box>
+            <size>0.0168 0.0168 0.0001</size>
+          </box>
+        </geometry>
+        <material>
+          <ambient>1 0.85 0.005 1</ambient>
+          <diffuse>1 0.85 0.005 1</diffuse>
+        </material>
+      </visual>
+      <visual name="yellow_1_1">
+        <pose>0.0 0.0 -0.02855 0 0 0</pose>
+        <geometry>
+          <box>
+            <size>0.0168 0.0168 0.0001</size>
+          </box>
+        </geometry>
+        <material>
+          <ambient>1 0.85 0.005 1</ambient>
+          <diffuse>1 0.85 0.005 1</diffuse>
+        </material>
+      </visual>
+      <visual name="yellow_1_2">
+        <pose>0.0 0.019 -0.02855 0 0 0</pose>
+        <geometry>
+          <box>
+            <size>0.0168 0.0168 0.0001</size>
+          </box>
+        </geometry>
+        <material>
+          <ambient>1 0.85 0.005 1</ambient>
+          <diffuse>1 0.85 0.005 1</diffuse>
+        </material>
+      </visual>
+      <visual name="yellow_2_0">
+        <pose>0.019 -0.019 -0.02855 0 0 0</pose>
+        <geometry>
+          <box>
+            <size>0.0168 0.0168 0.0001</size>
+          </box>
+        </geometry>
+        <material>
+          <ambient>1 0.85 0.005 1</ambient>
+          <diffuse>1 0.85 0.005 1</diffuse>
+        </material>
+      </visual>
+      <visual name="yellow_2_1">
+        <pose>0.019 0.0 -0.02855 0 0 0</pose>
+        <geometry>
+          <box>
+            <size>0.0168 0.0168 0.0001</size>
+          </box>
+        </geometry>
+        <material>
+          <ambient>1 0.85 0.005 1</ambient>
+          <diffuse>1 0.85 0.005 1</diffuse>
+        </material>
+      </visual>
+      <visual name="yellow_2_2">
+        <pose>0.019 0.019 -0.02855 0 0 0</pose>
+        <geometry>
+          <box>
+            <size>0.0168 0.0168 0.0001</size>
+          </box>
+        </geometry>
+        <material>
+          <ambient>1 0.85 0.005 1</ambient>
+          <diffuse>1 0.85 0.005 1</diffuse>
+        </material>
+      </visual>
+    </link>
+  </model>
+</sdf>

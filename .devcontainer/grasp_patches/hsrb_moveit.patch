@@ -1,0 +1,487 @@
+diff --git a/hsrb_moveit_config/CMakeLists.txt b/hsrb_moveit_config/CMakeLists.txt
+index 178a98a..ab8a9a3 100644
+--- a/hsrb_moveit_config/CMakeLists.txt
++++ b/hsrb_moveit_config/CMakeLists.txt
+@@ -4,28 +4,43 @@ project(hsrb_moveit_config)
+ find_package(ament_cmake REQUIRED)
+ find_package(moveit_ros_planning_interface REQUIRED)
+ find_package(rclcpp REQUIRED)
++find_package(GLUT REQUIRED)
++find_package(moveit_ros_perception REQUIRED)
++find_package(pluginlib REQUIRED)
++find_package(moveit_msgs REQUIRED)
++
++add_library(hsr_configured_depth_updater SHARED src/configured_depth_updater.cpp)
++ament_target_dependencies(hsr_configured_depth_updater moveit_ros_perception pluginlib rclcpp moveit_msgs)
++find_library(DEPTH_UPDATER_CORE moveit_depth_image_octomap_updater_core
++             HINTS "${moveit_ros_perception_DIR}/../../../lib" REQUIRED)
++target_link_libraries(hsr_configured_depth_updater ${DEPTH_UPDATER_CORE})
++pluginlib_export_plugin_description_file(moveit_ros_occupancy_map_monitor configured_depth_updater.xml)
++install(TARGETS hsr_configured_depth_updater LIBRARY DESTINATION lib)
+ 
+ find_package(Eigen3 REQUIRED)
++        find_package(Boost REQUIRED COMPONENTS random)
++        find_package(geometric_shapes REQUIRED)
++        add_link_options("-Wl,--no-as-needed")
+ 
+ add_executable(moveit_constraints_demo example/moveit_constraints_demo.cpp)
+ target_include_directories(moveit_constraints_demo PUBLIC ${EIGEN3_INCLUDE_DIR})
+-ament_target_dependencies(moveit_constraints_demo moveit_ros_planning_interface rclcpp)
++ament_target_dependencies(moveit_constraints_demo moveit_ros_planning_interface rclcpp geometric_shapes)
+ 
+ add_executable(moveit_fk_demo example/moveit_fk_demo.cpp)
+ target_include_directories(moveit_fk_demo PUBLIC ${EIGEN3_INCLUDE_DIR})
+-ament_target_dependencies(moveit_fk_demo moveit_ros_planning_interface rclcpp)
++ament_target_dependencies(moveit_fk_demo moveit_ros_planning_interface rclcpp geometric_shapes)
+ 
+ add_executable(moveit_gripper_demo example/moveit_gripper_demo.cpp)
+ target_include_directories(moveit_gripper_demo PUBLIC ${EIGEN3_INCLUDE_DIR})
+-ament_target_dependencies(moveit_gripper_demo moveit_ros_planning_interface rclcpp)
++ament_target_dependencies(moveit_gripper_demo moveit_ros_planning_interface rclcpp geometric_shapes)
+ 
+ add_executable(moveit_ik_demo example/moveit_ik_demo.cpp)
+ target_include_directories(moveit_ik_demo PUBLIC ${EIGEN3_INCLUDE_DIR})
+-ament_target_dependencies(moveit_ik_demo moveit_ros_planning_interface rclcpp)
++ament_target_dependencies(moveit_ik_demo moveit_ros_planning_interface rclcpp geometric_shapes)
+ 
+ install(DIRECTORY launch DESTINATION share/${PROJECT_NAME})
+ install(DIRECTORY config DESTINATION share/${PROJECT_NAME})
+-install(PROGRAMS scripts/odom_joint_states_publisher.py DESTINATION lib/${PROJECT_NAME})
++install(PROGRAMS scripts/odom_joint_states_publisher.py scripts/depth_camera_relay.py DESTINATION lib/${PROJECT_NAME})
+ 
+ install(
+   TARGETS moveit_constraints_demo moveit_fk_demo moveit_gripper_demo moveit_ik_demo
+@@ -33,4 +48,4 @@ install(
+   ARCHIVE DESTINATION lib
+   LIBRARY DESTINATION lib
+ )
+-ament_package()
+\ No newline at end of file
++ament_package()
+diff --git a/hsrb_moveit_config/config/hsrb.srdf b/hsrb_moveit_config/config/hsrb.srdf
+index 7c5ef5d..7858b85 100644
+--- a/hsrb_moveit_config/config/hsrb.srdf
++++ b/hsrb_moveit_config/config/hsrb.srdf
+@@ -48,7 +48,6 @@
+         <joint name="arm_roll_joint" value="0.0" />
+         <joint name="wrist_flex_joint" value="-1.57" />
+         <joint name="wrist_roll_joint" value="0.0" />
+-        <joint name="wrist_ft_sensor_frame_joint" value="0.0" />
+         <joint name="odom_x" value="1.0" />
+         <joint name="odom_y" value="0.0" />
+         <joint name="odom_t" value="0.0" />
+@@ -59,7 +58,6 @@
+         <joint name="arm_roll_joint" value="0.0" />
+         <joint name="wrist_flex_joint" value="-1.57" />
+         <joint name="wrist_roll_joint" value="0.0" />
+-        <joint name="wrist_ft_sensor_frame_joint" value="0.0" />
+         <joint name="odom_x" value="1.0" />
+         <joint name="odom_y" value="1.0" />
+         <joint name="odom_t" value="1.57" />
+@@ -70,7 +68,6 @@
+         <joint name="arm_roll_joint" value="-1.57" />
+         <joint name="wrist_flex_joint" value="-1.57" />
+         <joint name="wrist_roll_joint" value="0.0" />
+-        <joint name="wrist_ft_sensor_frame_joint" value="0.0" />
+         <joint name="odom_x" value="0.0" />
+         <joint name="odom_y" value="0.0" />
+         <joint name="odom_t" value="0.0" />
+@@ -81,7 +78,6 @@
+         <joint name="arm_roll_joint" value="0.0" />
+         <joint name="wrist_flex_joint" value="-1.57" />
+         <joint name="wrist_roll_joint" value="0.0" />
+-        <joint name="wrist_ft_sensor_frame_joint" value="0.0" />
+     </group_state>
+     <group_state name="go" group="arm">
+         <joint name="arm_lift_joint" value="0.0" />
+@@ -89,7 +85,6 @@
+         <joint name="arm_roll_joint" value="-1.57" />
+         <joint name="wrist_flex_joint" value="-1.57" />
+         <joint name="wrist_roll_joint" value="0.0" />
+-        <joint name="wrist_ft_sensor_frame_joint" value="0.0" />
+     </group_state>
+     <group_state name="neutral" group="head">
+         <joint name="head_pan_joint" value="0.0" />
+diff --git a/hsrb_moveit_config/config/kinematics.yaml b/hsrb_moveit_config/config/kinematics.yaml
+index e596308..5be7456 100644
+--- a/hsrb_moveit_config/config/kinematics.yaml
++++ b/hsrb_moveit_config/config/kinematics.yaml
+@@ -1,8 +1,10 @@
+ arm:
+   kinematics_solver: kdl_kinematics_plugin/KDLKinematicsPlugin
+   kinematics_solver_search_resolution: 0.005
+-  kinematics_solver_timeout: 0.005
+-  kinematics_solver_attempts: 3
++  # 5ms/3 attempts starves a 5-DOF chain searching a tolerance region;
++  # give the goal sampler a realistic budget.
++  kinematics_solver_timeout: 0.05
++  kinematics_solver_attempts: 20
+ whole_body:
+   kinematics_solver: hsrb_moveit_kinematics/HSRBKinematicsPlugin
+   kinematics_solver_search_resolution: 0.005
+diff --git a/hsrb_moveit_config/config/ompl_planning.yaml b/hsrb_moveit_config/config/ompl_planning.yaml
+index e2592b3..ecce897 100644
+--- a/hsrb_moveit_config/config/ompl_planning.yaml
++++ b/hsrb_moveit_config/config/ompl_planning.yaml
+@@ -107,6 +107,9 @@ base:
+     - PRMkConfigDefault
+     - PRMstarkConfigDefault
+ whole_body:
++  # Base joint limits span 20 m. The default fraction permits coarse edge
++  # samples that can miss the tabletop before postprocessing rejects them.
++  longest_valid_segment_fraction: 0.00005
+   planner_configs:
+     - SBLkConfigDefault
+     - ESTkConfigDefault
+diff --git a/hsrb_moveit_config/config/sensors_xtion.yaml b/hsrb_moveit_config/config/sensors_xtion.yaml
+index 0275b01..edb8cea 100644
+--- a/hsrb_moveit_config/config/sensors_xtion.yaml
++++ b/hsrb_moveit_config/config/sensors_xtion.yaml
+@@ -1,13 +1,24 @@
++# The default 10 cm voxels are larger than the can and the finger clearance.
++octomap_resolution: 0.01
++octomap_frame: odom
+ sensors:
+   - head_rgbd_sensor
+ 
+ head_rgbd_sensor:
+-  sensor_plugin: occupancy_map_monitor/PointCloudOctomapUpdater
+-  point_cloud_topic: /head_rgbd_sensor/depth_registered/rectified_points
+-  max_range: 5.0
+-  point_subsample: 1
+-  padding_offset: 0.1
++  sensor_plugin: hsr_rgbd/ConfiguredDepthUpdater
++  # CameraInfo is subscribed from the same namespace by image_transport.
++  image_topic: /head_rgbd_sensor/depth_registered/image_rect_raw
++  queue_size: 5
++  near_clipping_plane_distance: 0.15
++  far_clipping_plane_distance: 5.0
++  shadow_threshold: 0.04
++  # These pad the robot self-filter, not the furniture obstacles.
+   padding_scale: 1.0
+-  queue_size: 100
++  padding_offset: 0.02
+   max_update_rate: 1.0
+-  filtered_cloud_topic: /head_rgbd_sensor/depth_registered/filtered_cloud
++  # Humble's row-skip loop does not advance the input pointer before row 0.
++  skip_vertical_pixels: 0
++  skip_horizontal_pixels: 2
++  # Despite its legacy name, DepthImageOctomapUpdater publishes an Image here.
++  filtered_cloud_topic: filtered_depth
++  ns: rgbd_octomap
+diff --git a/hsrb_moveit_config/launch/move_group.py b/hsrb_moveit_config/launch/move_group.py
+index 9b0ea9c..b214e72 100644
+--- a/hsrb_moveit_config/launch/move_group.py
++++ b/hsrb_moveit_config/launch/move_group.py
+@@ -54,6 +54,12 @@ except ImportError:
+ 
+ def declare_arguments():
+     declared_arguments = []
++    declared_arguments.append(
++        DeclareLaunchArgument('depth_image_topic',
++                              default_value='/head_rgbd_sensor/depth_registered/image_rect_raw'))
++    declared_arguments.append(
++        DeclareLaunchArgument('depth_camera_info_topic',
++                              default_value='/head_rgbd_sensor/depth_registered/camera_info'))
+     declared_arguments.append(
+         DeclareLaunchArgument('robot_description',
+                               default_value='robot_description',
+@@ -121,8 +127,13 @@ def generate_launch_description():
+                                        trajectory_execution,
+                                        moveit_controllers,
+                                        planning_scene_monitor_parameters,
++                                       {'capabilities': 'move_group/ExecuteTaskSolutionCapability'},
+                                        {'use_sim_time': LaunchConfiguration('use_sim_time')}],
+-                           remappings=[('joint_states', 'whole_body_moveit/joint_states')])
++                           remappings=[('joint_states', 'whole_body_moveit/joint_states'),
++                                       ('/head_rgbd_sensor/depth_registered/image_rect_raw',
++                                        LaunchConfiguration('depth_image_topic')),
++                                       ('/head_rgbd_sensor/depth_registered/camera_info',
++                                        LaunchConfiguration('depth_camera_info_topic'))])
+ 
+     static_tf = Node(package='tf2_ros',
+                      executable='static_transform_publisher',
+@@ -132,14 +143,16 @@ def generate_launch_description():
+ 
+     odom_joint_states_publisher = Node(package='hsrb_moveit_config',
+                                        executable='odom_joint_states_publisher.py',
+-                                       name='odom_joint_states_publisher')
++                                       name='odom_joint_states_publisher',
++                                       parameters=[{'use_sim_time': LaunchConfiguration('use_sim_time')}])
+ 
+     joint_state_publisher = Node(package='joint_state_publisher',
+                                  executable='joint_state_publisher',
+                                  name='joint_state_publisher',
+                                  namespace='whole_body_moveit',
+                                  arguments=['/tmp/robot_description.urdf'],
+-                                 parameters=[{'source_list': ['/joint_states', '/odom_joint_states']}],
++                                 parameters=[{'source_list': ['/joint_states', '/odom_joint_states'],
++                                              'use_sim_time': LaunchConfiguration('use_sim_time')}],
+                                  remappings=[('robot_description', '/robot_description')])
+ 
+     rviz_node = Node(package='rviz2',
+diff --git a/hsrb_moveit_config/launch/robot_description.py b/hsrb_moveit_config/launch/robot_description.py
+index 9fc5eb8..4574e0b 100644
+--- a/hsrb_moveit_config/launch/robot_description.py
++++ b/hsrb_moveit_config/launch/robot_description.py
+@@ -63,6 +63,19 @@ def parse_xacro(xacro_file):
+ 
+ def add_joints_and_links(robot_description_content):
+     root = ET.fromstring(robot_description_content)
++    # Gazebo uses a zero-travel revolute joint for the wrist force sensor.
++    # It is mechanically fixed and must not become a ninth planning DOF:
++    # the HSR analytic solver returns exactly five arm + three base values.
++    for joint in root.findall('joint'):
++        limit = joint.find('limit')
++        if (joint.get('type') in ('revolute', 'prismatic') and limit is not None and
++                limit.get('lower') is not None and limit.get('upper') is not None and
++                float(limit.get('lower')) == 0.0 and float(limit.get('upper')) == 0.0):
++            joint.set('type', 'fixed')
++            joint.remove(limit)
++            axis = joint.find('axis')
++            if axis is not None:
++                joint.remove(axis)
+     root.append(link('odom'))
+     root.append(link('odom_xt_link'))
+     root.append(link('odom_yx_link'))
+diff --git a/hsrb_moveit_config/package.xml b/hsrb_moveit_config/package.xml
+index 6baa907..dd371e3 100644
+--- a/hsrb_moveit_config/package.xml
++++ b/hsrb_moveit_config/package.xml
+@@ -10,14 +10,18 @@
+ 
+   <depend>moveit_ros</depend>
+   <depend>rclcpp</depend>
++  <depend>moveit_ros_perception</depend>
++  <depend>pluginlib</depend>
++  <depend>moveit_msgs</depend>
+ 
+   <exec_depend>ament_index_python</exec_depend>
+   <exec_depend>control_msgs</exec_depend>
++  <exec_depend>cv_bridge</exec_depend>
++  <exec_depend>python3-numpy</exec_depend>
+   <exec_depend>hsrb_description</exec_depend>
+   <exec_depend>hsrc_description</exec_depend>
+   <exec_depend>joint_state_publisher</exec_depend>
+   <exec_depend>moveit_planners_ompl</exec_depend>
+-  <exec_depend>moveit_ros_perception</exec_depend>
+   <exec_depend>moveit_ros_visualization</exec_depend>
+   <exec_depend>moveit_simple_controller_manager</exec_depend>
+   <exec_depend>rclpy</exec_depend>
+@@ -29,4 +33,5 @@
+   <export>
+     <build_type>ament_cmake</build_type>
+   </export>
+-</package>
+\ No newline at end of file
++  <exec_depend>moveit_task_constructor_capabilities</exec_depend>
++</package>
+diff --git a/hsrb_moveit_config/configured_depth_updater.xml b/hsrb_moveit_config/configured_depth_updater.xml
+new file mode 100644
+index 0000000..c08c4ac
+--- /dev/null
++++ b/hsrb_moveit_config/configured_depth_updater.xml
+@@ -0,0 +1,5 @@
++<library path="hsr_configured_depth_updater">
++  <class name="hsr_rgbd/ConfiguredDepthUpdater" type="hsr_rgbd::ConfiguredDepthUpdater" base_class_type="occupancy_map_monitor::OccupancyMapUpdater">
++    <description>Native depth-image octomap updater with configured clipping and self-filter parameters.</description>
++  </class>
++</library>
+diff --git a/hsrb_moveit_config/scripts/depth_camera_relay.py b/hsrb_moveit_config/scripts/depth_camera_relay.py
+new file mode 100755
+index 0000000..a257a38
+--- /dev/null
++++ b/hsrb_moveit_config/scripts/depth_camera_relay.py
+@@ -0,0 +1,61 @@
++#!/usr/bin/env python3
++"""Publish smaller depth/CameraInfo pairs for the simulation octomap updater.
++
++The original depth stream is also kept for full-resolution grasp perception.
++No point-cloud topic is consumed or produced.
++"""
++from copy import deepcopy
++import numpy as np
++import rclpy
++from rclpy.node import Node
++from sensor_msgs.msg import CameraInfo, Image
++from cv_bridge import CvBridge
++
++
++class DepthCameraRelay(Node):
++    def __init__(self):
++        super().__init__('octomap_depth_camera')
++        self.info = None
++        self.bridge = CvBridge()
++        self.image_pub = self.create_publisher(Image, '/octomap_camera/image', 5)
++        self.info_pub = self.create_publisher(CameraInfo, '/octomap_camera/camera_info', 5)
++        # Reliable input avoids losing fragmented 1.2 MB simulator images.
++        self.create_subscription(CameraInfo, '/head_rgbd_sensor/depth_registered/camera_info', self.on_info, 5)
++        self.create_subscription(Image, '/head_rgbd_sensor/depth_registered/image', self.on_image, 5)
++
++    def on_info(self, msg):
++        self.info = msg
++
++    def on_image(self, msg):
++        if self.info is None:
++            return
++        if (msg.width, msg.height, msg.header.frame_id) != (self.info.width, self.info.height, self.info.header.frame_id):
++            self.get_logger().error('Depth/calibration dimensions or frames differ')
++            return
++        # Decimation selects actual samples, without averaging depth edges.
++        raw = self.bridge.imgmsg_to_cv2(msg, desired_encoding='passthrough')
++        image = self.bridge.cv2_to_imgmsg(np.ascontiguousarray(raw[::2, ::2]), encoding=msg.encoding)
++        image.header = msg.header
++        info = deepcopy(self.info)
++        info.header = msg.header
++        info.width, info.height = image.width, image.height
++        for index in (0, 1, 2, 3, 4, 5):
++            info.k[index] /= 2
++        for index in range(8):
++            info.p[index] /= 2
++        self.image_pub.publish(image)
++        self.info_pub.publish(info)
++
++
++def main():
++    rclpy.init()
++    node = DepthCameraRelay()
++    try:
++        rclpy.spin(node)
++    finally:
++        node.destroy_node()
++        rclpy.shutdown()
++
++
++if __name__ == '__main__':
++    main()
+diff --git a/hsrb_moveit_config/src/configured_depth_updater.cpp b/hsrb_moveit_config/src/configured_depth_updater.cpp
+new file mode 100644
+index 0000000..2f06259
+--- /dev/null
++++ b/hsrb_moveit_config/src/configured_depth_updater.cpp
+@@ -0,0 +1,125 @@
++#include <moveit/depth_image_octomap_updater/depth_image_octomap_updater.h>
++#include <moveit/occupancy_map_monitor/occupancy_map_monitor.h>
++#include <pluginlib/class_list_macros.hpp>
++#include <moveit_msgs/msg/collision_object.hpp>
++#include <mutex>
++#include <cmath>
++#include <Eigen/Geometry>
++#include <vector>
++#include <limits>
++
++namespace hsr_rgbd {
++// Humble initializes updaters before setParams(). The native depth updater
++// configures its GL mesh filter only in initialize(), leaving clipping and
++// padding at constructor defaults. Reinitialize before any shapes are added.
++class ConfiguredDepthUpdater : public occupancy_map_monitor::DepthImageOctomapUpdater {
++ public:
++  bool initialize(const rclcpp::Node::SharedPtr& node) override {
++    node_ = node;
++    if (!DepthImageOctomapUpdater::initialize(node)) return false;
++    exclusion_ = node->create_subscription<moveit_msgs::msg::CollisionObject>(
++        "/octomap_target_exclusion", 1, [this](moveit_msgs::msg::CollisionObject::ConstSharedPtr msg) {
++          std::lock_guard<std::mutex> lock(mutex_);
++          if (msg->id != "grasp_target") return;
++          if (msg->operation == moveit_msgs::msg::CollisionObject::REMOVE) { active_ = false; return; }
++          active_ = false;
++          planes_.clear();
++          if (msg->header.frame_id != "odom") return;
++          if (msg->meshes.size() == 1 && msg->mesh_poses.size() == 1 && msg->primitives.empty()) {
++            // Mesh vertices are explicitly in odom; reject transforms rather
++            // than silently filtering in the wrong frame.
++            const auto& pose = msg->mesh_poses[0];
++            if (pose.position.x != 0 || pose.position.y != 0 || pose.position.z != 0 ||
++                pose.orientation.x != 0 || pose.orientation.y != 0 || pose.orientation.z != 0 || pose.orientation.w != 1 ||
++                msg->pose.position.x != 0 || msg->pose.position.y != 0 || msg->pose.position.z != 0 ||
++                msg->pose.orientation.x != 0 || msg->pose.orientation.y != 0 || msg->pose.orientation.z != 0 ||
++                (msg->pose.orientation.w != 0 && msg->pose.orientation.w != 1)) return;
++            const auto& mesh=msg->meshes[0];
++            if (mesh.vertices.size()<4 || mesh.triangles.size()<4) return;
++            Eigen::Vector3d center=Eigen::Vector3d::Zero();
++            minimum_=Eigen::Vector3d::Constant(std::numeric_limits<double>::infinity());
++            maximum_=-minimum_;
++            for (const auto& p:mesh.vertices) {
++              Eigen::Vector3d v(p.x,p.y,p.z);
++              if (!v.allFinite()) return;
++              minimum_=minimum_.cwiseMin(v); maximum_=maximum_.cwiseMax(v);center+=v;
++            }
++            center/=mesh.vertices.size();
++            if ((maximum_-minimum_).minCoeff()<.008 || (maximum_-minimum_).maxCoeff()>.45) return;
++            for (const auto& t:mesh.triangles) {
++              Eigen::Vector3d v[3];
++              for(int k=0;k<3;++k) {
++                if(t.vertex_indices[k]>=mesh.vertices.size())return;
++                const auto& p=mesh.vertices[t.vertex_indices[k]];v[k]=Eigen::Vector3d(p.x,p.y,p.z);
++              }
++              Eigen::Vector3d normal=(v[1]-v[0]).cross(v[2]-v[0]);
++              if(normal.norm()<1e-12)return;
++              normal.normalize();if(normal.dot(v[0]-center)<0)normal=-normal;
++              planes_.emplace_back(normal.x(),normal.y(),normal.z(),-normal.dot(v[0]));
++            }
++            lo_=minimum_.z();hi_=maximum_.z();active_=true;return;
++          }
++          if (msg->header.frame_id != "odom" || msg->primitives.size() != 1 ||
++              msg->primitive_poses.size() != 1 || msg->primitives[0].type != 3 ||
++              msg->primitives[0].dimensions.size() != 2) return;
++          const auto& p = msg->primitive_poses[0];
++          const double h = msg->primitives[0].dimensions[0], r = msg->primitives[0].dimensions[1];
++          if (!std::isfinite(p.position.x) || !std::isfinite(p.position.y) ||
++              !std::isfinite(p.position.z) || !std::isfinite(h) || !std::isfinite(r) ||
++              h < .04 || h > .4 || r < .015 || r > .06 ||
++              p.orientation.x != 0 || p.orientation.y != 0 || p.orientation.z != 0 || p.orientation.w != 1) return;
++          x_ = p.position.x; y_ = p.position.y;
++          lo_ = p.position.z - h / 2; hi_ = p.position.z + h / 2; radius_ = r;
++          active_ = true;
++        });
++    cleanup_ = node->create_wall_timer(std::chrono::milliseconds(200), [this]() {
++      std::lock_guard<std::mutex> lock(mutex_);
++      if (!active_ || !tree_ || monitor_->getMapFrame() != "odom") return;
++      // Clear voxel centres only within the fitted upright target. Preserve
++      // cells at/below its base (including the supporting tabletop). A single
++      // voxel of radial tolerance covers depth quantisation at the surface.
++      tree_->lockWrite();
++      bool changed = false;
++      const double step = tree_->getResolution(), r = radius_ + step;
++      const double xmin=planes_.empty()?x_-r:minimum_.x()-step;
++      const double xmax=planes_.empty()?x_+r:maximum_.x()+step;
++      const double ymin=planes_.empty()?y_-r:minimum_.y()-step;
++      const double ymax=planes_.empty()?y_+r:maximum_.y()+step;
++      for (double x = std::floor(xmin / step) * step + step / 2; x < xmax; x += step)
++        for (double y = std::floor(ymin / step) * step + step / 2; y < ymax; y += step) {
++          if (planes_.empty() && (x-x_)*(x-x_) + (y-y_)*(y-y_) > r*r) continue;
++          for (double z = std::floor(lo_ / step) * step + step / 2; z <= hi_ + (planes_.empty() ? 0. : step); z += step) {
++            if (z <= lo_) continue;
++            bool inside=true;
++            for(const auto& p:planes_)if(p.x()*x+p.y()*y+p.z()*z+p.w()>step) {inside=false;break;}
++            if(!inside)continue;
++            auto* existing = tree_->search(x, y, z);
++            if (existing && tree_->isNodeOccupied(existing)) {
++              // Update only this leaf's ancestors; walking the entire map on
++              // every timer tick can starve MoveIt's action callbacks.
++              tree_->setNodeValue(tree_->coordToKey(x, y, z), tree_->getClampingThresMinLog(), false);
++              changed = true;
++            }
++          }
++        }
++      tree_->unlockWrite();
++      if (changed) tree_->triggerUpdateCallback();
++    });
++    return true;
++  }
++  bool setParams(const std::string& ns) override {
++    if (!DepthImageOctomapUpdater::setParams(ns)) return false;
++    return DepthImageOctomapUpdater::initialize(node_);
++  }
++ private:
++  rclcpp::Node::SharedPtr node_;
++  rclcpp::Subscription<moveit_msgs::msg::CollisionObject>::SharedPtr exclusion_;
++  rclcpp::TimerBase::SharedPtr cleanup_;
++  std::mutex mutex_;
++  std::vector<Eigen::Vector4d> planes_;
++  Eigen::Vector3d minimum_,maximum_;
++  bool active_ = false;
++  double x_ = 0, y_ = 0, lo_ = 0, hi_ = 0, radius_ = 0;
++};
++}
++PLUGINLIB_EXPORT_CLASS(hsr_rgbd::ConfiguredDepthUpdater, occupancy_map_monitor::OccupancyMapUpdater)

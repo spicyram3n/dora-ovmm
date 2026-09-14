@@ -7,7 +7,7 @@ import rclpy
 from cv_bridge import CvBridge
 from rclpy.node import Node
 from rclpy.parameter import Parameter
-from rclpy.qos import qos_profile_sensor_data
+from rclpy.qos import qos_profile_sensor_data, QoSProfile, ReliabilityPolicy
 from rclpy.time import Time
 from core.utils.transforms import matrix_from_transform
 from sensor_msgs.msg import CameraInfo, Image
@@ -17,6 +17,78 @@ RGB_TOPIC = "/head_rgbd_sensor/rgb/image_rect_color"
 DEPTH_TOPIC = "/head_rgbd_sensor/depth_registered/image_rect_raw"
 CAMERA_INFO_TOPIC = "/head_rgbd_sensor/rgb/camera_info"
 BASE_FRAME = "odom"
+
+
+class RobotTransforms:
+    """Read-only pose feedback; creates no robot command publishers."""
+    def __init__(self,node):
+        self.node=node
+        self.buffer=Buffer()
+        self.listener=TransformListener(self.buffer,node)
+
+    def transform(self,link='hand_palm_link'):
+        deadline=time.monotonic()+3.
+        while time.monotonic()<deadline:
+            rclpy.spin_once(self.node,timeout_sec=.02)
+            if not self.buffer.can_transform(BASE_FRAME,link,Time()):
+                continue
+            pose=self.buffer.lookup_transform(BASE_FRAME,link,Time())
+            age=(self.node.get_clock().now()-Time.from_msg(pose.header.stamp)).nanoseconds/1e9
+            if age<=.5:
+                return matrix_from_transform(pose.transform)
+        raise RuntimeError(f'No fresh {BASE_FRAME}-to-{link} transform')
+
+
+def grab_hand_rgb(timeout=8., use_sim_time=True):
+    """Return rectified hand-camera BGR, K, odom pose and stamped palm pose.
+
+    The hand camera is monocular. No head depth pixels are paired with it.
+    Both poses are looked up at the image timestamp.
+    """
+    import cv2
+    owns_context = not rclpy.ok()
+    if owns_context:
+        rclpy.init()
+    node = Node('grasp_hand_camera', parameter_overrides=[Parameter('use_sim_time', value=use_sim_time)])
+    try:
+        buffer = Buffer()
+        listener = TransformListener(buffer, node)
+        frames = {}
+        qos = QoSProfile(depth=2, reliability=ReliabilityPolicy.RELIABLE) if use_sim_time else qos_profile_sensor_data
+        node.create_subscription(Image, '/hand_camera/image_raw', lambda m: frames.update(image=m), qos)
+        node.create_subscription(CameraInfo, '/hand_camera/camera_info', lambda m: frames.update(info=m), qos_profile_sensor_data)
+        start = node.get_clock().now().nanoseconds
+        deadline = time.monotonic()+timeout
+        while time.monotonic()<deadline:
+            rclpy.spin_once(node, timeout_sec=.05)
+            if not {'image','info'} <= frames.keys():
+                continue
+            msg, info = frames['image'], frames['info']
+            stamp = Time.from_msg(msg.header.stamp)
+            if stamp.nanoseconds <= start:
+                continue
+            if (node.get_clock().now()-stamp).nanoseconds > 500_000_000:
+                continue
+            if msg.header.frame_id != info.header.frame_id or (msg.width,msg.height)!=(info.width,info.height):
+                raise ValueError('Hand image and calibration do not match')
+            if info.distortion_model not in ('plumb_bob','rational_polynomial'):
+                raise ValueError('Unsupported hand camera distortion model')
+            links = [msg.header.frame_id, 'hand_palm_link']
+            if not all(buffer.can_transform(BASE_FRAME, link, stamp) for link in links):
+                continue
+            k = np.array(info.k).reshape(3,3)
+            if not np.isfinite(k).all() or min(k[0,0],k[1,1]) <= 0:
+                raise ValueError('Invalid hand camera calibration')
+            rgb = CvBridge().imgmsg_to_cv2(msg, desired_encoding='bgr8')
+            if np.any(info.d):
+                rgb = cv2.undistort(rgb,k,np.array(info.d),None,k)
+            poses = [matrix_from_transform(buffer.lookup_transform(BASE_FRAME,link,stamp).transform) for link in links]
+            return rgb,k,*poses
+        raise RuntimeError('No fresh calibrated hand camera image with timestamped TF')
+    finally:
+        node.destroy_node()
+        if owns_context:
+            rclpy.shutdown()
 
 
 def grab_rgbd(target_frame=BASE_FRAME, timeout=15, use_sim_time=True):
@@ -34,11 +106,15 @@ def grab_rgbd(target_frame=BASE_FRAME, timeout=15, use_sim_time=True):
         listener = TransformListener(buffer, node)
         frames = {}
         capture_start = node.get_clock().now().nanoseconds
+        # Gazebo's bridge publishes reliable, fragmented megapixel images.
+        # Best-effort readers can lose virtually every pair under simulation load.
+        image_qos = (QoSProfile(depth=3, reliability=ReliabilityPolicy.RELIABLE)
+                     if use_sim_time else qos_profile_sensor_data)
         rgb_sub = message_filters.Subscriber(
-            node, Image, RGB_TOPIC, qos_profile=qos_profile_sensor_data
+            node, Image, RGB_TOPIC, qos_profile=image_qos
         )
         depth_sub = message_filters.Subscriber(
-            node, Image, DEPTH_TOPIC, qos_profile=qos_profile_sensor_data
+            node, Image, DEPTH_TOPIC, qos_profile=image_qos
         )
         sync = message_filters.ApproximateTimeSynchronizer(
             [rgb_sub, depth_sub], 10, 0.05

@@ -14,7 +14,7 @@ is a strict sequence, and Ctrl+C still cancels a Nav2 goal inside the step.
     ├─ Find target                            ├─ Choose location   target reasoning
     ├─ Park            once                   └─ Go there          first reachable view
     ├─ Pause Nav2
-    └─ Pick            up to ATTEMPTS tries; stows through move_group on success
+    └─ Pick            once; leave the resulting hold in place
 
 Watch it live, with ROS sourced, once this is running:
     py-trees-tree-watcher      # in the terminal
@@ -40,8 +40,6 @@ from core.scene_graph import graph as sg
 from core.utils import events
 
 ROOT = Path(__file__).resolve().parents[2]
-# Each pick re-segments the object and asks for fresh grasps, so a retry is a new try.
-ATTEMPTS = 3
 # The failing leaf decides the exit code, matching core.pipeline's, which
 # launch/actions.launch.py reads. Anything unexpected raises and exits 3.
 EXIT_CODES = {"Choose location": 1, "Find target": 1, "Go there": 2, "Park": 2, "Pick": 4}
@@ -83,11 +81,7 @@ def build(steps, grasp=True, navigate_only=False):
     children.append(Step("Park", steps["park"]))
     if grasp:
         children.append(Step("Pause Nav2", steps["pause"]))
-        children.append(py_trees.decorators.Retry(
-            "Pick, retried", Step("Pick", steps["pick"]), num_failures=ATTEMPTS))
-        # No raw home here: core.grasping.pick stows through move_group with the
-        # octomap and the carried object in scene. steps["home"] is the startup
-        # controller goal, which interpolates through whatever the arm is in.
+        children.append(Step("Pick", steps["pick"]))
     return py_trees.composites.Sequence("Mission", memory=True, children=children)
 
 
@@ -106,7 +100,7 @@ def exit_code(root):
     return EXIT_CODES.get(root.tip().name, 3)
 
 
-def mission_steps(navigator, scene, target, graph_path, top_k, bearings, timeout, perception):
+def mission_steps(navigator, scene, target, graph_path, top_k, bearings, timeout, perception, mode="auto"):
     """The existing pipeline functions, as the tree's actions."""
     chosen = {}
 
@@ -158,7 +152,8 @@ def mission_steps(navigator, scene, target, graph_path, top_k, bearings, timeout
         return status == actions.FOUND
 
     def park():
-        status = actions.make_graspable(scene, chosen["object"], navigator, bearings=bearings)
+        status = actions.make_graspable(scene, chosen["object"], navigator, bearings=bearings,
+                                        target=target)
         return status == actions.READY
 
     def pause():
@@ -167,7 +162,9 @@ def mission_steps(navigator, scene, target, graph_path, top_k, bearings, timeout
         return True
 
     def pick():
-        return actions.pick_up(target) == actions.PICKED
+        status = actions.pick_up(target, mode=mode)
+        print(f"[GRASP RESULT] {status}", flush=True)
+        return status in (actions.PICKED, actions.GRASPED)
 
     return {"ready": ready, "home": home, "choose": choose, "go": go,
             "find": find, "park": park, "pause": pause, "pick": pick}
@@ -191,13 +188,14 @@ def run(argv=None):
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--target")
-    parser.add_argument("--graph", type=Path, default=ROOT / "outputs/scene_graph/apartment.json")
+    parser.add_argument("--graph", type=Path, default=ROOT / "config/scene_graph/kitchen_objects.json")
     parser.add_argument("--top-k", type=int, default=3)
     parser.add_argument("--bearings", type=int, default=12)
     parser.add_argument("--startup-timeout", type=float, default=180)
     parser.add_argument("--grasp", default="true", choices=["true", "false"])
     parser.add_argument("--navigate-only", default="false", choices=["true", "false"],
                         help="reason and drive to the target's place; no SAM3 or GraspGenX")
+    parser.add_argument("--mode", default="auto", choices=["auto", "pickup", "grasp"])
     parser.add_argument("--render", action="store_true", help="save a picture of the tree and exit")
     args = parser.parse_args(argv)
     grasp, navigate_only = args.grasp == "true", args.navigate_only == "true"
@@ -214,7 +212,7 @@ def run(argv=None):
     rclpy.init()
     navigator = Navigator()
     steps = mission_steps(navigator, scene, args.target, args.graph, args.top_k,
-                          args.bearings, args.startup_timeout, perception=not navigate_only)
+                          args.bearings, args.startup_timeout, perception=not navigate_only, mode=args.mode)
     tree = py_trees_ros.trees.BehaviourTree(build(steps, grasp=grasp, navigate_only=navigate_only))
     viewers = SingleThreadedExecutor()
     try:

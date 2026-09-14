@@ -30,11 +30,15 @@ from core.utils import events
 ROOT = Path(__file__).resolve().parents[2]
 # Mission outcomes, from the object never being seen to standing ready to grasp.
 NOT_FOUND = "not_found"
+ARRIVED = "arrived"
 FOUND = "found"
 NOT_GRASPABLE = "not_graspable"
 READY = "ready"
 PICKED = "picked"
+GRASPED = "grasped"
 NOT_PICKED = "not_picked"
+EXIT_CODES = {NOT_FOUND: 1, ARRIVED: 0, FOUND: 0, NOT_GRASPABLE: 2, READY: 0,
+              PICKED: 0, GRASPED: 0, NOT_PICKED: 4}
 # A same-label detection further than this from a remembered one is another instance.
 SAME_INSTANCE = 1.0
 # Nothing the HSR gripper can pick up measures more than this across.
@@ -310,7 +314,15 @@ def look_points(scene, location, pose):
     """Where the head aims from `pose`: the remembered object, just above a
     surface, or each height of shelved furniture."""
     if location.object_id is not None or location.furniture_id is None:
-        return [location.centroid]
+        aims = [location.centroid]
+        if location.object_id is not None and location.furniture_id is not None:
+            data = scene.nodes[location.furniture_id]
+            if not is_storage(data):
+                centre, _ = box(data)
+                # A released object can roll away from its remembered spot.
+                # Inspect the supporting surface before driving elsewhere.
+                aims.append([centre[0], centre[1], data['bounds'][1][2]+.06])
+        return aims
     data = scene.nodes[location.furniture_id]
     centre, dimensions, yaw = sg.footprint(data)
     x, y = standoff.aim_point(pose[:2], centre, dimensions, yaw)
@@ -338,7 +350,7 @@ def observed_furniture(scene, points):
     return ids[index], relation
 
 
-def locate(obj):
+def locate(obj, with_camera=False):
     rgb, depth, intrinsics, transform = grab_rgbd(target_frame="map")
     try:
         mask, score = sam3_client.detect(rgb, obj)
@@ -356,11 +368,15 @@ def locate(obj):
         print("Detection did not form one solid body; trying another view.")
         return None
     print(f"Detected {obj}, score={score:.2f}, {len(points)} points")
-    return pointcloud.transform_points(transform, points)
+    points = pointcloud.transform_points(transform, points)
+    return (points, transform[:3, 3]) if with_camera else points
 
 
-def make_graspable(scene, node_id, navigator, obstacles="--costmap", bearings=12):
-    """Refine the observation pose into one the IK solver certifies for the arm."""
+def make_graspable(scene, node_id, navigator, obstacles="--costmap", bearings=12, target=None):
+    """Refine the observation pose into one the IK solver certifies for the arm.
+
+    With `target`, box- and sphere-like objects are re-measured and their real
+    pregrasp hand poses replace the generic reach probes."""
     centre, dimensions = box(scene.nodes[node_id])
     holder, relation = sg.location_of(scene, node_id)
     blockers = []
@@ -370,10 +386,35 @@ def make_graspable(scene, node_id, navigator, obstacles="--costmap", bearings=12
         # Graph boxes are solid: the piece the object is on or in would swallow the hand.
         if furniture_id != holder or relation == "near":
             solid.append(sg.footprint(data))
+    hand_poses = None
+    alternate_hand_poses = None
+    if target:
+        from core.grasping.pick import top_rectangle, cylinder, sphere, contact_candidates
+        measured = locate(target, with_camera=True)
+        if measured is not None:
+            points, camera = measured
+            if cylinder(points) is None and (top_rectangle(points) is not None or sphere(points) is not None):
+                try:
+                    _, hand_poses, _, kind = contact_candidates(points, np.empty((0,4,4)), camera)
+                    back = np.eye(4); back[2,3] = -.08
+                    hand_poses = hand_poses @ back
+                    if kind == 'sphere' and np.any(hand_poses[:,2,2] < -.9):
+                        overhead = hand_poses[:,2,2] < -.9
+                        alternate_hand_poses = hand_poses[~overhead]
+                        hand_poses = hand_poses[overhead]
+                    print(f'[BASE] checking actual {kind} pregrasp orientations', flush=True)
+                except RuntimeError as error:
+                    print(f'[BASE] box geometry unresolved: {error}', flush=True)
+                    hand_poses = None
     outcome = graspable.reposition(
         navigator, centre, dimensions, obstacles=obstacles, bearings=bearings,
-        blockers=blockers, solid=solid,
+        blockers=blockers, solid=solid, hand_poses=hand_poses,
     )
+    if outcome is None and alternate_hand_poses is not None:
+        print('[BASE] overhead parking unavailable; checking side grasps', flush=True)
+        outcome = graspable.reposition(
+            navigator, centre, dimensions, obstacles=obstacles, bearings=bearings,
+            blockers=blockers, solid=solid, hand_poses=alternate_hand_poses)
     if outcome is None:
         print(
             "No clear, navigable IK base pose was reached within position and yaw "
@@ -398,16 +439,17 @@ def make_graspable(scene, node_id, navigator, obstacles="--costmap", bearings=12
     return READY
 
 
-def pick_up(obj):
+def pick_up(obj, mode='auto'):
     """Re-observe the object from where the base is parked and pick it up.
 
     Runs core/grasping/pick.py in its own process, which keeps MoveIt Task
     Constructor's C++ node apart from this process's rclpy context."""
-    pick = subprocess.run([sys.executable, "-m", "core.grasping.pick", obj], cwd=ROOT)
-    return PICKED if pick.returncode == 0 else NOT_PICKED
+    pick = subprocess.run([sys.executable, "-m", "core.grasping.pick", obj,
+                           '--mode', mode], cwd=ROOT)
+    return {0: PICKED, 3: GRASPED}.get(pick.returncode, NOT_PICKED)
 
 
-def search(scene, obj, navigator, top_k=3, observe=locate, views=2):
+def search(scene, obj, navigator, furniture=None, top_k=3, observe=locate, views=2):
     """Try at least `views` viewpoints per location, more when the furniture is too
     large for them to cover. Perception/server errors stop the run.
 
@@ -415,21 +457,27 @@ def search(scene, obj, navigator, top_k=3, observe=locate, views=2):
     if views < 1:
         raise ValueError("views must be positive")
     # Advancing this iterator requests LLM fallback only when needed.
-    for location in targets(scene, obj, robot_xy=navigator.robot_xy(), top_k=top_k):
+    for location in targets(scene, obj, furniture, navigator.robot_xy(), top_k):
         poses, needed = plan(scene, location, navigator.robot_xy())
         limit = max(views, needed)
         outcomes = VIEWS[view_key(location)]["outcomes"]
         observations = 0
-        for pose in poses:
-            if not navigator.reachable(*pose):
+        current = navigator.robot_pose() if obj else None
+        # A neighbouring table object may already be visible after the last
+        # grasp. Look before making a needless trip around the furniture.
+        for pose in ([current] if current is not None else []) + list(poses):
+            at_current = current is not None and pose is current
+            if not at_current and not navigator.reachable(*pose):
                 outcomes[pose] = "no path"
                 continue
-            if not navigator.drive_to(*pose):
+            if not at_current and not navigator.drive_to(*pose):
                 outcomes[pose] = "drive failed"
                 continue
+            if not obj:
+                return (ARRIVED, None)
             # A spent view is spent whether the head or the detector failed;
             # otherwise an unaimable target burns every candidate pose.
-            observations += 1
+            observations += int(not at_current)
             points = None
             aimed = False
             for aim in look_points(scene, location, pose):

@@ -25,7 +25,7 @@ RUN groupadd --gid $USER_GID $USERNAME \
 # Install some system stuff    
 RUN apt-get update && apt-get upgrade -y && \
     apt-get install -y --no-install-recommends \
-    python3-pip python-is-python3 ssh neovim git wget unzip \
+    python3-pip python-is-python3 ssh neovim git wget unzip freeglut3-dev \
     ros-humble-control-msgs \
     ros-humble-cv-bridge \
     ros-humble-message-filters \
@@ -38,6 +38,7 @@ RUN apt-get update && apt-get upgrade -y && \
     ros-humble-tf-transformations \
     ros-humble-gazebo-ros-pkgs \
     ros-humble-moveit \
+    ros-humble-moveit-servo \
     ros-humble-moveit-task-constructor-core \
     ros-humble-moveit-task-constructor-capabilities \
     ros-humble-moveit-task-constructor-msgs \

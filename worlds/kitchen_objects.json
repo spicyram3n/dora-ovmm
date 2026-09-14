@@ -1,0 +1,142 @@
+{
+  "robot_spawn_world": [
+    5.6,
+    4.0,
+    0.0,
+    3.141592653589793
+  ],
+  "removed_models": [
+    "sofa01",
+    "sofa02",
+    "door_x13y13",
+    "door_stopper_x13y13",
+    "door_x02y16",
+    "door_stopper_x02y16",
+    "door_x05y09a",
+    "door_stopper_x05y09a",
+    "door_x03y09",
+    "door_x08y09a",
+    "door_stopper_x08y09a",
+    "door_x08y13",
+    "door_x10y11",
+    "door_stopper_x10y11"
+  ],
+  "table": "kitchen_lowtable",
+  "table_top_z": 0.4,
+  "objects": [
+    {
+      "name": "demo_pringles",
+      "label": "pringles",
+      "model": "hsr_pringles",
+      "xyz": [
+        1.1,
+        2.32,
+        0.5145
+      ],
+      "dims": [
+        0.066,
+        0.066,
+        0.225
+      ],
+      "mode": "pickup_available"
+    },
+    {
+      "name": "demo_orange_can",
+      "label": "orange soda can",
+      "model": "hsr_orange",
+      "xyz": [
+        1.55,
+        2.32,
+        0.46375
+      ],
+      "dims": [
+        0.066,
+        0.066,
+        0.1235
+      ],
+      "mode": "pickup_available"
+    },
+    {
+      "name": "demo_apple",
+      "label": "apple",
+      "model": "apple",
+      "xyz": [
+        2.02,
+        2.32,
+        0.447
+      ],
+      "dims": [
+        0.09,
+        0.09,
+        0.09
+      ],
+      "mode": "grasp_only_until_requested"
+    },
+    {
+      "name": "demo_cereal_box_1",
+      "label": "cereal box",
+      "model": "cereal_box",
+      "xyz": [
+        1.1,
+        2.82,
+        0.522
+      ],
+      "dims": [
+        0.06,
+        0.16,
+        0.24
+      ],
+      "mode": "grasp_only"
+    },
+    {
+      "name": "demo_cereal_box_2",
+      "label": "cereal box",
+      "model": "cereal_box",
+      "xyz": [
+        1.55,
+        2.82,
+        0.522
+      ],
+      "dims": [
+        0.06,
+        0.16,
+        0.24
+      ],
+      "mode": "grasp_only"
+    },
+    {
+      "name": "demo_rubiks_cube",
+      "label": "rubik's cube",
+      "model": "rubiks_cube",
+      "xyz": [
+        2.02,
+        2.82,
+        0.4305
+      ],
+      "dims": [
+        0.057,
+        0.057,
+        0.057
+      ],
+      "mode": "grasp_only"
+    },
+    {
+      "name": "demo_spray_bottle",
+      "label": "spray bottle",
+      "model": "spray_bottle",
+      "xyz": [
+        1.78,
+        2.32,
+        0.402
+      ],
+      "dims": [
+        0.086,
+        0.058,
+        0.24
+      ],
+      "mode": "grasp"
+    }
+  ],
+  "target_selected": null,
+  "mission_started": false
+}

@@ -40,6 +40,9 @@ def generate_launch_description():
             "use_sim_time", default_value="true", choices=["true", "false"]
         ),
         DeclareLaunchArgument(
+            "enable_grasp_servo", default_value="false", choices=["true", "false"]
+        ),
+        DeclareLaunchArgument(
             "depth_topic",
             default_value="/head_rgbd_sensor/depth_registered/image",
             description="Simulator depth stream feeding the octomap relay.",
@@ -51,6 +54,14 @@ def generate_launch_description():
         package="moveit_ros_move_group",
         executable="move_group",
         output="screen",
+        # The depth self-filter opens GLX contexts from worker threads. NVIDIA's
+        # X11 path aborted here during a live run; use Mesa for this process.
+        # Gazebo keeps its separate NVIDIA rendering environment.
+        additional_env={
+            "LIBGL_ALWAYS_SOFTWARE": "1",
+            "LIBGL_DRI3_DISABLE": "1",
+            "__GLX_VENDOR_LIBRARY_NAME": "mesa",
+        },
         parameters=model
         + [
             ours("sensors_xtion.yaml"),
@@ -105,6 +116,17 @@ def generate_launch_description():
     )
     stack = [
         move_group,
+        # Starts idle. The pickup client explicitly starts/pauses Servo around
+        # IBVS so its topic commands never compete with MTC's action goals.
+        Node(
+            package="moveit_servo",
+            executable="servo_node_main",
+            name="grasp_servo",
+            condition=IfCondition(LaunchConfiguration("enable_grasp_servo")),
+            output="screen",
+            parameters=model
+            + [{"moveit_servo": ours("servo.yaml"), "use_sim_time": sim_time}],
+        ),
         Node(
             package="tf2_ros",
             executable="static_transform_publisher",
