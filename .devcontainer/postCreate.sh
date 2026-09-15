@@ -76,6 +76,19 @@ for repo in "${repos[@]}"; do
     fi
 done
 
+# tf2 0.25.23 from apt deadlocks Nav2's costmaps; build only tf2 and tf2_ros
+# from 0.25.24, which fixes it. Drop this once apt ships 0.25.24 or later.
+if [ ! -d geometry2/.git ]; then
+    git clone --quiet --depth 1 --branch 0.25.24 https://github.com/ros2/geometry2.git geometry2
+    for package in geometry2/*/; do
+        case "$(basename "$package")" in
+            tf2|tf2_ros) ;;
+            *) touch "$package/COLCON_IGNORE" ;;
+        esac
+    done
+    sources_added=true
+fi
+
 # Remove unsupported/unwanted packages
 rm -rf \
     hsrb_launch/hsrb_robot_launch \
@@ -83,19 +96,11 @@ rm -rf \
     tmc_drivers/tmc_pgr_camera
 
 
-# Patch hsrb_moveit
-CMAKE_FILE="hsrb_moveit/hsrb_moveit_config/CMakeLists.txt"
-
-if ! grep -q 'find_package(geometric_shapes REQUIRED)' "$CMAKE_FILE"; then
-    echo "Patching hsrb_moveit_config..."
-
-    sed -i \
-        -e '/^find_package(Eigen3 REQUIRED)$/a\
-find_package(Boost REQUIRED COMPONENTS random)\
-find_package(geometric_shapes REQUIRED)\
-add_link_options("-Wl,--no-as-needed")' \
-        -e '/^ament_target_dependencies/ s/rclcpp)$/rclcpp geometric_shapes)/' \
-        "$CMAKE_FILE"
+# Apply this project's vendor patches (grasp_patches/apply.sh).
+# Newly patched sources need the build below.
+patched=$(bash "$SCRIPT_DIR/grasp_patches/apply.sh" "$WS/src")
+if [ -n "$patched" ]; then
+    sources_added=true
 fi
 
 # Dependencies

@@ -116,7 +116,7 @@ def _approach(navigator, pose):
     a permanently precise checker would make ordinary navigation fail."""
     # Stop inside the acceptance band, leaving margin for final localization
     # updates instead of repeatedly failing just beyond the same boundary.
-    navigator.set_goal_tolerance(PRECISE_TOLERANCE*.5, PRECISE_YAW_TOLERANCE*.5)
+    navigator.set_goal_tolerance(PRECISE_TOLERANCE*.75, PRECISE_YAW_TOLERANCE*.75)
     try:
         navigator.drive_to(
             *pose,

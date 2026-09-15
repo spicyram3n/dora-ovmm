@@ -3,39 +3,6 @@
 import cv2
 import numpy as np
 import trimesh
-from scipy.sparse import coo_matrix
-from scipy.sparse.csgraph import connected_components
-
-
-def object_depth_mask(depth_m, mask, max_neighbor_depth_step=0.02):
-    """Keep the largest depth-connected part of the semantic mask.
-
-    SAM boundaries can include wall pixels behind the object. A 2 cm jump
-    between adjacent pixels splits those away without flattening the object's
-    gradually curved surface or assuming its dimensions.
-    """
-    valid = mask & np.isfinite(depth_m) & (depth_m > 0)
-    count = int(valid.sum())
-    if count == 0:
-        raise RuntimeError('no valid depth inside the mask')
-    indices = np.full(mask.shape, -1, dtype=np.int32)
-    indices[valid] = np.arange(count)
-    starts, ends = [], []
-    for first, second in ((np.s_[:-1, :], np.s_[1:, :]),
-                          (np.s_[:, :-1], np.s_[:, 1:])):
-        connected = (valid[first] & valid[second] &
-                     (np.abs(depth_m[first] - depth_m[second]) < max_neighbor_depth_step))
-        starts.append(indices[first][connected])
-        ends.append(indices[second][connected])
-    rows, cols = np.concatenate(starts), np.concatenate(ends)
-    graph = coo_matrix((np.ones(len(rows)), (rows, cols)), shape=(count, count))
-    _, labels = connected_components(graph, directed=False)
-    sizes = np.bincount(labels)
-    if sizes.max() < count / 2:
-        raise RuntimeError('target depth is fragmented; acquire another view')
-    result = np.zeros_like(valid)
-    result[valid] = labels == sizes.argmax()
-    return result
 
 
 def shrink(mask, pixels=3):

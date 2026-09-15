@@ -33,6 +33,7 @@ import py_trees_ros
 import rclpy
 from rclpy.executors import SingleThreadedExecutor
 
+from core.navigation import base_placement
 from core.navigation.nav2_client import Navigator
 from core.pipeline import actions
 from core.reasoner import query
@@ -130,14 +131,22 @@ def mission_steps(navigator, scene, target, graph_path, top_k, bearings, timeout
 
     def go():
         location = chosen["location"]
-        poses, _ = actions.plan(scene, location, navigator.robot_xy())
+        poses, _ = actions.plan(scene, location, navigator.robot_xy(),
+                                base_placement.costmap_grid(navigator))
+        failed_drives = 0
         for pose in poses:
-            if navigator.reachable(*pose) and navigator.drive_to(*pose):
-                # Face where the target should be, as the search does before looking.
-                for aim in actions.look_points(scene, location, pose):
-                    if navigator.look_at(aim):
-                        break
-                return True
+            if not navigator.reachable(*pose):
+                continue
+            if not navigator.drive_to(*pose):
+                failed_drives += 1
+                if failed_drives >= actions.FAILED_DRIVES:
+                    return False
+                continue
+            # Face where the target should be, as the search does before looking.
+            for aim in actions.look_points(scene, location, pose):
+                if navigator.look_at(aim):
+                    break
+            return True
         return False
 
     def find():

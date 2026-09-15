@@ -121,7 +121,7 @@ class Navigator(Node):
         finished = handle.get_result_async()
         try:
             rclpy.spin_until_future_complete(self, finished, timeout_sec=timeout)
-        except KeyboardInterrupt:
+        except BaseException:
             self._cancel(handle, finished)
             raise
         if not finished.done():

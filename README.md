@@ -31,6 +31,8 @@ cd dora-ovmm
 
 Open the folder in VS Code → **Dev Containers: Reopen in Container**. The first start downloads ROS packages and builds the workspace. Wait for it.
 
+The build includes `tf2`/`tf2_ros` 0.25.24 from source (`ros2_ws/src/geometry2`). The apt 0.25.23 deadlocks Nav2's costmaps: the robot then drives blind, circles or hits walls.
+
 **Run this in every new container terminal:**
 
 ```bash
@@ -38,6 +40,8 @@ cd /home/ws
 source /opt/ros/humble/setup.bash
 source ros2_ws/install/setup.bash
 ```
+
+Warning: a terminal opened before the build still uses the broken tf2. `ros2 pkg prefix tf2` must print `/home/ws/ros2_ws/install/tf2`.
 
 **When to rebuild:**
 
@@ -52,7 +56,7 @@ source ros2_ws/install/setup.bash
 
 ## 2. Build the scene graph
 
-**Once per scene.** The mission reads furniture and remembered objects from `outputs/scene_graph/apartment.json`.
+**Once per scene.** The mission's default graph, `config/scene_graph/kitchen_objects.json`, ships with the repo. The steps below build the apartment graph, `outputs/scene_graph/apartment.json`; run it with `graph:=` and a matching `world`, `map` and `params_file`.
 
 **Container terminal 1 — simulation.** Registration needs the robot in the world.
 
@@ -150,10 +154,10 @@ This starts the sim, Nav2, IK and MoveIt, then runs the [behaviour tree](core/pi
 | --- | --- |
 | **Home arm** | Arm to the home pose, whatever pose it is in |
 | **Ready** | Waits for Nav2, head, IK, localization, RGB-D and SAM3 (180 s budget) |
-| **Find target** | Scene graph first, then DeepSeek's top-k. Drives to views; SAM3 looks. |
+| **Find target** | Scene graph first, then DeepSeek's top-k. Drives to views; SAM3 looks. Views Nav2's costmap blocks are skipped; two failed drives move on to the next place. |
 | **Park** | Drives to an IK-certified pose within arm reach |
 | **Pause Nav2** | So MoveIt can move the base |
-| **Pick** (up to 3 tries) | GraspGenX grasps + MoveIt Task Constructor; checks the hand closed on something |
+| **Pick** (once) | GraspGenX grasps + MoveIt Task Constructor; checks the hand closed on something |
 | **Stow** (inside Pick) | Backs the palm straight out, then folds to the carry pose through move_group, with the octomap and the held object in the planning scene. Not a separate tree step: a raw joint command here would drag the load through the surface it was picked from. |
 
 **Launch arguments:**
@@ -165,6 +169,7 @@ This starts the sim, Nav2, IK and MoveIt, then runs the [behaviour tree](core/pi
 | `navigate_only:=true` | Only reason and drive there; no SAM3 or GraspGenX |
 | `top_k:=5` | Ask DeepSeek for more places |
 | `graph:=/path/to/scenario.json` | Use another scene graph |
+| `world:=` `map:=` `params_file:=` | Use another scene. Defaults: `worlds/kitchen_objects.world`, `config/map/kitchen_objects.yaml`, `config/nav2/kitchen_objects.yaml`. Change all three together. |
 | `startup_timeout:=300` | Allow slower startup |
 | `bearings:=12` | Set the reach-probe directions for parking (30 deg apart) |
 | `use_rviz:=true` | Open RViz with MoveIt |
@@ -305,6 +310,6 @@ Run them from `/home/ws` in a sourced terminal.
 | [core/navigation/README.md](core/navigation/README.md) | Search, parking, viewpoints, IK settings, troubleshooting |
 | [core/scene_graph/README.md](core/scene_graph/README.md) | Graph building, frames, Python use |
 | [docker/graspgenx/README.md](docker/graspgenx/README.md) | GraspGenX setup for the HSRC hand |
-| [docker/openyolo3d/README.md](docker/openyolo3d/README.md) | Real scans → labelled 3D objects → scene graph |
+| [docker/boxer/README.md](docker/boxer/README.md) | Real scans → labelled 3D boxes → scene graph |
 | [docker/vgn/README.md](docker/vgn/README.md) | VGN: TSDF in, grasps out, and which objects it can grasp |
 | [vision-transport-poorna/README.md](vision-transport-poorna/README.md) | Robot camera → PC over Zenoh |

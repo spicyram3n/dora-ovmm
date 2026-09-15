@@ -13,8 +13,6 @@ pose is map `(0.6, -2.6, pi)`. World-to-map translation remains `(-5, -6.6)`.
 
 ```bash
 ros2 launch /home/ws/launch/search.launch.py target:="spray bottle" mode:=grasp
-# NVIDIA workstation (container must have GPU access, such as --gpus all):
-bash /home/ws/launch/search_nvidia.sh target:="spray bottle" mode:=grasp
 ```
 
 Use `mode:=pickup` to request verified lifting, or `grasp:=false` for search and

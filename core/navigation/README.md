@@ -2,7 +2,15 @@
 
 Find the object with Nav2 and SAM3, then park where the arm can reach it. Picking is in [core/grasping/pick.py](../grasping/pick.py).
 
-## Quick run
+- [Simulation](#simulation): launch files and commands for Gazebo.
+- [Real robot](#real-robot): what exists so far.
+- [Both](#both): mission options and how search behaves, in the sim and on the robot.
+
+---
+
+## Simulation
+
+### Quick run
 
 | Goal | Command |
 | --- | --- |
@@ -12,9 +20,7 @@ Find the object with Nav2 and SAM3, then park where the arm can reach it. Pickin
 
 Set `DEEPSEEK_API_KEY` for objects the scene graph does not know. The scene graph must exist first ([root README, step 2](../../README.md#2-build-the-scene-graph)).
 
----
-
-## Run the pieces by hand
+### Run the pieces by hand
 
 Source ROS in each container terminal first:
 
@@ -49,7 +55,33 @@ ros2 launch hsrb_rosnav_config navigation_launch.py \
 - Run only one Nav2. Check in RViz that the laser scan lines up with the map. The first AMCL pose comes from the params YAML.
 - **Controller:** Omni MPPI, no rotation shim. It can strafe on approach; path-heading costs still favour facing forward, and the goal checker wants the final yaw. Restart Nav2 after changing controller plugins.
 
-## Mission options
+---
+
+## Real robot
+
+1. Build the graph from Boxer's boxes ([Boxer README](../../docker/boxer/README.md)).
+2. Plot a piece before driving:
+
+   ```bash
+   python3 visualization/viewpoints.py --furniture <name> --graph config/realrobot/scene_graph/lab_20260811.json
+   ```
+
+3. Run the mission on a stack you started by hand:
+
+   ```bash
+   python3 -m core.pipeline.mission_tree --target laptop --graph config/realrobot/scene_graph/lab_20260811.json
+   ```
+
+   Nav2 must be localized in `config/realrobot/map/lab_20260811.yaml`, the map the graph was built in.
+
+- **Not covered yet:** `launch/search.launch.py` starts Gazebo and sets `use_sim_time:=true`, and every params file in `config/nav2/` is for the sim. This repo has no real-robot launch or Nav2 params file, and none of the real-robot steps are tested on hardware.
+- **Footprints:** every graph build fits each furniture piece with the smallest turned rectangle seen from above, so turned pieces keep their yaw. Stray mask points stretch that rectangle and shift every viewpoint with it. Graphs built before this use axis-aligned boxes until rebuilt.
+
+---
+
+## Both
+
+### Mission options
 
 `python3 -m core.pipeline.mission_tree --target <object> [options]`
 
@@ -65,7 +97,7 @@ ros2 launch hsrb_rosnav_config navigation_launch.py \
 
 To see where a query would search without moving, use the [viewpoint preview](#preview-the-viewpoints). Exit codes are [below](#what-the-mission-does-at-startup).
 
-## What the mission does at startup
+### What the mission does at startup
 
 | Step | Details |
 | --- | --- |
@@ -78,7 +110,7 @@ To see where a query would search without moving, use the [viewpoint preview](#p
 - **Watch live:** `py-trees-tree-watcher` in another sourced terminal. It is a plain command, not `ros2 run`.
 - **Detections update the graph file.** Use a separate `graph:=/path/to/scenario.json` per demo scenario. The launch never rebuilds it.
 
-## Preview the viewpoints
+### Preview the viewpoints
 
 No robot, no ROS. Draws what a query would do, using the same `plan()` the mission drives:
 
@@ -106,7 +138,7 @@ python3 visualization/viewpoints.py 'pringles' --output outputs/viewpoints.png
 
 Warning: the filter checks the **base footprint only**. A kept pose can still look through other furniture, which shows up in the shelf case.
 
-## How search decides
+### How search decides
 
 | Topic | Rule |
 | --- | --- |
@@ -120,13 +152,13 @@ Warning: the filter checks the **base footprint only**. A kept pose can still lo
 | **View memory** | Each place's poses and outcomes (`no path`, `drive failed`, `cannot aim`, `not detected`, `detected`) stay in `actions.VIEWS` for the process. Other processes cannot see them. |
 | **Camera FOV** | Assumed ±0.45 rad horizontal, ±0.35 rad vertical (`standoff.py`). Check against the HSR-C `camera_info`. |
 | **Parking** | Hand-pose probes via IK. Reachable does not mean a stable grasp. The head re-aims at the object after parking. |
-| **Parking accuracy** | Nav2's usual tolerance is 25 cm; IK needs about 7.5 cm. The final approach tightens `general_goal_checker` to 0.08 m and restores it after. Parked further than 0.08 m → exit `2`. |
+| **Parking accuracy** | Nav2's usual tolerance is 25 cm; IK needs about 7.5 cm. The final approach tightens `general_goal_checker` to 0.06 m / 0.11 rad and restores it after. Parked further than 0.08 m → exit `2`. |
 | **Arm collisions** | The IK solver checks the whole robot, arm included, against every scene-graph furniture box except the one the object is on or in (graph boxes are solid, so that one would swallow the hand). Real shapes are not modelled: a shelf's open front or a table's legroom count as solid. |
 
 - Head aiming is tested in Gazebo only. Check it before using hardware.
-- Viewing tolerances are 0.30 m / 0.30 rad, not grasp tolerances. A failed plan or drive tries the next pose.
+- Viewing tolerances are 0.30 m / 0.30 rad, not grasp tolerances. Poses on cells Nav2's costmap blocks are dropped first. A failed plan tries the next pose; two failed drives move on to the next place.
 
-## If it stops
+### If it stops
 
 | Problem | Next step |
 | --- | --- |
@@ -136,7 +168,7 @@ Warning: the filter checks the **base footprint only**. A kept pose can still lo
 | Old map-to-base TF | Check localization and clocks; TF must be under 2 s old |
 | No reachable view | Check localization, furniture bounds and the costmap |
 
-## IK solver settings
+### IK solver settings
 
 [launch/ik_solver.launch.py](../../launch/ik_solver.launch.py) starts Toyota's solver with the **HSRC** plugin (Toyota's example hardcodes the HSR-B). Service: `/ik_solver_node/solve_ik_with_collision`.
 
@@ -152,14 +184,3 @@ Warning: keep the spelling **`threhsold`**. Toyota's code reads that exact key; 
 - **Timeouts:** a timeout is a service error, not "unreachable".
 - **Reach is not a grasp:** a reachable hand pose is not a grasp. `pick.py` plans the real grasp from the parked pose.
 - **Source:** `ros2_ws/src/tmc_manipulation/tmc_ik_solver_node/`.
-
-## Real room: from a scan
-
-1. Build the graph from OpenYOLO3D output ([scan workflow](../../docker/openyolo3d/README.md#3-build-the-scene-graph)).
-2. Plot a piece before driving:
-
-```bash
-python3 visualization/viewpoints.py --furniture <name> --graph outputs/scene_graph/room1.json
-```
-
-Every graph build fits each furniture piece with the smallest turned rectangle seen from above, so turned pieces keep their yaw. Stray mask points stretch that rectangle and shift every viewpoint with it. Graphs built before this use axis-aligned boxes until rebuilt.

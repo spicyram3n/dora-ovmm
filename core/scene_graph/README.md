@@ -2,9 +2,17 @@
 
 Furniture and objects in map coordinates. The mission reads it to decide where to look, and saves what it finds back into it.
 
-Default file: `outputs/scene_graph/apartment.json`.
+| Setup | Graph file | How it is built |
+| --- | --- | --- |
+| Simulation, kitchen scene (mission default) | `config/scene_graph/kitchen_objects.json` | Not reproducible with `build.py` yet: it stops at `rubiks_cube`, which has no ScanNet200 class |
+| Simulation, apartment | `outputs/scene_graph/apartment.json` | [Simulation](#simulation-gazebo) |
+| Real robot, lab bag 2026-08-11 | `config/realrobot/scene_graph/lab_20260811.json` | [Real robot](#real-robot) |
 
-## Build it (Gazebo apartment)
+---
+
+## Simulation (Gazebo)
+
+### Build it
 
 Needs the sim and Nav2 running for `register` ([root README, step 2](../../README.md#2-build-the-scene-graph)).
 
@@ -22,18 +30,54 @@ Needs the sim and Nav2 running for `register` ([root README, step 2](../../READM
 - Every model becomes a [ScanNet200 class](../../config/scene_graph/scannet200.yaml). An unknown model stops the build: add it under `gazebo:` there.
 - Warning: `--world-base` is the robot's current Gazebo `base_footprint` x, y, yaw. `5.0 6.6 0.0` is the fresh-spawn value only.
 
-## Build it from a scan
+### Registration
 
-For OpenYOLO3D output ([scan workflow](../../docker/openyolo3d/README.md)):
+`config/map/world_to_map.json`: `source_frame: "gazebo_world"` plus `map_from_source`. It comes from one moment, one physical base frame:
 
-```bash
-python3 -m core.scene_graph.openyolo3d \
-  --instances docker/openyolo3d/output/room1/instances.json \
-  --transform /absolute/path/to/room1_to_map.json \
-  --output outputs/scene_graph/room1.json
+```text
+T_map_world = T_map_base @ inverse(T_world_base)
 ```
 
-From your own segments, in Python (given `segments` and a measured `registered_transform`):
+Use a trusted localized pose and keep the transform fixed; do not recompute it from noisy localization.
+
+---
+
+## Real robot
+
+Lab bag 2026-08-11. Every step from the bag to the graph: [Boxer README](../../docker/boxer/README.md).
+
+### Build it
+
+```bash
+python3 -m docker.boxer.to_scene_graph \
+  --boxes outputs/realrobot/lab_20260811/boxer/lab_20260811/boxer_3dbbs_fused.csv \
+  --transform config/realrobot/map/lab_20260811_boxer_to_map.json \
+  --output config/realrobot/scene_graph/lab_20260811.json
+```
+
+Look at it before trusting it:
+
+```bash
+python3 visualization/scene_graph.py --graph config/realrobot/scene_graph/lab_20260811.json \
+  --scene outputs/realrobot/lab_20260811/keyframes/scene.ply --output outputs/realrobot/lab_20260811/scene_graph.rrd
+```
+
+Any saved graph works with `--graph`, the Gazebo one included. `--save-only` writes
+the `.rrd` without opening Rerun; `python3 -m rerun <file>.rrd` reopens it.
+
+### Registration
+
+- **Keyframes:** the robot's keyframes are already in `map`: the same robot, in the same SLAM run as `config/realrobot/map/lab_20260811.yaml`.
+- **Boxer's boxes:** Boxer moves its origin to the first camera, so its boxes are not in `map`.
+- **The fix:** `config/realrobot/map/lab_20260811_boxer_to_map.json` shifts them back (`source_frame: "boxer_lab_20260811"`, no rotation). `realrobot/make_boxer_scene.py --registration` writes it.
+
+---
+
+## Both
+
+### Any other source (Python)
+
+From your own segments (given `segments` and a measured `registered_transform`):
 
 ```python
 from core.scene_graph.instance import Instance
@@ -47,7 +91,7 @@ sg.save(scene, 'scan_graph.json')
 
 This module does not run segmentation or estimate registration.
 
-## Ask it where to search
+### Ask it where to search
 
 ```python
 from core.scene_graph import graph as sg
@@ -58,32 +102,31 @@ locations = search_order(scene, 'pringles can', top_k=3, near=(robot_x, robot_y)
 first = next(locations)
 ```
 
+From the shell, without ROS, for any graph (prints the whole order; the graph is not saved):
+
+```bash
+python3 -m core.reasoner.query 'coffee mug' --graph config/realrobot/scene_graph/lab_20260811.json --near 0 0
+```
+
 - **Order:** remembered objects first, then DeepSeek.
 - **Cache:** DeepSeek's picks per object are saved in the graph (`llm_guesses`); a repeat query reuses them. A search that finds nothing forgets them, so the next query asks again.
 - **One at a time:** take the next location only after a look fails. `list(locations)` asks DeepSeek too early.
 - **Not goals:** returned centroids are object or furniture positions, **not** places to drive to. Navigation picks the viewing pose.
 - **Bad answers:** an invalid DeepSeek answer raises an error.
 
-## Frame rules
+### Frame rules
 
 | Rule | Why |
 | --- | --- |
 | Metres, one source frame per build | Mixed frames or units corrupt every position |
 | Give `source_frame` and a measured rigid 4×4 `map_from_source` | Scale and shear are rejected |
+| `source_frame: "map"` needs the identity | Points already in `map` must not move |
 | `map`, `odom` and Gazebo world are different frames | The occupancy YAML's `origin` is **not** world-to-map registration |
 | Check registration against the map in RViz | Matrix checks cannot prove the alignment is right |
 | Transform camera observations with timestamped TF before storing | Stored positions must be in `map` |
 | For grasping, transform separately to `odom` | The arm plans in `odom` |
 
-Registration JSON: `source_frame: "gazebo_world"` plus `map_from_source`. It comes from one moment, one physical base frame:
-
-```text
-T_map_world = T_map_base @ inverse(T_world_base)
-```
-
-Use a trusted localized pose and keep the transform fixed; do not recompute it from noisy localization.
-
-## What a node holds
+### What a node holds
 
 | Field | Meaning |
 | --- | --- |
@@ -99,12 +142,12 @@ Use a trusted localized pose and keep the transform fixed; do not recompute it f
 - **IDs:** node IDs survive save/load but can change on rebuild.
 - **Updating an object:** `record_object(..., frame_id="map")` takes a box centre and dimensions. Pass `node_id` to update; leave it out to create. Labels alone never merge objects.
 
-## Code map
+### Code map
 
 | File | Purpose |
 | --- | --- |
-| [build.py](build.py) | CLI: register the transform, build the apartment graph |
-| [openyolo3d.py](openyolo3d.py) | CLI: build a graph from OpenYOLO3D output |
+| [build.py](build.py) | Simulation CLI: register the transform, build the apartment graph |
+| [to_scene_graph.py](../../docker/boxer/to_scene_graph.py) | Real-robot CLI: build a graph from Boxer's fused boxes |
 | [graph.py](graph.py) | Build, update, validate, save and load graphs |
 | [instance.py](instance.py) | Labelled source-frame points; label lookup |
 | [scannet200.yaml](../../config/scene_graph/scannet200.yaml) | Label dictionary: 198 classes by role, Gazebo and synonym aliases |

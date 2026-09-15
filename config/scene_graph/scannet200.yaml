@@ -1,7 +1,7 @@
-# The scene graph's label dictionary: the 198 ScanNet200 classes OpenYOLO3D
-# prompts with (network2d.text_prompts in its pretrained/config.yaml), grouped
-# by how the graph uses them. Every Gazebo model and scan label becomes one of
-# these, so a simulated and a scanned room share one vocabulary.
+# The scene graph's label dictionary: the 198 ScanNet200 classes, grouped by how
+# the graph uses them. Boxer prompts with them (docker/boxer/run_boxer.sh,
+# --labels=scannet200), and every Gazebo model becomes one of them, so a
+# simulated and a scanned room share one vocabulary.
 #
 #   furniture  stays put and holds things; search goes to it, objects relate to it
 #   object     anything else worth remembering, graspable or not

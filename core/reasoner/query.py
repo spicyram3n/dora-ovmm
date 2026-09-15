@@ -1,5 +1,6 @@
 """Known object first; ask DeepSeek only when the search needs another location."""
 
+import argparse
 import json
 from dataclasses import asdict, dataclass
 from typing import Literal
@@ -166,3 +167,21 @@ def search_order(
     events.emit("reason", target=obj, source="llm", top_k=top_k,
                 locations=described(scene, guesses))
     yield from guesses
+
+
+def main():
+    """Print the search order for one object, without ROS. The graph is not saved."""
+    parser = argparse.ArgumentParser(description=main.__doc__)
+    parser.add_argument("object")
+    parser.add_argument("--graph", required=True)
+    parser.add_argument("--top-k", type=int, default=3, help="furniture guesses to ask DeepSeek for")
+    parser.add_argument("--near", type=float, nargs=2, metavar=("X", "Y"), help="robot position")
+    args = parser.parse_args()
+    scene = sg.load(args.graph)
+    for location in described(scene, search_order(scene, args.object, top_k=args.top_k, near=args.near)):
+        print(f"[{location['source']}] {location['relation']} {location['furniture'] or location['label']} "
+              f"(node {location['furniture_id']}) at {location['centroid']} {location['reason']}")
+
+
+if __name__ == "__main__":
+    main()

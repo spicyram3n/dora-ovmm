@@ -18,7 +18,7 @@ from moveit_task_constructor_msgs.action import ExecuteTaskSolution
 from rclpy.action import ActionClient
 from tmc_manipulation_msgs.srv import SolveIkWithCollision
 from trajectory_msgs.msg import JointTrajectoryPoint
-from core.navigation import graspable, standoff
+from core.navigation import base_placement, graspable, standoff
 from core.perception import pointcloud, sam3_client
 from core.perception.camera_ros2 import grab_rgbd
 from core.scene_graph import graph as sg
@@ -50,6 +50,8 @@ STORAGE_WORDS = ("shelf", "shelves", "bookcase", "rack")
 # look at the same place (another query, active perception) can reuse them.
 # Held in memory only: they go when the run ends.
 VIEWS = {}
+# After this many failed drives at one place, move on instead of trying every pose.
+FAILED_DRIVES = 2
 
 
 def home_goal():
@@ -282,14 +284,17 @@ def _views(scene, location):
     return (poses, points)
 
 
-def plan(scene, location, robot_xy=None):
-    """Observation poses in visiting order, and how many views the location needs."""
+def plan(scene, location, robot_xy=None, grid=None):
+    """Observation poses in visiting order, and how many views the location needs.
+    With `grid`, Nav2's costmap, poses the planner would refuse are dropped."""
     sg.require_map(scene)
     if location.frame_id != "map":
         raise ValueError("Search locations must be in map")
     key = view_key(location)
     if key not in VIEWS:
         poses, points = _views(scene, location)
+        if grid is not None:
+            poses = [pose for pose in poses if standoff.free(grid, pose)]
         VIEWS[key] = {"poses": poses, "points": points, "outcomes": {}}
     # Ordered afresh each time: the nearest pose depends on where the robot is now.
     poses, views = standoff.order(VIEWS[key]["poses"], VIEWS[key]["points"], robot_xy)
@@ -458,10 +463,12 @@ def search(scene, obj, navigator, furniture=None, top_k=3, observe=locate, views
         raise ValueError("views must be positive")
     # Advancing this iterator requests LLM fallback only when needed.
     for location in targets(scene, obj, furniture, navigator.robot_xy(), top_k):
-        poses, needed = plan(scene, location, navigator.robot_xy())
+        poses, needed = plan(scene, location, navigator.robot_xy(),
+                             base_placement.costmap_grid(navigator))
         limit = max(views, needed)
         outcomes = VIEWS[view_key(location)]["outcomes"]
         observations = 0
+        failed_drives = 0
         current = navigator.robot_pose() if obj else None
         # A neighbouring table object may already be visible after the last
         # grasp. Look before making a needless trip around the furniture.
@@ -472,6 +479,9 @@ def search(scene, obj, navigator, furniture=None, top_k=3, observe=locate, views
                 continue
             if not at_current and not navigator.drive_to(*pose):
                 outcomes[pose] = "drive failed"
+                failed_drives += 1
+                if failed_drives >= FAILED_DRIVES:
+                    break
                 continue
             if not obj:
                 return (ARRIVED, None)

@@ -1088,25 +1088,35 @@ def model_target(node, points):
     ).success:
         raise RuntimeError("move_group rejected the target box")
     depth_relay(node, True)
-    call(node, Empty, "/clear_octomap", Empty.Request())
-    # The updater uses simulation time; three wall seconds may contain no
-    # update. Require actual map data after clearing, then check the start.
-    deadline = time.monotonic() + 30.0
-    while True:
-        snapshot = call(node, GetPlanningScene, '/get_planning_scene',
-                        GetPlanningScene.Request(components=PlanningSceneComponents(
-                            components=PlanningSceneComponents.ROBOT_STATE |
-                            PlanningSceneComponents.ROBOT_STATE_ATTACHED_OBJECTS |
-                            PlanningSceneComponents.OCTOMAP))).scene
-        if snapshot.world.octomap.octomap.data:
+    # The relay is off until now, so these are the updater's first frames
+    # since startup; the first rebuilt map has overlapped the robot while
+    # later ones did not. Rebuild a few times before refusing motion.
+    for attempt in range(1, 4):
+        call(node, Empty, "/clear_octomap", Empty.Request())
+        # The updater uses simulation time; three wall seconds may contain no
+        # update. Require actual map data after clearing, then check the start.
+        deadline = time.monotonic() + 30.0
+        while True:
+            snapshot = call(node, GetPlanningScene, '/get_planning_scene',
+                            GetPlanningScene.Request(components=PlanningSceneComponents(
+                                components=PlanningSceneComponents.ROBOT_STATE |
+                                PlanningSceneComponents.ROBOT_STATE_ATTACHED_OBJECTS |
+                                PlanningSceneComponents.OCTOMAP))).scene
+            if snapshot.world.octomap.octomap.data:
+                break
+            if time.monotonic() > deadline:
+                raise RuntimeError('No fresh depth map after clearing OctoMap')
+            time.sleep(.25)
+        valid = call(node, GetStateValidity, '/check_state_validity',
+                     GetStateValidity.Request(robot_state=snapshot.robot_state,
+                                              group_name=GROUP))
+        if valid.valid:
             break
-        if time.monotonic() > deadline:
-            raise RuntimeError('No fresh depth map after clearing OctoMap')
-        time.sleep(.25)
-    valid = call(node, GetStateValidity, '/check_state_validity',
-                 GetStateValidity.Request(robot_state=snapshot.robot_state,
-                                          group_name=GROUP))
-    if not valid.valid:
+        bodies = sorted({f'{c.contact_body_1} <-> {c.contact_body_2}' for c in valid.contacts})
+        print(f"[MAP] rebuilt map overlaps the robot (attempt {attempt}/3): "
+              f"{', '.join(bodies) or 'no contact details'}", flush=True)
+        time.sleep(2.)
+    else:
         raise RuntimeError('Robot overlaps the rebuilt collision scene; refusing motion')
     # Freeze it: move_group stops a running plan when new voxels (a new view
     # or the moving arm itself) appear on its path.
@@ -1428,9 +1438,9 @@ def pick(prompt, mode='auto'):
         return False
     finally:
         try:
-            depth_relay(node, True)  # the arm is done; let the octomap follow the world
+            depth_relay(node, False)  # idle until the next pick rebuilds the octomap
         except RuntimeError as error:
-            print(f"octomap left frozen: {error}")
+            print(f"could not stop the depth relay: {error}")
         node.destroy_node()
         rclpy.shutdown()
         rclcpp.shutdown()

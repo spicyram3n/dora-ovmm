@@ -44,6 +44,17 @@ def blocks(pose, blockers):
     return False
 
 
+def free(grid, pose):
+    """Whether `pose` stands on a free cell of `grid`, a map-frame costmap as
+    base_placement.costmap_grid returns it; walls and off-map poses are not free."""
+    info = grid.info
+    column = math.floor((pose[0] - info.origin.position.x) / info.resolution)
+    row = math.floor((pose[1] - info.origin.position.y) / info.resolution)
+    if not (0 <= column < info.width and 0 <= row < info.height):
+        return False
+    return grid.data[row * info.width + column] == 0
+
+
 def aim_point(xy, centre, dimensions, yaw):
     """Where a view from `xy` should centre: level with it along the piece's long
     axis and halfway through its depth, so one view takes in the whole depth."""
