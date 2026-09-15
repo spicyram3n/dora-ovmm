@@ -111,6 +111,14 @@ $('home-button').onclick = async () => {
   manualHome = performance.now() + 6000;
 };
 
+// Fail-safe hand control on the real robot: open to let go, close to hold.
+for (const [id, path] of [['open-button', '/gripper/open'], ['close-button', '/gripper/close']]) {
+  $(id).onclick = async () => {
+    const reply = await fetch(path, { method: 'POST' });
+    if (!reply.ok) flash((await reply.json()).error);
+  };
+}
+
 function replayFrame(frames, now) {
   // Play a recording once from when its stage was shown, then hold the last frame.
   const t = (now - replayFrom) / 1000;
@@ -447,7 +455,7 @@ function render() {
   $('go').disabled = offline || resetting;
   $('reset').disabled = offline || resetting;
   $('target').disabled = !!live?.running;
-  $('home-button').disabled = offline || !!viewing || live.running;
+  for (const id of ['home-button', 'open-button', 'close-button']) $(id).disabled = offline || !!viewing || live.running;
   const topic = live?.camera_topic || ' ';
   if ($('camera-topic').textContent !== topic) $('camera-topic').textContent = topic;
   const log = (viewing ? `<a href="/runs/${viewing}.log" target="_blank">full log</a> · ` : '') + (state?.log ? esc(state.log) : '&nbsp;');

@@ -47,7 +47,8 @@ nav button.on { background: var(--bg); color: var(--ink); }
 .view canvas { display: block; }
 .caption { position: absolute; left: 18px; top: 14px; color: var(--muted); pointer-events: none; }
 .caption b { color: var(--ink); font-weight: 600; }
-.corner { position: absolute; right: 14px; top: 10px; padding: 7px 14px; background: var(--panel); color: var(--ink); border: 1px solid var(--line); }
+.corner-group { position: absolute; right: 14px; top: 10px; display: flex; gap: 6px; }
+.corner { padding: 7px 14px; background: var(--panel); color: var(--ink); border: 1px solid var(--line); }
 .corner:disabled { color: var(--muted); cursor: default; }
 footer { border-top: 1px solid var(--line); padding: 9px 16px; font: 12px ui-monospace, Menlo, monospace; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 footer a { color: var(--ink); }

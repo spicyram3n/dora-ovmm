@@ -1,0 +1,146 @@
+"""Log the next-best-view loop to Rerun, live or to an .rrd file.
+
+One recording shows the whole process on a "view" timeline: the depth image
+and camera that were fused, the TSDF as a surface cloud and as voxels coloured
+by signed distance, the target box, the fusion cube, the view sphere, every
+candidate camera coloured by its information gain, the chosen next view, the
+recorded camera path, the best grasp, and the gain and grasp quality as plots.
+
+    rerun outputs/active_perception/tsdf_test/nbv_replay/nbv_replay.rrd
+"""
+
+import numpy as np
+import rerun as rr
+import rerun.blueprint as rrb
+
+GAIN_COLORS = np.array([[59, 76, 192], [221, 221, 221], [180, 4, 38]], dtype=float)  # low, mid, high
+
+
+def _ramp(values, colors=GAIN_COLORS):
+    """(N,) in [0, 1] -> (N, 3) uint8 through a three-colour ramp."""
+    values = np.clip(np.asarray(values, dtype=float), 0.0, 1.0)
+    low, mid, high = colors
+    first = low + (mid - low) * np.minimum(values, 0.5)[:, None] * 2
+    second = mid + (high - mid) * (np.maximum(values, 0.5) - 0.5)[:, None] * 2
+    return np.where(values[:, None] < 0.5, first, second).astype(np.uint8)
+
+
+def _camera(log, path, view, intrinsic, shape, plane=0.25):
+    """A real camera: its pose and pinhole, so images hang in the 3D view."""
+    log(path, rr.Transform3D(translation=view[:3, 3], mat3x3=view[:3, :3]))
+    log(path, rr.Pinhole(image_from_camera=intrinsic, resolution=[shape[1], shape[0]],
+                            camera_xyz=rr.ViewCoordinates.RDF, image_plane_distance=plane))
+
+
+def _frusta(log, path, views, intrinsic, shape, colors, depth=0.15, radii=0.003, labels=None):
+    """Candidate views as coloured wireframe pyramids (Pinhole has no colour)."""
+    h, w = shape
+    corners = np.array([[0, 0], [w, 0], [w, h], [0, h]], dtype=float)
+    rays = np.c_[(corners[:, 0] - intrinsic[0, 2]) / intrinsic[0, 0],
+                 (corners[:, 1] - intrinsic[1, 2]) / intrinsic[1, 1], np.ones(4)] * depth
+    strips = []
+    for view in views:
+        eye = view[:3, 3]
+        pts = rays @ view[:3, :3].T + eye
+        strips += [np.array([eye, p]) for p in pts] + [np.array([pts[i], pts[(i + 1) % 4]]) for i in range(4)]
+    colors = np.repeat(np.asarray(colors, dtype=np.uint8).reshape(-1, 3), 8, axis=0)
+    kwargs = {} if labels is None else dict(labels=list(labels))  # one label per batch, drawn once
+    log(path, rr.LineStrips3D(strips, colors=colors, radii=radii, **kwargs))
+
+
+class Recording:
+    def __init__(self, intrinsic, shape, path=None, spawn=False, application="active_perception"):
+        """Write to `path` (.rrd), open the viewer with spawn=True, or both.
+
+        One recording stream per sink: in Rerun 0.22 a stream has a single
+        sink, and save() after spawn() would silently take the viewer's place."""
+        self.intrinsic, self.shape = (np.asarray(intrinsic, dtype=float), shape)
+        self.streams = []
+        if path is not None:
+            self.streams.append(rr.new_recording(application))
+            self.streams[-1].save(str(path))
+        if spawn:
+            # True opens a viewer here; "host:port" streams to one already
+            # running elsewhere, such as a laptop watching the real robot.
+            self.streams.append(rr.new_recording(application))
+            if spawn is True:
+                self.streams[-1].spawn()
+            else:
+                rr.connect_tcp(spawn, recording=self.streams[-1])
+        self.log("world", rr.ViewCoordinates.RIGHT_HAND_Z_UP, static=True)
+        blueprint = rrb.Blueprint(
+            rrb.Horizontal(
+                rrb.Spatial3DView(origin="world", name="Active perception",
+                                  contents=["+ $origin/**", "- world/camera/image", "- world/camera/depth",
+                                            "- world/views/unreachable"]),
+                rrb.Vertical(
+                    rrb.Spatial2DView(origin="world/camera", name="Head camera", contents=["+ world/camera/image"]),
+                    rrb.TimeSeriesView(origin="plots", name="Information gain and grasp quality"),
+                    rrb.TextLogView(origin="log", name="Steps"),
+                    row_shares=[3, 2, 1]),
+                column_shares=[3, 2]),
+            collapse_panels=True)
+        for stream in self.streams:
+            stream.send_blueprint(blueprint)
+        self.path = []
+
+    def log(self, path, *archetypes, **kwargs):
+        for stream in self.streams:
+            stream.log(path, *archetypes, **kwargs)
+
+    def scene(self, policy):
+        """Everything that stays put once the target is boxed."""
+        bbox, sphere = (policy.bbox, policy.view_sphere)
+        origin, length = (policy.base_from_task[:3, 3], policy.length)
+        self.log("world/tsdf/cube", rr.Boxes3D(centers=[origin + length / 2], half_sizes=[[length / 2] * 3],
+                                             colors=[30, 30, 30], fill_mode="majorwireframe", labels=["TSDF cube"]), static=True)
+        self.log("world/views/sphere", rr.Ellipsoids3D(centers=[sphere.center] * len(sphere.radii),
+                                                     half_sizes=[[r] * 3 for r in sphere.radii],
+                                                     colors=[160, 160, 160], fill_mode="majorwireframe"), static=True)
+        unreachable = [view for view in sphere.all_views() if not sphere.feasible(view)]
+        if unreachable:
+            _frusta(self.log, "world/views/unreachable", unreachable, self.intrinsic, self.shape,
+                    [[190, 190, 190]] * len(unreachable), depth=0.08, radii=0.002)
+
+    def step(self, index, policy, depth, view, image=None):
+        """The state after `policy.update(depth, view)` at this step."""
+        for stream in self.streams:
+            stream.set_time_sequence("view", index)
+        _camera(self.log, "world/camera", view, self.intrinsic, self.shape)
+        self.log("world/camera/depth", rr.DepthImage(np.asarray(depth, dtype=np.float32), meter=1.0))
+        if image is not None:
+            self.log("world/camera/image", rr.Image(image[..., ::-1]))  # BGR -> RGB
+        self.path.append(view[:3, 3].copy())
+        self.log("world/camera/path", rr.LineStrips3D([np.array(self.path)], colors=[40, 90, 240], radii=0.005))
+
+        bbox = policy.bbox
+        self.log("world/target/box", rr.Boxes3D(centers=[bbox.center], half_sizes=[bbox.size / 2],
+                                              colors=[230, 40, 40], fill_mode="majorwireframe", labels=["target"]))
+        origin = policy.base_from_task[:3, 3]
+        surface = np.asarray(policy.tsdf.get_scene_cloud().points) + origin
+        self.log("world/tsdf/surface", rr.Points3D(surface, colors=[90, 200, 120], radii=policy.tsdf.voxel_size / 4))
+        voxels = policy.tsdf.get_map_cloud()
+        centres = np.asarray(voxels.points) + origin
+        tsdf = np.asarray(voxels.colors)[:, 0]  # (tsdf + 1) / 2: 0 = behind, 1 = in front
+        self.log("world/tsdf/voxels", rr.Boxes3D(centers=centres, half_sizes=[[policy.tsdf.voxel_size / 2] * 3] * len(centres),
+                                               colors=_ramp(tsdf), fill_mode="solid"))
+
+        if policy.info:
+            views, gains, best = (policy.info["views"], policy.info["gains"], policy.info["best"])
+            _frusta(self.log, "world/views/candidates", views, self.intrinsic, self.shape, _ramp(gains / max(gains.max(), 1)))
+            _frusta(self.log, "world/views/next_best", [views[best]], self.intrinsic, self.shape, [[40, 220, 60]],
+                    depth=0.3, radii=0.008, labels=[f"next best view, gain {int(gains[best])}"])
+            self.log("plots/gain/next_best_view", rr.Scalar(float(gains[best])))
+            self.log("plots/gain/mean_over_candidates", rr.Scalar(float(gains.mean())))
+        if policy.best_grasp is not None:
+            pose, quality = policy.best_grasp
+            self.log("world/grasp", rr.Transform3D(translation=pose[:3, 3], mat3x3=pose[:3, :3]))
+            self.log("world/grasp/approach", rr.Arrows3D(origins=[[0, 0, 0]], vectors=[[0, 0, -0.08]],
+                                                       colors=[[250, 160, 20]], radii=0.006, labels=[f"grasp {quality:.2f}"]))
+            self.log("plots/grasp_quality", rr.Scalar(quality))
+        self.log("log", rr.TextLog(
+            f"view {index}: {len(policy.views)} fused, "
+            + (f"best gain {int(policy.info['gains'][policy.info['best']])} over {len(policy.info['views'])} candidates"
+               if policy.info else "no candidate view")
+            + (f", best grasp {policy.best_grasp[1]:.2f}" if policy.best_grasp else "")
+            + (", done" if policy.done else "")))

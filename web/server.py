@@ -27,6 +27,7 @@ import cv2
 import rclpy
 import xacro
 from ament_index_python.packages import PackageNotFoundError, get_package_share_directory
+from builtin_interfaces.msg import Duration
 from control_msgs.action import FollowJointTrajectory
 from cv_bridge import CvBridge
 from flask import Flask, abort, jsonify, request, send_from_directory
@@ -38,6 +39,8 @@ from rclpy.qos import qos_profile_sensor_data
 from rclpy.signals import SignalHandlerOptions
 from rclpy.time import Time
 from sensor_msgs.msg import Image, JointState
+from tmc_control_msgs.action import GripperApplyEffort
+from trajectory_msgs.msg import JointTrajectoryPoint
 from tf2_ros import Buffer, TransformException, TransformListener
 
 from core.perception.camera_ros2 import RGB_TOPIC
@@ -81,6 +84,11 @@ urdf = ""
 process = None
 follower = None     # the thread that saves the current run when it ends
 arm = None
+gripper = None      # hand_motor_joint trajectory: opens the hand
+grasp = None        # Toyota's effort grasp: closes it
+# As core/grasping/pick.py: wider breaks the distal finger limit; negative closes.
+OPEN_HAND = 1.1
+CLOSE_EFFORT = -0.3
 tf_buffer = Buffer()
 tf_listener = None  # fills tf_buffer; held here so it lives as long as the server
 tf_stamp = None     # stamp of the last base transform, and when it last changed
@@ -282,6 +290,39 @@ def home():
     return jsonify(ok=True)
 
 
+def hand_free():
+    """None when the hand may be moved by hand, else the JSON error to return."""
+    with lock:
+        if run["running"]:
+            return jsonify(error="The mission is using the hand"), 409
+    return None
+
+
+@app.post("/gripper/open")
+def gripper_open():
+    """Open the hand fully, as the pick does before its approach."""
+    if (busy := hand_free()) is not None:
+        return busy
+    if not gripper.server_is_ready():
+        return jsonify(error="Gripper controller is not ready"), 503
+    goal = FollowJointTrajectory.Goal()
+    goal.trajectory.joint_names = ["hand_motor_joint"]
+    goal.trajectory.points = [JointTrajectoryPoint(positions=[OPEN_HAND], time_from_start=Duration(sec=2))]
+    gripper.send_goal_async(goal)
+    return jsonify(ok=True)
+
+
+@app.post("/gripper/close")
+def gripper_close():
+    """Close the hand with the pick's grasp effort, so it holds whatever is in it."""
+    if (busy := hand_free()) is not None:
+        return busy
+    if not grasp.server_is_ready():
+        return jsonify(error="Gripper grasp action is not ready"), 503
+    grasp.send_goal_async(GripperApplyEffort.Goal(effort=CLOSE_EFFORT))
+    return jsonify(ok=True)
+
+
 @app.get("/camera.jpg")
 def camera():
     # The last frame outlives the sim; an old one means the camera has stopped.
@@ -310,7 +351,7 @@ def package_file(package, rest):
 
 
 def main():
-    global urdf, arm, tf_listener
+    global urdf, arm, gripper, grasp, tf_listener
     # The description the simulation spawns (launch/search.launch.py).
     share = get_package_share_directory("hsrc_description")
     urdf = xacro.process_file(os.path.join(share, "robots/hsrc1s.urdf.xacro")).toxml()
@@ -320,6 +361,9 @@ def main():
     node.create_subscription(JointState, "/joint_states", on_joints, 10)
     arm = ActionClient(node, FollowJointTrajectory,
                        "/arm_trajectory_controller/follow_joint_trajectory")
+    gripper = ActionClient(node, FollowJointTrajectory,
+                           "/gripper_controller/follow_joint_trajectory")
+    grasp = ActionClient(node, GripperApplyEffort, "/gripper_controller/grasp")
     node.create_subscription(NavPath, "/plan", on_plan, 10)
     node.create_subscription(Image, RGB_TOPIC, on_image, qos_profile_sensor_data)
     tf_listener = TransformListener(tf_buffer, node)

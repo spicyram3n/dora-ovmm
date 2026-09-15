@@ -69,7 +69,7 @@ class Step(py_trees.behaviour.Behaviour):
         return py_trees.common.Status.FAILURE
 
 
-def build(steps, grasp=True, navigate_only=False):
+def build(steps, grasp=True, navigate_only=False, active_perception=False):
     """The mission tree over `steps`, a dict of name -> action."""
     # Home first: it needs only the arm controller, and every later step assumes it.
     children = [Step("Home arm", steps["home"]), Step("Ready", steps["ready"])]
@@ -78,6 +78,9 @@ def build(steps, grasp=True, navigate_only=False):
         children.append(Step("Go there", steps["go"]))
         return py_trees.composites.Sequence("Mission", memory=True, children=children)
     children.append(Step("Find target", steps["find"]))
+    if active_perception:
+        # Still under test: fuse the target from next best views before parking.
+        children.append(Step("Explore views", steps["explore"]))
     # Parking already tries every base pose the IK solver returns; once is enough.
     children.append(Step("Park", steps["park"]))
     if grasp:
@@ -101,7 +104,8 @@ def exit_code(root):
     return EXIT_CODES.get(root.tip().name, 3)
 
 
-def mission_steps(navigator, scene, target, graph_path, top_k, bearings, timeout, perception, mode="auto"):
+def mission_steps(navigator, scene, target, graph_path, top_k, bearings, timeout, perception, mode="auto",
+                  rerun=False):
     """The existing pipeline functions, as the tree's actions."""
     chosen = {}
 
@@ -160,6 +164,12 @@ def mission_steps(navigator, scene, target, graph_path, top_k, bearings, timeout
         sg.save(scene, graph_path)
         return status == actions.FOUND
 
+    def explore():
+        from core.active_perception.explore import explore as nbv_explore, furniture_footprints
+        log = nbv_explore(navigator, target, rerun=rerun, blockers=furniture_footprints(scene))
+        print(f"[NBV] {log['views_fused']} views fused, best grasp {log['best_grasp'] and round(log['best_grasp']['quality'], 3)}", flush=True)
+        return log["views_fused"] > 0
+
     def park():
         status = actions.make_graspable(scene, chosen["object"], navigator, bearings=bearings,
                                         target=target)
@@ -176,15 +186,15 @@ def mission_steps(navigator, scene, target, graph_path, top_k, bearings, timeout
         return status in (actions.PICKED, actions.GRASPED)
 
     return {"ready": ready, "home": home, "choose": choose, "go": go,
-            "find": find, "park": park, "pause": pause, "pick": pick}
+            "find": find, "explore": explore, "park": park, "pause": pause, "pick": pick}
 
 
-def render(grasp, navigate_only):
+def render(grasp, navigate_only, active_perception=False):
     """Save the tree as a picture under outputs/, without ROS or the robot."""
     placeholders = {}
-    for name in ("ready", "home", "choose", "go", "find", "park", "pause", "pick"):
+    for name in ("ready", "home", "choose", "go", "find", "explore", "park", "pause", "pick"):
         placeholders[name] = None  # never run: drawing needs names only
-    root = build(placeholders, grasp=grasp, navigate_only=navigate_only)
+    root = build(placeholders, grasp=grasp, navigate_only=navigate_only, active_perception=active_perception)
     name = "mission_tree_navigate" if navigate_only else "mission_tree"
     files = py_trees.display.render_dot_tree(root, name=name, target_directory=str(ROOT / "outputs"))
     print(py_trees.display.unicode_tree(root))
@@ -205,11 +215,16 @@ def run(argv=None):
     parser.add_argument("--navigate-only", default="false", choices=["true", "false"],
                         help="reason and drive to the target's place; no SAM3 or GraspGenX")
     parser.add_argument("--mode", default="auto", choices=["auto", "pickup", "grasp"])
+    parser.add_argument("--active-perception", default="false", choices=["true", "false"],
+                        help="fuse the found target from next best views before parking (under test)")
+    parser.add_argument("--rerun", default="false", choices=["true", "false"],
+                        help="open the Rerun viewer and stream the Explore step live; it is always saved as explore.rrd")
     parser.add_argument("--render", action="store_true", help="save a picture of the tree and exit")
     args = parser.parse_args(argv)
     grasp, navigate_only = args.grasp == "true", args.navigate_only == "true"
+    active_perception = args.active_perception == "true"
     if args.render:
-        return render(grasp, navigate_only)
+        return render(grasp, navigate_only, active_perception)
     if not args.target or not args.target.strip() or args.top_k < 1 or args.bearings < 1:
         parser.error("target must be nonempty; top-k and bearings must be positive")
     if not math.isfinite(args.startup_timeout) or args.startup_timeout <= 0:
@@ -221,8 +236,10 @@ def run(argv=None):
     rclpy.init()
     navigator = Navigator()
     steps = mission_steps(navigator, scene, args.target, args.graph, args.top_k,
-                          args.bearings, args.startup_timeout, perception=not navigate_only, mode=args.mode)
-    tree = py_trees_ros.trees.BehaviourTree(build(steps, grasp=grasp, navigate_only=navigate_only))
+                          args.bearings, args.startup_timeout, perception=not navigate_only, mode=args.mode,
+                          rerun=args.rerun == "true")
+    tree = py_trees_ros.trees.BehaviourTree(build(steps, grasp=grasp, navigate_only=navigate_only,
+                                                  active_perception=active_perception))
     viewers = SingleThreadedExecutor()
     try:
         tree.setup(node_name="mission_tree", timeout=15.0)
