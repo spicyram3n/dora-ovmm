@@ -25,6 +25,14 @@ import robot_description as vendor  # noqa: E402
 # after the model changes; upstream parse() wrote the unfixed model there.
 MODEL_PATH = "/tmp/robot_description.urdf"
 
+# The finger springs are passive (SRDF), but the gripper group carries their
+# links, so their bounds are still checked. The URDF allows 0 to 0.698 rad;
+# the real hand closed on nothing reports 0.79 to 0.86 (2026-09-16), and the
+# start state then fails bounds by more than the adapter tolerates, so every
+# pick died at "open hand before pregrasp: START_STATE_INVALID".
+PASSIVE_SPRING_JOINT_SUFFIX = "_spring_proximal_joint"
+PASSIVE_SPRING_RANGE = (-0.2, 1.2)
+
 
 def ours(name):
     """One of the MoveIt settings this project owns, under config/moveit/."""
@@ -87,10 +95,20 @@ def freeze_zero_travel_joints(root):
             joint.remove(axis)
 
 
+def widen_passive_springs(root):
+    for joint in root.findall("joint"):
+        limit = joint.find("limit")
+        if not joint.get("name", "").endswith(PASSIVE_SPRING_JOINT_SUFFIX) or limit is None:
+            continue
+        limit.set("lower", str(PASSIVE_SPRING_RANGE[0]))
+        limit.set("upper", str(PASSIVE_SPRING_RANGE[1]))
+
+
 def parse(description_package, description_file):
     """Return the planning URDF as a string, and rewrite MODEL_PATH."""
     root = ET.fromstring(vendor.parse(description_package, description_file))
     freeze_zero_travel_joints(root)
+    widen_passive_springs(root)
     ET.ElementTree(root).write(MODEL_PATH)
     return ET.tostring(root, encoding="unicode", method="xml")
 

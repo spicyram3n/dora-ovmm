@@ -1,0 +1,39 @@
+# Real-robot octomap: the head depth reaches this PC through vision transport
+# RX (vision-transport-poorna/deployment/config/rx.yaml) instead of DDS. Same
+# map settings as sensors_xtion.yaml; only the topics and QoS differ.
+# Select it with: ros2 launch launch/move_group.launch.py
+#   use_sim_time:=false sensors_config:=sensors_xtion_remote.yaml
+octomap_resolution: 0.01
+octomap_frame: odom
+sensors:
+  - head_rgbd_sensor
+
+head_rgbd_sensor:
+  sensor_plugin: hsr_rgbd/ConfiguredDepthUpdater
+  # RX's decoded depth: 16UC1 millimetres, stamp and frame_id preserved from
+  # the robot. The launch remaps it and the camera_info beside it to the
+  # relay's /octomap_camera outputs, as in simulation.
+  image_topic: /remote/head_rgbd_sensor/depth_registered/image_rect_raw
+  queue_size: 5
+  near_clipping_plane_distance: 0.15
+  far_clipping_plane_distance: 2.0
+  shadow_threshold: 0.04
+  padding_scale: 1.0
+  padding_offset: 0.02
+  max_update_rate: 1.0
+  skip_vertical_pixels: 0
+  skip_horizontal_pixels: 2
+  filtered_cloud_topic: filtered_depth
+  ns: rgbd_octomap
+
+# Read by launch/move_group.launch.py, not by move_group: the depth relay's
+# inputs. Rename these when rx.yaml's output_topic changes.
+relay:
+  # RX's depth output. RX publishes best-effort (SensorDataQoS); a reliable
+  # reader never matches it, hence sensor_data_qos.
+  depth_topic: /remote/head_rgbd_sensor/depth_registered/image_rect_raw
+  # CameraInfo is small and RX does not carry it: it comes straight from the
+  # robot over DDS. The depth is registered into the RGB frame, so the RGB
+  # calibration applies (the 2026-08-11 lab bag has rgb/camera_info only).
+  info_topic: /head_rgbd_sensor/rgb/camera_info
+  sensor_data_qos: true

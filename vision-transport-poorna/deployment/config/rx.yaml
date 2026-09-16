@@ -1,24 +1,27 @@
+# Receives from Sagar's shared TX (zenoh_rx.json5). The keys below are the
+# shared prefix from the previous team's notes: confirm each full key, stream
+# type and codec against his running tx config before relying on them.
 streams:
   rgb:
     type: image
     output_topic: /remote/head_rgbd_sensor/rgb/image_rect_color
-    zenoh_key: poorna/head_rgbd_sensor/rgb
+    zenoh_key: robot/head_rgbd_sensor/rgb
     queue_depth: 1
 
   depth:
     type: depth
     output_topic: /remote/head_rgbd_sensor/depth_registered/image_rect_raw
-    zenoh_key: poorna/head_rgbd_sensor/depth
+    zenoh_key: robot/head_rgbd_sensor/depth
     queue_depth: 1
 
   cloud_draco:
     type: pointcloud
     output_topic: /remote/head_rgbd_sensor/depth_registered/rectified_points
-    zenoh_key: poorna/head_rgbd_sensor/points
+    zenoh_key: robot/head_rgbd_sensor/points
     queue_depth: 1
 
   cloud_cloudini_candidate:
     type: pointcloud
     output_topic: /remote/head_rgbd_sensor/depth_registered/rectified_points
-    zenoh_key: poorna/head_rgbd_sensor/points_cloudini
+    zenoh_key: robot/head_rgbd_sensor/points_cloudini
     queue_depth: 1

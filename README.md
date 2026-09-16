@@ -243,7 +243,7 @@ Type a query in the browser and watch each stage. Runs **navigate-only** for now
 | --- | --- |
 | `config/moveit/kinematics.yaml` | Arm and whole-body IK plugins |
 | `config/moveit/ompl_planning.yaml` | Planner settings |
-| `config/moveit/sensors_xtion.yaml` | 1 cm octomap from `hsr_rgbd`'s 1 Hz depth relay |
+| `config/moveit/sensors_xtion.yaml` | 1 cm octomap from `hsr_rgbd`'s 1 Hz depth relay; `sensors_xtion_remote.yaml` is the real-robot version ([section 7](#7-real-robot-grasp-test)) |
 | `move_group/ExecuteTaskSolutionCapability` | Runs MoveIt Task Constructor plans |
 
 - Warning: `ros2 launch hsrb_moveit_config demo.py` ignores these files. Run only one MoveIt. Config changes need only a MoveIt restart.
@@ -253,7 +253,57 @@ Type a query in the browser and watch each stage. Runs **navigate-only** for now
 
 ---
 
-## 7. Stop
+## 7. Real robot: grasp test
+
+Grasp only, no navigation, no mission. The robot keeps running its own stack; everything of ours runs on the PC. Full write-up with every problem hit so far: [docs/realrobot_grasp_test.md](docs/realrobot_grasp_test.md).
+
+| Where | Runs | Started by |
+| --- | --- | --- |
+| **Robot** | Toyota's stack: controllers, `/joint_states`, `/tf`, `/omni_base_controller/state`, camera driver, `/head_rgbd_sensor/rgb/camera_info` | already running |
+| **Robot** | Sagar's shared vision transport TX on port 7447: encodes RGB and depth onto Zenoh | already running; RX connects to it ([README](vision-transport-poorna/README.md)) |
+| **PC host** | SAM3 and GraspGenX | `docker compose -f docker/compose.yaml up -d --wait --wait-timeout 900 sam3 graspgenx` |
+| **PC host** | Vision transport RX: Zenoh in, `/remote/head_rgbd_sensor/...` ROS topics out | `docker compose -f deployment/compose.yaml up -d vision_rx` in `vision-transport-poorna/` (domain 5 by default) |
+| **PC container** | move_group with the real-robot octomap, the depth relay, the pick | `ros2 launch /home/ws/launch/grasp_real.launch.py` |
+
+Heavy topics (RGB, depth) go through vision transport. Small ones (joint states, TF, camera_info, controller actions) go straight over DDS, so the container and RX must share the robot's ROS domain (5) and reach it over the LAN. [.devcontainer/runtime.env](.devcontainer/runtime.env) is the switch; bashrc sources it last, so every new terminal gets it:
+
+```bash
+ROS_DOMAIN_ID=5
+RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+CYCLONEDDS_URI=file:///home/ws/.devcontainer/cyclonedds_profile.xml   # cyclonedds_sim.xml for the simulator
+```
+
+Open new terminals after editing it, or `source ~/.bashrc`. Check with `echo $CYCLONEDDS_URI`.
+
+`cyclonedds_profile.xml` talks to the robot at `10.7.3.185` over `enp5s0`; edit both if they changed. The robot's clock and the PC's must agree to within 0.5 s (pick.py rejects older transforms): check with `chronyc tracking` or `date` on both, and the `tf` lines of the preflight below.
+
+**Then, in order:**
+
+| # | Command | Why |
+| --- | --- | --- |
+| 1 | `python3 realrobot/grasp_preflight.py` | Joint states, TF age, camera_info, RX RGB and depth rates, controller actions, SAM3, GraspGenX. Ends with `READY` |
+| 2 | `ros2 launch /home/ws/launch/grasp_real.launch.py use_rviz:=true` | move_group, wall clock, octomap from `config/moveit/sensors_xtion_remote.yaml` |
+| 3 | `python3 realrobot/grasp_preflight.py --moveit` | Adds move_group, the MTC capability and the relay's topics |
+| 4 | `HSR_REAL_ROBOT=1 python3 -m core.grasping.pick "pringles can" --mode grasp` | First trial: close on the can, no lift. Drop `--mode grasp` for the test lift |
+
+Or pass `target:="pringles can" mode:=grasp` to the launch in step 2 and skip step 4. The arm moves under MoveIt and the whole-body group may shuffle the base a few centimetres: keep the emergency stop within reach and clear the table edge.
+
+**What the real-robot switch changes:**
+
+| Piece | Simulation | Real robot |
+| --- | --- | --- |
+| Octomap config | `config/moveit/sensors_xtion.yaml` | `config/moveit/sensors_xtion_remote.yaml`: depth from `/remote/head_rgbd_sensor/depth_registered/image_rect_raw`, calibration from `/head_rgbd_sensor/rgb/camera_info`, best-effort QoS. Rename the topics there when `rx.yaml` changes |
+| Depth relay inputs | the `relay:` block of that file | same; `depth_topic:=` and `depth_info_topic:=` on `move_group.launch.py` override it |
+| Pick camera | `/head_rgbd_sensor/...` | `HSR_REAL_ROBOT=1` prefixes RGB and depth with `HSR_IMAGE_PREFIX` (default `/remote`, `image_prefix:=` on the launch) and uses the wall clock |
+| Clock | `use_sim_time:=true` | `use_sim_time:=false`, set by `grasp_real.launch.py` |
+
+- Warning: run only one move_group on the domain. If the robot already runs Toyota's, stop it first, or its services shadow this one.
+- RX only streams once something subscribes; the relay and the pick do, the preflight too.
+- Camera_info and the hand camera are not in vision transport. The hand camera is only used by visual servoing, which stays off.
+
+---
+
+## 8. Stop
 
 | What | How |
 | --- | --- |
@@ -312,4 +362,5 @@ Run them from `/home/ws` in a sourced terminal.
 | [docker/graspgenx/README.md](docker/graspgenx/README.md) | GraspGenX setup for the HSRC hand |
 | [docker/boxer/README.md](docker/boxer/README.md) | Real scans → labelled 3D boxes → scene graph |
 | [docker/vgn/README.md](docker/vgn/README.md) | VGN: TSDF in, grasps out, and which objects it can grasp |
+| [docs/realrobot_grasp_test.md](docs/realrobot_grasp_test.md) | Real robot grasp test: what runs where, commands, files, every problem hit and its fix |
 | [vision-transport-poorna/README.md](vision-transport-poorna/README.md) | Robot camera → PC over Zenoh |

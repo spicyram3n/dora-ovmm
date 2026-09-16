@@ -1,3 +1,5 @@
+# Simulation octomap. launch/move_group.launch.py loads this by default;
+# sensors_xtion_remote.yaml is the real-robot counterpart.
 # The default 10 cm voxels are larger than the can and the finger clearance.
 octomap_resolution: 0.01
 octomap_frame: odom
@@ -6,6 +8,8 @@ sensors:
 
 head_rgbd_sensor:
   sensor_plugin: hsr_rgbd/ConfiguredDepthUpdater
+  # What move_group subscribes to. The launch remaps this topic and the
+  # camera_info beside it to the depth relay's /octomap_camera outputs.
   image_topic: /head_rgbd_sensor/depth_registered/image_rect_raw
   queue_size: 5
   near_clipping_plane_distance: 0.15
@@ -20,3 +24,11 @@ head_rgbd_sensor:
   skip_horizontal_pixels: 2
   filtered_cloud_topic: filtered_depth
   ns: rgbd_octomap
+
+# Read by launch/move_group.launch.py, not by move_group: where hsr_rgbd's
+# depth relay gets its frames and calibration. Gazebo bridges depth under a
+# different name than the robot and publishes it reliable.
+relay:
+  depth_topic: /head_rgbd_sensor/depth_registered/image
+  info_topic: /head_rgbd_sensor/depth_registered/camera_info
+  sensor_data_qos: false

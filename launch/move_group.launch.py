@@ -8,6 +8,12 @@ Gazebo's zero-travel sensor joint, and the capability that executes
 MoveIt Task Constructor solutions (core/grasping/pick.py). Controllers,
 joint limits and the SRDF are still loaded from that package unchanged, so
 nothing here writes to the vendor checkout.
+
+The octomap's topics live in one file under config/moveit/, chosen with
+sensors_config:=. Its move_group part names the depth stream the updater
+subscribes to; its relay block names what the depth relay reads. Simulation
+uses sensors_xtion.yaml; the real robot, with depth arriving through vision
+transport RX, uses sensors_xtion_remote.yaml (launch/grasp_real.launch.py).
 """
 
 import os
@@ -15,7 +21,7 @@ import sys
 
 import yaml
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, TimerAction, GroupAction
+from launch.actions import DeclareLaunchArgument, GroupAction, OpaqueFunction, TimerAction
 from launch.conditions import IfCondition, UnlessCondition
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
@@ -43,11 +49,47 @@ def generate_launch_description():
             "enable_grasp_servo", default_value="false", choices=["true", "false"]
         ),
         DeclareLaunchArgument(
+            "sensors_config",
+            default_value="sensors_xtion.yaml",
+            description="Octomap file under config/moveit/. sensors_xtion_remote.yaml "
+            "reads the real robot's depth from vision transport RX.",
+        ),
+        DeclareLaunchArgument(
             "depth_topic",
-            default_value="/head_rgbd_sensor/depth_registered/image",
-            description="Simulator depth stream feeding the octomap relay.",
+            default_value="",
+            description="Depth stream feeding the octomap relay; empty takes the "
+            "sensors file's relay.depth_topic.",
+        ),
+        DeclareLaunchArgument(
+            "depth_info_topic",
+            default_value="",
+            description="CameraInfo for that stream; empty takes relay.info_topic.",
         ),
     ]
+    return LaunchDescription(arguments + [OpaqueFunction(function=launch_setup)])
+
+
+def octomap_wiring(context):
+    """Split the chosen sensors file into move_group's part and the relay's."""
+    sensors = ours(LaunchConfiguration("sensors_config").perform(context))
+    relay = sensors.pop("relay", {})
+    for key, argument in (("depth_topic", "depth_topic"), ("info_topic", "depth_info_topic")):
+        override = LaunchConfiguration(argument).perform(context)
+        if override:
+            relay[key] = override
+    # The updater subscribes to image_topic and, through image_transport, to
+    # the camera_info beside it. Point both at the relay's decimated stream
+    # rather than the raw one.
+    image_topic = sensors[sensors["sensors"][0]]["image_topic"]
+    remappings = [
+        (image_topic, "/octomap_camera/image"),
+        (image_topic.rsplit("/", 1)[0] + "/camera_info", "/octomap_camera/camera_info"),
+    ]
+    return sensors, relay, remappings
+
+
+def launch_setup(context):
+    sensors, relay_inputs, octomap_remappings = octomap_wiring(context)
     sim_time = LaunchConfiguration("use_sim_time")
     model = [planning_model.moveit_params()]
     move_group = Node(
@@ -64,7 +106,7 @@ def generate_launch_description():
         },
         parameters=model
         + [
-            ours("sensors_xtion.yaml"),
+            sensors,
             {
                 "robot_name": "hsrc",
                 "use_sim_time": sim_time,
@@ -84,19 +126,7 @@ def generate_launch_description():
                 "publish_transforms_updates": True,
             },
         ],
-        # The octomap updater subscribes to the topic sensors_xtion.yaml names;
-        # point it at the relay's decimated stream rather than the raw one.
-        remappings=[
-            ("joint_states", "whole_body_moveit/joint_states"),
-            (
-                "/head_rgbd_sensor/depth_registered/image_rect_raw",
-                "/octomap_camera/image",
-            ),
-            (
-                "/head_rgbd_sensor/depth_registered/camera_info",
-                "/octomap_camera/camera_info",
-            ),
-        ],
+        remappings=[("joint_states", "whole_body_moveit/joint_states")] + octomap_remappings,
     )
     relay = Node(
         package="hsr_rgbd",
@@ -105,7 +135,7 @@ def generate_launch_description():
         parameters=[
             {
                 "use_sim_time": sim_time,
-                "depth_topic": LaunchConfiguration("depth_topic"),
+                **relay_inputs,
                 # Paused until core/grasping/pick.py rebuilds the octomap for a
                 # pick. Fed from startup, move_group spent every callback on
                 # depth frames and answered no service, so the mission's
@@ -165,13 +195,10 @@ def generate_launch_description():
         arguments=["-d", os.path.join(RVIZ_DIR, "moveit.rviz")],
         condition=IfCondition(LaunchConfiguration("use_rviz")),
     )
-    return LaunchDescription(
-        arguments
-        + [
-            GroupAction(
-                actions=stack,
-                condition=UnlessCondition(LaunchConfiguration("rviz_only")),
-            ),
-            rviz,
-        ]
-    )
+    return [
+        GroupAction(
+            actions=stack,
+            condition=UnlessCondition(LaunchConfiguration("rviz_only")),
+        ),
+        rviz,
+    ]

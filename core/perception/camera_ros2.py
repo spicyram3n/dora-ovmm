@@ -1,5 +1,6 @@
 """Capture synchronized RGB-D and transform it at the depth image timestamp."""
 
+import os
 import time
 import message_filters
 import numpy as np
@@ -13,10 +14,21 @@ from core.utils.transforms import matrix_from_transform
 from sensor_msgs.msg import CameraInfo, Image
 from tf2_ros import Buffer, TransformListener
 
-RGB_TOPIC = "/head_rgbd_sensor/rgb/image_rect_color"
-DEPTH_TOPIC = "/head_rgbd_sensor/depth_registered/image_rect_raw"
+# HSR_REAL_ROBOT=1 selects the real robot: wall clock, best-effort image QoS,
+# and RGB-D through vision transport RX, whose output topics carry the prefix
+# HSR_IMAGE_PREFIX (default /remote, vision-transport-poorna/deployment/config/
+# rx.yaml). CameraInfo is small and RX does not carry it, so it comes straight
+# from the robot over DDS. launch/grasp_real.launch.py sets both variables.
+REAL_ROBOT = os.environ.get("HSR_REAL_ROBOT", "") == "1"
+USE_SIM_TIME = not REAL_ROBOT
+IMAGE_PREFIX = os.environ.get("HSR_IMAGE_PREFIX", "/remote" if REAL_ROBOT else "")
+RGB_TOPIC = IMAGE_PREFIX + "/head_rgbd_sensor/rgb/image_rect_color"
+DEPTH_TOPIC = IMAGE_PREFIX + "/head_rgbd_sensor/depth_registered/image_rect_raw"
 CAMERA_INFO_TOPIC = "/head_rgbd_sensor/rgb/camera_info"
 BASE_FRAME = "odom"
+# A fresh node on the robot's LAN needs several seconds to discover the RX
+# publishers and the robot's static transforms before the first usable pair.
+CAPTURE_TIMEOUT = 45. if REAL_ROBOT else 15.
 
 
 class RobotTransforms:
@@ -39,7 +51,7 @@ class RobotTransforms:
         raise RuntimeError(f'No fresh {BASE_FRAME}-to-{link} transform')
 
 
-def grab_hand_rgb(timeout=8., use_sim_time=True):
+def grab_hand_rgb(timeout=8., use_sim_time=USE_SIM_TIME):
     """Return rectified hand-camera BGR, K, odom pose and stamped palm pose.
 
     The hand camera is monocular. No head depth pixels are paired with it.
@@ -91,7 +103,7 @@ def grab_hand_rgb(timeout=8., use_sim_time=True):
             rclpy.shutdown()
 
 
-def grab_rgbd(target_frame=BASE_FRAME, timeout=15, use_sim_time=True):
+def grab_rgbd(target_frame=BASE_FRAME, timeout=CAPTURE_TIMEOUT, use_sim_time=USE_SIM_TIME):
     """Return BGR, depth in metres, intrinsics, and T_target_camera."""
     owns_context = not rclpy.ok()
     if owns_context:
@@ -108,6 +120,7 @@ def grab_rgbd(target_frame=BASE_FRAME, timeout=15, use_sim_time=True):
         capture_start = node.get_clock().now().nanoseconds
         # Gazebo's bridge publishes reliable, fragmented megapixel images.
         # Best-effort readers can lose virtually every pair under simulation load.
+        # Vision transport RX publishes best-effort, which only best-effort matches.
         image_qos = (QoSProfile(depth=3, reliability=ReliabilityPolicy.RELIABLE)
                      if use_sim_time else qos_profile_sensor_data)
         rgb_sub = message_filters.Subscriber(

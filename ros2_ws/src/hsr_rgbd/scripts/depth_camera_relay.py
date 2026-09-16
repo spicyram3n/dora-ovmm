@@ -1,8 +1,12 @@
 #!/usr/bin/env python3
-"""Publish smaller depth/CameraInfo pairs for the simulation octomap updater.
+"""Publish smaller depth/CameraInfo pairs for move_group's octomap updater.
 
 The original depth stream is also kept for full-resolution grasp perception.
-No point-cloud topic is consumed or produced.
+No point-cloud topic is consumed or produced. Inputs come from the parameters
+depth_topic and info_topic; launch/move_group.launch.py sets them from the
+relay block of the chosen config/moveit/sensors_*.yaml. On the real robot the
+depth arrives through vision transport RX, which publishes best-effort, so
+sensor_data_qos switches both subscriptions to SensorDataQoS.
 """
 from copy import deepcopy
 import math
@@ -11,6 +15,7 @@ import numpy as np
 import rclpy
 from rclpy.node import Node
 from rclpy.clock import Clock, ClockType
+from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import CameraInfo, Image
 from cv_bridge import CvBridge
 
@@ -25,22 +30,34 @@ class DepthCameraRelay(Node):
         # The simulator bridges depth under a different name than the robot.
         depth = self.declare_parameter(
             'depth_topic', '/head_rgbd_sensor/depth_registered/image').value
+        info_topic = self.declare_parameter(
+            'info_topic', '/head_rgbd_sensor/depth_registered/camera_info').value
+        # Reliable input avoids losing fragmented 1.2 MB simulator images.
+        # Best-effort is the only QoS that matches vision transport RX.
+        self.qos = qos_profile_sensor_data if self.declare_parameter(
+            'sensor_data_qos', False).value else 1
         rate = float(self.declare_parameter('publish_rate', 1.0).value)
         # core/grasping/pick.py sets this false to freeze the octomap while the arm moves.
         self.declare_parameter('enabled', True)
         self.max_depth = float(self.declare_parameter('max_depth', 2.5).value)
         if not math.isfinite(self.max_depth) or self.max_depth <= 0:
             raise ValueError('max_depth must be finite and positive')
+        # The real camera's stream carries a few pixels of a few millimetres.
+        # They project onto the sensor origin, and the updater's near clip let
+        # one through as an occupied voxel inside the head (2026-09-16).
+        self.min_depth = float(self.declare_parameter('min_depth', 0.1).value)
+        if not math.isfinite(self.min_depth) or self.min_depth < 0 or self.min_depth >= self.max_depth:
+            raise ValueError('min_depth must be finite, non-negative and below max_depth')
         if not math.isfinite(rate) or rate <= 0:
             raise ValueError('publish_rate must be finite and positive')
         self.create_timer(1.0 / rate, self.publish_latest)
         self.image_pub = self.create_publisher(Image, '/octomap_camera/image', 1)
         self.info_pub = self.create_publisher(CameraInfo, '/octomap_camera/camera_info', 1)
-        # Reliable input avoids losing fragmented 1.2 MB simulator images.
-        self.create_subscription(CameraInfo, '/head_rgbd_sensor/depth_registered/camera_info', self.on_info, 1)
+        self.create_subscription(CameraInfo, info_topic, self.on_info, self.qos)
         self.depth_topic = depth
         self.last_input = time.monotonic()
-        self.image_sub = self.create_subscription(Image, depth, self.on_image, 1)
+        self.image_sub = self.create_subscription(Image, depth, self.on_image, self.qos)
+        self.get_logger().info(f'depth from {depth}, calibration from {info_topic}')
         self.watchdog = self.create_timer(2., self.check_input,
                                          clock=Clock(clock_type=ClockType.STEADY_TIME))
 
@@ -56,7 +73,7 @@ class DepthCameraRelay(Node):
             self.get_logger().warning('Depth input stalled; renewing image subscription')
             self.destroy_subscription(self.image_sub)
             self.pending_image = None
-            self.image_sub = self.create_subscription(Image, self.depth_topic, self.on_image, 1)
+            self.image_sub = self.create_subscription(Image, self.depth_topic, self.on_image, self.qos)
             self.last_input = time.monotonic()
 
     def publish_latest(self):
@@ -75,8 +92,8 @@ class DepthCameraRelay(Node):
         sampled = np.ascontiguousarray(raw[::2, ::2]).copy()
         # Keep the manipulation map local. Distant apartment surfaces at 1 cm
         # resolution previously grew beyond the DDS planning-scene limit.
-        limit = self.max_depth * (1000 if msg.encoding == '16UC1' else 1)
-        sampled[sampled > limit] = 0
+        scale = 1000 if msg.encoding == '16UC1' else 1
+        sampled[(sampled > self.max_depth * scale) | (sampled < self.min_depth * scale)] = 0
         encoding = msg.encoding
         if encoding == '32FC1':
             # Millimetres retain sub-voxel precision for the 1 cm map and halve

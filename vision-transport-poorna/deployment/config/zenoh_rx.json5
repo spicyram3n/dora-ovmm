@@ -1,16 +1,16 @@
 {
-  // poorna instance -- isolated from the shared team gateway.
-  // Connects to the poorna TX on the robot (10.7.3.185:7450).
+  // Connects to Sagar's shared TX on the robot (10.7.3.185:7447), so the
+  // camera is encoded once for everyone; no vision_tx of our own runs there.
   // Listen is pinned to 7451 so a peer-mode RX can never grab 7447,
-  // which SAM3 binds on this PC.
+  // which SAM3 binds on this PC (same port number, different machine).
   //
-  // PC port map: 7447 SAM3, 7448 GraspGenX, 7450 TX, 7451 RX.
+  // PC port map: 7447 SAM3, 7448 GraspGenX, 7451 RX.
   mode: "peer",
   listen: {
     endpoints: ["tcp/0.0.0.0:7451"],
   },
   connect: {
-    endpoints: ["tcp/10.7.3.185:7450"],
+    endpoints: ["tcp/10.7.3.185:7447"],
   },
   scouting: {
     multicast: {

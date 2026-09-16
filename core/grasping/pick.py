@@ -1,7 +1,7 @@
 """Pick up an object with MoveIt Task Constructor (MTC).
 
-SAM3 segments the object and GraspGenX proposes grasps. One MTC task opens
-the hand before moving to pregrasp. Calibrated pad placement sets the final grasp.
+SAM3 segments the object and GraspGenX proposes grasps. The hand opens on
+the hardware, then one MTC task moves to pregrasp. Calibrated pad placement sets the final grasp.
 The hand closes in bounded position steps until both finger springs register
 contact. Auto mode test-lifts cylinders and holds other geometry without lift.
 
@@ -11,6 +11,10 @@ Exit code 0 requires observed object motion during a short test lift;
 exit code 3 reports a contact-only hold. Other failures return 1.
 
     python3 -m core.grasping.pick "pringles can"
+    HSR_REAL_ROBOT=1 python3 -m core.grasping.pick "pringles can"   # real HSR
+
+HSR_REAL_ROBOT=1 uses the wall clock and reads RGB-D from vision transport RX
+(core/perception/camera_ros2.py); launch/grasp_real.launch.py sets it.
 """
 
 import sys
@@ -37,10 +41,12 @@ from moveit_msgs.msg import (
     CollisionObject,
     Constraints,
     JointConstraint,
+    MoveItErrorCodes,
     PlanningScene,
     PlanningSceneComponents,
+    RobotState,
 )
-from moveit_msgs.srv import ApplyPlanningScene, GetPlanningScene, GetStateValidity, ChangeDriftDimensions
+from moveit_msgs.srv import ApplyPlanningScene, GetPlanningScene, GetPositionIK, GetStateValidity, ChangeDriftDimensions
 from rcl_interfaces.msg import Parameter, ParameterType, ParameterValue
 from rcl_interfaces.srv import SetParameters
 from moveit_task_constructor_msgs.action import ExecuteTaskSolution
@@ -64,7 +70,7 @@ from tmc_control_msgs.action import GripperApplyEffort
 
 from core.grasping import graspgenx_client
 from core.perception import pointcloud, sam3_client
-from core.perception.camera_ros2 import BASE_FRAME, grab_rgbd, grab_hand_rgb, RobotTransforms
+from core.perception.camera_ros2 import BASE_FRAME, USE_SIM_TIME, grab_rgbd, grab_hand_rgb, RobotTransforms
 from core.utils.transforms import matrix_from_transform
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "launch"))
@@ -90,6 +96,10 @@ CLOSE_EFFORT = -0.3  # Nm, negative closes
 # Fingertips closer than this hold nothing: 0 cm empty, 2.1 cm around a pringles
 # can. The motor angle cannot tell; the springs let it close past contact.
 EMPTY_GAP = 0.01
+# The whole_body group's active joints, for joint-space goals.
+WHOLE_BODY_JOINTS = ["odom_x", "odom_y", "odom_t", "arm_lift_joint", "arm_flex_joint",
+                     "arm_roll_joint", "wrist_flex_joint", "wrist_roll_joint"]
+HEAD_LINKS = ["head_rgbd_sensor_link", "head_tilt_link"]
 BASE_SLACK = {
     "odom_x": 0.1,
     "odom_y": 0.1,
@@ -448,7 +458,7 @@ def side_waypoint(overhead, base_xy, distance=.12):
     return side
 
 
-def pregrasp_routes(planner, overhead, parked, base_xy, group, hand, frame):
+def pregrasp_routes(planner, overhead, parked, base_xy, group, hand, frame, ik=None):
     def move(name, matrix, timeout=3.):
         goal = PoseStamped()
         goal.header.frame_id = frame
@@ -457,9 +467,20 @@ def pregrasp_routes(planner, overhead, parked, base_xy, group, hand, frame):
         goal.pose.orientation.x, goal.pose.orientation.y, goal.pose.orientation.z, goal.pose.orientation.w = q.tolist()
         stage = stages.MoveTo(name, planner)
         stage.group = group
-        ik = PoseStamped(); ik.header.frame_id = hand; ik.pose.orientation.w = 1.
-        stage.ik_frame = ik
-        stage.setGoal(goal)
+        ik_frame = PoseStamped(); ik_frame.header.frame_id = hand; ik_frame.pose.orientation.w = 1.
+        stage.ik_frame = ik_frame
+        # A pose goal makes OMPL sample IK from random seeds; the HSR solver
+        # keeps the base near its seed, so the samples land outside the base
+        # window. A solution seeded from where the robot stands is a joint
+        # goal that needs no sampling. Fall back to the pose when there is none.
+        goal_state = ik(matrix) if ik is not None else None
+        if goal_state is not None:
+            print(f'[IK] {name}: seeded whole-body solution inside the base window', flush=True)
+            stage.setGoal(goal_state)
+            # A valid joint goal deserves the time to route around the table.
+            timeout = max(timeout, 15.)
+        else:
+            stage.setGoal(goal)
         stage.path_constraints = parked
         stage.timeout = timeout
         return stage
@@ -1136,7 +1157,19 @@ def run_action(node, kind, name, goal, seconds):
     try:
         if not client.wait_for_server(timeout_sec=10.0):
             raise RuntimeError(f"{name} unavailable")
-        handle = wait(node, client.send_goal_async(goal), f"{name} goal")
+        # wait_for_server returns once the server's services show in the
+        # graph, before every request/reply channel has matched. To the real
+        # robot over the LAN the first goal request was then lost and never
+        # answered (2026-09-16), so resend until the server acknowledges one.
+        for attempt in range(1, 4):
+            future = client.send_goal_async(goal)
+            rclpy.spin_until_future_complete(node, future, timeout_sec=5.0)
+            if future.done():
+                handle = future.result()
+                break
+            print(f"[ACTION] {name}: no goal response in 5 s (attempt {attempt}/3), resending", flush=True)
+        else:
+            raise RuntimeError(f"{name} goal timed out")
         if not handle.accepted:
             raise RuntimeError(f"{name} rejected the goal")
         try:
@@ -1149,6 +1182,30 @@ def run_action(node, kind, name, goal, seconds):
             raise
     finally:
         client.destroy()
+
+
+def open_hand(node):
+    """Open the hand on the hardware before the reach is planned.
+
+    The finger springs are passive. Closed on nothing, the real hand reports
+    them at about 0.8 rad, and a planned open-hand stage keeps those values
+    while spreading the fingers, so the pregrasp start state had a finger
+    inside the torso (2026-09-16). Opened for real, the springs relax and
+    the plan starts from the true state."""
+    goal = FollowJointTrajectory.Goal()
+    goal.trajectory.joint_names = ['hand_motor_joint']
+    goal.trajectory.points = [JointTrajectoryPoint(
+        positions=[OPEN_HAND], time_from_start=Duration(sec=1, nanosec=500000000))]
+    result = run_action(node, FollowJointTrajectory, '/gripper_controller/follow_joint_trajectory', goal, 15.)
+    if result.status != GoalStatus.STATUS_SUCCEEDED or result.result.error_code != 0:
+        raise RuntimeError('the hand did not open')
+    deadline = time.monotonic() + 5.
+    while time.monotonic() < deadline:
+        q = joint_positions(node)
+        if abs(q['hand_motor_joint'] - OPEN_HAND) < .05 and max(
+                q['hand_l_spring_proximal_joint'], q['hand_r_spring_proximal_joint']) < .3:
+            return
+    print('[GRASP] finger springs still deflected after opening; planning anyway', flush=True)
 
 
 def close_hand(node):
@@ -1166,7 +1223,7 @@ def mtc_node():
     """An rclcpp node carrying move_group's robot model and planner settings."""
     with tempfile.NamedTemporaryFile("w", suffix=".yaml") as params:
         yaml.safe_dump(
-            {"/**": {"ros__parameters": {**planning_model.moveit_params(), "use_sim_time": True}}}, params
+            {"/**": {"ros__parameters": {**planning_model.moveit_params(), "use_sim_time": USE_SIM_TIME}}}, params
         )
         params.flush()
         options = rclcpp.NodeOptions()
@@ -1200,9 +1257,48 @@ def move_hand(name, planner, direction, frame, min_distance, max_distance):
     return stage
 
 
+def seeded_ik(node, matrix, base, frame=BASE_FRAME):
+    """Collision-free whole-body IK for a palm pose, seeded from the current state.
+
+    OMPL's goal sampler seeds IK from random states and the HSR solver keeps
+    the base near its seed, so on the real robot every sampled pregrasp put
+    the base outside BASE_SLACK and the stage timed out (2026-09-16). Seeded
+    from where the robot stands, the same solver lands inside the window.
+    Returns a diff RobotState over WHOLE_BODY_JOINTS, or None."""
+    scene = call(node, GetPlanningScene, "/get_planning_scene", GetPlanningScene.Request(
+        components=PlanningSceneComponents(components=PlanningSceneComponents.ROBOT_STATE))).scene
+    request = GetPositionIK.Request()
+    request.ik_request.group_name = GROUP
+    request.ik_request.robot_state = scene.robot_state
+    request.ik_request.ik_link_name = HAND
+    request.ik_request.pose_stamped = stamped(frame, matrix)
+    # Not avoid_collisions: when the seeded answer is rejected, the service
+    # retries from random seeds and reports no solution at all. Take the
+    # seeded answer and check it against the live scene instead.
+    request.ik_request.avoid_collisions = False
+    request.ik_request.timeout = Duration(sec=1)
+    response = call(node, GetPositionIK, "/compute_ik", request)
+    if response.error_code.val != MoveItErrorCodes.SUCCESS:
+        return None
+    solution = dict(zip(response.solution.joint_state.name, response.solution.joint_state.position))
+    if any(abs(solution[joint] - base[joint]) > slack for joint, slack in BASE_SLACK.items()):
+        return None
+    valid = call(node, GetStateValidity, "/check_state_validity",
+                 GetStateValidity.Request(robot_state=response.solution, group_name=GROUP))
+    if not valid.valid:
+        return None
+    goal = RobotState(is_diff=True)
+    goal.joint_state.name = list(WHOLE_BODY_JOINTS)
+    goal.joint_state.position = [float(solution[joint]) for joint in WHOLE_BODY_JOINTS]
+    return goal
+
+
 class Pick:
-    def __init__(self, node):
+    def __init__(self, node, ik=None):
+        """ik(matrix, base) -> RobotState or None gives pregrasp stages a
+        joint-space goal; see seeded_ik."""
         self.node = node
+        self.ik = ik
         self.ompl = None
         self.cartesian = core.CartesianPath()
         self.cartesian.step_size = 0.005  # enough steps for MoveIt's joint-jump check
@@ -1229,6 +1325,11 @@ class Pick:
         # Transit and opening must check the target as well as the table.
         protect = stages.ModifyPlanningScene("check target during pregrasp")
         protect.allowCollisions(TARGET, FINGERS, False)
+        # The real camera's octomap always holds one voxel at the sensor
+        # origin, inside the camera housing (2026-09-16). It blocks base
+        # shifts of a few centimetres through the two head links, which no
+        # arm plan can bring near anything real.
+        protect.allowCollisions("<octomap>", HEAD_LINKS, True)
         task.add(protect)
         if abs(base.get("hand_motor_joint", 0.0) - OPEN_HAND) > 0.005:
             open_hand = stages.MoveTo("open hand before pregrasp", self.ompl)
@@ -1268,7 +1369,8 @@ class Pick:
                 candidate.insert(clearance)
             pregrasp = pregrasp_routes(
                 self.ompl, grasp @ back_off, parked,
-                [base['odom_x'], base['odom_y']], GROUP, HAND, BASE_FRAME)
+                [base['odom_x'], base['odom_y']], GROUP, HAND, BASE_FRAME,
+                ik=(lambda matrix: self.ik(matrix, base)) if self.ik else None)
             candidate.insert(pregrasp)
             allow = stages.ModifyPlanningScene("allow finger contact")
             allow.allowCollisions(TARGET, FINGERS, True)
@@ -1353,10 +1455,10 @@ def pick(prompt, mode='auto'):
         raise ValueError('Unknown grasp mode')
     rclpy.init()
     rclcpp.init()
-    node = rclpy.create_node("pick", parameter_overrides=[NodeParameter("use_sim_time", value=True)])
+    node = rclpy.create_node("pick", parameter_overrides=[NodeParameter("use_sim_time", value=USE_SIM_TIME)])
     try:
         poses = RobotTransforms(node)
-        planner = Pick(mtc_node())
+        planner = Pick(mtc_node(), ik=lambda matrix, base: seeded_ik(node, matrix, base))
         if joint_positions(node)['arm_lift_joint'] > GRASP_LIFT_MAX:
             previous=observe(prompt)['points']
             print('[GRASP] restoring arm-lift margin before replanning',flush=True)
@@ -1384,6 +1486,8 @@ def pick(prompt, mode='auto'):
         if diagnostics:
             Path(diagnostics).mkdir(parents=True, exist_ok=True)
             np.savez(Path(diagnostics)/'planned_grasps.npz', points=points, grasps=grasps, widths=widths)
+        if joint_positions(node)['hand_motor_joint'] < OPEN_HAND - .05:
+            open_hand(node)
         model_target(node, points)
         execute(node, planner.reach(grasps, joint_positions(node)))
         reached = poses.transform()
