@@ -44,7 +44,8 @@ INSCRIBED, UNKNOWN = (99, -1)
 
 @contextmanager
 def ros_node(name):
-    """A node that is always torn down, including when the body raises."""
+    """Create a temporary ROS node and always release it on exit."""
+    # Start ROS only if the caller has not already started it.
     owns_context = not rclpy.ok()
     if owns_context:
         rclpy.init()
@@ -58,7 +59,8 @@ def ros_node(name):
 
 
 def spin_until(node, ready, complaint, timeout):
-    """Spin `node` until `ready()` holds, or raise RuntimeError(complaint)."""
+    """Process ROS messages until ready() succeeds or the timeout expires."""
+    # Use a wall-clock deadline while spinning ROS to receive the needed data.
     deadline = time.monotonic() + timeout
     while not ready():
         if time.monotonic() > deadline:
@@ -69,6 +71,7 @@ def spin_until(node, ready, complaint, timeout):
 def latest_message(node, message_type, topic, complaint, timeout):
     """Keep the first received latched-topic message."""
     received = {}
+    # Ask for the saved topic sample, even if it was published before we subscribed.
     qos = QoSProfile(
         depth=1,
         reliability=ReliabilityPolicy.RELIABLE,
@@ -105,7 +108,9 @@ def load_occupancy_grid(yaml_path=MAP_YAML, frame_id="map"):
         raise ValueError("Invalid map occupancy thresholds")
     if not np.isfinite(meta["resolution"]) or meta["resolution"] <= 0:
         raise ValueError("Map resolution must be positive")
+    # Flip image rows so the map origin is at the bottom, then scale pixels to 0–1.
     brightness = np.flipud(image).astype(np.float32) / 255.0
+    # Interpret image brightness using the map's configured occupied/free convention.
     if meta.get("negate", 0):
         occupancy = brightness
     else:
@@ -116,11 +121,13 @@ def load_occupancy_grid(yaml_path=MAP_YAML, frame_id="map"):
     grid.header.frame_id = frame_id
     grid.info.resolution = float(meta["resolution"])
     grid.info.height, grid.info.width = occupancy.shape
+    # Copy the saved map position and heading into the grid origin.
     grid.info.origin.position.x = float(meta["origin"][0])
     grid.info.origin.position.y = float(meta["origin"][1])
     yaw = float(meta["origin"][2])
     grid.info.origin.orientation.z = math.sin(yaw / 2)
     grid.info.origin.orientation.w = math.cos(yaw / 2)
+    # Flatten the grid into the row order expected by the ROS message.
     grid.data = np.where(free, FREE, BLOCKED).astype(np.int8).ravel().tolist()
     return grid
 
@@ -167,6 +174,7 @@ def _grid_in_frame(node, grid, goal_frame, timeout=5.0):
     origin.translation.y = grid.info.origin.position.y
     origin.translation.z = grid.info.origin.position.z
     origin.rotation = grid.info.origin.orientation
+    # Combine the grid origin with the transform into the requested frame.
     map_from_grid = matrix_from_transform(origin)
     shifted = OccupancyGrid()
     shifted.header.frame_id = goal_frame
@@ -177,7 +185,8 @@ def _grid_in_frame(node, grid, goal_frame, timeout=5.0):
 
 
 def _obstacle_map(node, obstacles, goal_frame):
-    """Whatever `solve`'s caller asked to mask with, as a grid in `goal_frame`."""
+    """Load the requested obstacle grid and express its origin in the goal frame."""
+    # Choose a live costmap, saved map, supplied grid, or no grid.
     if obstacles == "--costmap":
         obstacles = costmap_grid(node)
     elif obstacles == "--map":
@@ -188,11 +197,10 @@ def _obstacle_map(node, obstacles, goal_frame):
 
 
 def collision_world(boxes, frame_from_map):
-    """Furniture boxes (centre, dimensions, yaw) in map, as solver obstacles in the hand
-    goal's frame. The solver checks the whole robot against them, arm included, and
-    does not transform them itself."""
+    """Turn map-frame furniture boxes into whole-robot obstacles in the hand goal frame."""
     world = PlanningSceneWorld()
     for index, (centre, dimensions, yaw) in enumerate(boxes):
+        # Place each furniture box in map coordinates, then transform it for the solver.
         placed = np.eye(4)
         placed[:2, :2] = [[math.cos(yaw), -math.sin(yaw)], [math.sin(yaw), math.cos(yaw)]]
         placed[:3, 3] = centre
@@ -208,6 +216,7 @@ def collision_world(boxes, frame_from_map):
 def _ik_request(hand_goal, obstacle_map, environment):
     request = SolveIkWithCollision.Request()
     request.origin_to_hand_goal = pose_from_matrix(hand_goal)
+    # Use empty scene messages when the caller supplies no obstacles.
     if obstacle_map is None:
         request.obstacle_map = OccupancyGrid()
     else:
@@ -216,6 +225,7 @@ def _ik_request(hand_goal, obstacle_map, environment):
         request.environment = PlanningSceneWorld()
     else:
         request.environment = environment
+    # Seed the solver with the neutral arm pose and an unrotated base.
     request.initial_joint_state = JointState(name=ARM_JOINTS, position=NEUTRAL)
     request.initial_origin_to_base.orientation.w = 1.0
     return request
@@ -229,9 +239,10 @@ def _base_xy_yaw(result):
 
 
 def _solve_one(node, client, hand_goal, obstacle_map, environment, timeout):
-    """Every (bases, joints) the solver found for a single hand pose."""
+    """Return the base poses and arm joints found for one hand pose."""
     future = client.call_async(_ik_request(hand_goal, obstacle_map, environment))
     rclpy.spin_until_future_complete(node, future, timeout_sec=timeout)
+    # Cancel a timed-out request because missing results cannot establish reachability.
     if not future.done():
         future.cancel()
         raise RuntimeError("IK service timed out; reachability is unknown")
@@ -244,6 +255,7 @@ def _solve_one(node, client, hand_goal, obstacle_map, environment, timeout):
     for result in found:
         base_poses.append(_base_xy_yaw(result))
         joint_positions.append(result.joint_positions)
+    # Return matching rows of base poses and arm-joint positions.
     bases = np.array(base_poses).reshape(-1, 3)
     joints = np.array(joint_positions).reshape(-1, len(ARM_JOINTS))
     return (bases, joints)
@@ -254,6 +266,7 @@ def solve(poses, obstacles=None, environment=None, timeout=30.0, goal_frame="odo
     if goal_frame != "odom":
         raise ValueError("This IK integration expects odom-frame hand poses")
     poses = np.asarray(poses, dtype=float)
+    # Require one finite 4x4 matrix for every candidate hand pose.
     if poses.ndim != 3 or poses.shape[1:] != (4, 4) or not np.isfinite(poses).all():
         raise ValueError("Expected finite hand poses with shape (N, 4, 4)")
     with ros_node("base_placement") as node:
@@ -264,6 +277,7 @@ def solve(poses, obstacles=None, environment=None, timeout=30.0, goal_frame="odo
             )
         obstacle_map = _obstacle_map(node, obstacles, goal_frame)
         results = []
+        # Ask for base and arm solutions separately for each candidate hand pose.
         for pose in poses:
             results.append(
                 _solve_one(node, client, pose, obstacle_map, environment, timeout)

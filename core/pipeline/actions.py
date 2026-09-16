@@ -46,9 +46,7 @@ MAX_SPAN = 0.6
 # Taller furniture holds things on shelves the head cannot see from above.
 TALL = 1.2
 STORAGE_WORDS = ("shelf", "shelves", "bookcase", "rack")
-# Views planned this run, per place, with what happened at each pose, so a later
-# look at the same place (another query, active perception) can reuse them.
-# Held in memory only: they go when the run ends.
+# Cache viewing poses and outcomes for reuse during this run only.
 VIEWS = {}
 # After this many failed drives at one place, move on instead of trying every pose.
 FAILED_DRIVES = 2
@@ -57,6 +55,7 @@ FAILED_DRIVES = 2
 def home_goal():
     """The user's navigation home pose, as an arm trajectory goal."""
     goal = FollowJointTrajectory.Goal()
+    # Name each joint in the same order as the home-pose positions below.
     goal.trajectory.joint_names = [
         'arm_lift_joint', 'arm_flex_joint', 'arm_roll_joint',
         'wrist_flex_joint', 'wrist_roll_joint',
@@ -76,12 +75,7 @@ def home_arm(navigator, wait, remaining):
                                           '/controller_manager/list_controllers')
 
     def arm_controller_running():
-        """Whether ros2_control has activated the controller, not merely loaded it.
-
-        It advertises the action as soon as it is loaded and rejects every goal
-        until activated, so waiting on the action alone races the spawners and
-        the first home fails with "Controller is not running".
-        """
+        """Check that the arm controller is active; a loaded action can still reject goals."""
         if not controllers.service_is_ready():
             return False
         future = controllers.call_async(ListControllers.Request())
@@ -90,6 +84,7 @@ def home_arm(navigator, wait, remaining):
         if not future.done():
             controllers.remove_pending_request(future)
             return False
+        # A controller must be active, not just listed, before it can execute the goal.
         return any(state.name == 'arm_trajectory_controller' and state.state == 'active'
                    for state in future.result().controller)
 
@@ -112,6 +107,7 @@ def home_arm(navigator, wait, remaining):
 
 def waiter(navigator, deadline):
     """(remaining, wait) for readiness checks that share one deadline."""
+    # Make every startup check use the same wall-clock deadline.
     def remaining():
         seconds = deadline - time.monotonic()
         if seconds <= 0:
@@ -125,6 +121,7 @@ def waiter(navigator, deadline):
             if check():
                 print(f'[READY] {label}', flush=True)
                 return
+            # Keep processing ROS messages while waiting for the next readiness check.
             rclpy.spin_once(navigator, timeout_sec=min(0.5, remaining()))
 
     return remaining, wait
@@ -134,6 +131,7 @@ def get_ready(navigator, target, timeout, perception=True):
     """Wait for every service the mission uses; skip SAM3 without perception."""
     remaining, wait = waiter(navigator, time.monotonic() + timeout)
     navigator.resume_navigation_if_paused()
+    # Wait for active navigation nodes before checking their actions and sensors.
     for name in ('amcl', 'planner_server', 'controller_server', 'behavior_server', 'bt_navigator'):
         client = navigator.create_client(GetState, f'/{name}/get_state')
         try:
@@ -145,6 +143,7 @@ def get_ready(navigator, target, timeout, perception=True):
                 if not future.done():
                     client.remove_pending_request(future)
                     return False
+                # Accept only the active lifecycle state.
                 return future.result().current_state.id == 3  # lifecycle ACTIVE
             wait(name + ' active', active)
         finally:
@@ -173,15 +172,13 @@ def get_ready(navigator, target, timeout, perception=True):
                 if not future.done():
                     scene.remove_pending_request(future)
                     return False
+                # A completed planning-scene response proves the service is responding.
                 return True
-            # Advertised is not enough: move_group aborts on an oversized scene
-            # publish and leaves its services up but unanswered.
+            # Require a real reply; an advertised service may be unresponsive.
             wait('move_group planning scene', answers)
         finally:
             navigator.destroy_client(scene)
-        # The pick executes through MTC, whose capability move_group only loads
-        # when launch/move_group.launch.py passes it. Missing, the mission would
-        # drive the whole way and fail at the last step.
+        # Check the MTC execution action before travelling to the object.
         solution = ActionClient(navigator, ExecuteTaskSolution, '/execute_task_solution')
         try:
             wait('MoveIt task solution action', solution.server_is_ready)
@@ -231,6 +228,7 @@ def is_storage(data):
 
 
 def targets(scene, obj, furniture=None, robot_xy=None, top_k=3):
+    # Use an explicitly selected furniture item, or fall back to the object search order.
     if furniture:
         matches = []
         for node_id, data in sg.furniture(scene).items():
@@ -269,6 +267,7 @@ def _views(scene, location):
     else:
         centre, dimensions, yaw = sg.footprint(pieces[location.furniture_id])
         storage = is_storage(pieces[location.furniture_id])
+    # Generate furniture-clear base poses and surface samples for view coverage.
     poses = standoff.candidates(
         centre, dimensions, yaw, blockers=blockers, storage=storage
     )
@@ -285,14 +284,14 @@ def _views(scene, location):
 
 
 def plan(scene, location, robot_xy=None, grid=None):
-    """Observation poses in visiting order, and how many views the location needs.
-    With `grid`, Nav2's costmap, poses the planner would refuse are dropped."""
+    """Order clear observation poses and report the view count; optionally filter by costmap."""
     sg.require_map(scene)
     if location.frame_id != "map":
         raise ValueError("Search locations must be in map")
     key = view_key(location)
     if key not in VIEWS:
         poses, points = _views(scene, location)
+        # Remove candidate bases that land on blocked costmap cells.
         if grid is not None:
             poses = [pose for pose in poses if standoff.free(grid, pose)]
         VIEWS[key] = {"poses": poses, "points": points, "outcomes": {}}
@@ -316,16 +315,14 @@ def plan(scene, location, robot_xy=None, grid=None):
 
 
 def look_points(scene, location, pose):
-    """Where the head aims from `pose`: the remembered object, just above a
-    surface, or each height of shelved furniture."""
+    """Choose head targets for a remembered object, a tabletop, or successive shelf heights."""
     if location.object_id is not None or location.furniture_id is None:
         aims = [location.centroid]
         if location.object_id is not None and location.furniture_id is not None:
             data = scene.nodes[location.furniture_id]
             if not is_storage(data):
                 centre, _ = box(data)
-                # A released object can roll away from its remembered spot.
-                # Inspect the supporting surface before driving elsewhere.
+                # Also check the supporting surface in case the object moved.
                 aims.append([centre[0], centre[1], data['bounds'][1][2]+.06])
         return aims
     data = scene.nodes[location.furniture_id]
@@ -349,6 +346,7 @@ def observed_furniture(scene, points):
         centre, dimensions = box(data)
         ids.append(node)
         pieces.append(from_box(data["label"], centre, dimensions))
+    # Associate the observed object with nearby supporting or containing furniture.
     index, relation = classify(Instance("target", points), pieces, near_limit=0.5)
     if index is None:
         return None, "near"
@@ -361,13 +359,13 @@ def locate(obj, with_camera=False):
         mask, score = sam3_client.detect(rgb, obj)
     except sam3_client.ObjectNotFound:
         return None
-    # The segmentation edge straddles object and background, so its pixels carry
-    # the background's depth. Deprojected, they stretch the box down the view ray.
+    # Remove mask-edge pixels that may use background depth and stretch the box.
     core = pointcloud.shrink(mask)
     points = pointcloud.deproject(depth, intrinsics, core)
     if len(points) < 100 or len(points) < 0.25 * np.count_nonzero(core):
         print("Object detected, but depth is insufficient; trying another view.")
         return None
+    # Keep one connected object body to remove depth points on the background.
     points = pointcloud.largest_cluster(points)
     if points is None or len(points) < 100:
         print("Detection did not form one solid body; trying another view.")
@@ -378,10 +376,7 @@ def locate(obj, with_camera=False):
 
 
 def make_graspable(scene, node_id, navigator, obstacles="--costmap", bearings=12, target=None):
-    """Refine the observation pose into one the IK solver certifies for the arm.
-
-    With `target`, box- and sphere-like objects are re-measured and their real
-    pregrasp hand poses replace the generic reach probes."""
+    """Park at a reachable base pose, using measured pregrasp geometry when available."""
     centre, dimensions = box(scene.nodes[node_id])
     holder, relation = sg.location_of(scene, node_id)
     blockers = []
@@ -401,8 +396,10 @@ def make_graspable(scene, node_id, navigator, obstacles="--costmap", bearings=12
             if cylinder(points) is None and (top_rectangle(points) is not None or sphere(points) is not None):
                 try:
                     _, hand_poses, _, kind = contact_candidates(points, np.empty((0,4,4)), camera)
+                    # Back the palm away from contact to test reachable pregrasp poses.
                     back = np.eye(4); back[2,3] = -.08
                     hand_poses = hand_poses @ back
+                    # Try overhead sphere grasps first, keeping side grasps as a fallback.
                     if kind == 'sphere' and np.any(hand_poses[:,2,2] < -.9):
                         overhead = hand_poses[:,2,2] < -.9
                         alternate_hand_poses = hand_poses[~overhead]
@@ -415,6 +412,7 @@ def make_graspable(scene, node_id, navigator, obstacles="--costmap", bearings=12
         navigator, centre, dimensions, obstacles=obstacles, bearings=bearings,
         blockers=blockers, solid=solid, hand_poses=hand_poses,
     )
+    # Retry with side grasps when the preferred overhead parking poses fail.
     if outcome is None and alternate_hand_poses is not None:
         print('[BASE] overhead parking unavailable; checking side grasps', flush=True)
         outcome = graspable.reposition(
@@ -445,20 +443,17 @@ def make_graspable(scene, node_id, navigator, obstacles="--costmap", bearings=12
 
 
 def pick_up(obj, mode='auto'):
-    """Re-observe the object from where the base is parked and pick it up.
-
-    Runs core/grasping/pick.py in its own process, which keeps MoveIt Task
-    Constructor's C++ node apart from this process's rclpy context."""
+    """Run the pick in a separate process so MTC's C++ node has its own ROS context."""
     pick = subprocess.run([sys.executable, "-m", "core.grasping.pick", obj,
                            '--mode', mode], cwd=ROOT)
     return {0: PICKED, 3: GRASPED}.get(pick.returncode, NOT_PICKED)
 
 
 def search(scene, obj, navigator, furniture=None, top_k=3, observe=locate, views=2):
-    """Try at least `views` viewpoints per location, more when the furniture is too
-    large for them to cover. Perception/server errors stop the run.
+    """Search viewpoints until an object is found; return (status, object node or None).
 
-    Returns (status, recorded object node), the node being None when nothing was seen."""
+    Try at least views viewpoints per location, increasing this for coverage.
+    Perception or server errors stop the search."""
     if views < 1:
         raise ValueError("views must be positive")
     # Advancing this iterator requests LLM fallback only when needed.
@@ -470,8 +465,7 @@ def search(scene, obj, navigator, furniture=None, top_k=3, observe=locate, views
         observations = 0
         failed_drives = 0
         current = navigator.robot_pose() if obj else None
-        # A neighbouring table object may already be visible after the last
-        # grasp. Look before making a needless trip around the furniture.
+        # Check the current view before driving to a new observation pose.
         for pose in ([current] if current is not None else []) + list(poses):
             at_current = current is not None and pose is current
             if not at_current and not navigator.reachable(*pose):
@@ -485,8 +479,7 @@ def search(scene, obj, navigator, furniture=None, top_k=3, observe=locate, views
                 continue
             if not obj:
                 return (ARRIVED, None)
-            # A spent view is spent whether the head or the detector failed;
-            # otherwise an unaimable target burns every candidate pose.
+            # Count each visited pose even if the head cannot aim at the target.
             observations += int(not at_current)
             points = None
             aimed = False
@@ -513,8 +506,7 @@ def search(scene, obj, navigator, furniture=None, top_k=3, observe=locate, views
                 lower, upper = (points.min(axis=0), points.max(axis=0))
                 span = float((upper - lower).max())
                 if span > MAX_SPAN:
-                    # Recording this would corrupt the remembered box and every
-                    # standoff and probe pose later derived from it.
+                    # Reject oversized detections before they change the saved object box.
                     print(
                         f"Detection spans {span:.2f} m, beyond the {MAX_SPAN:.2f} m"
                         " a graspable object can measure; discarding this view."
@@ -522,8 +514,7 @@ def search(scene, obj, navigator, furniture=None, top_k=3, observe=locate, views
                     if observations >= limit:
                         break
                     continue
-                # A fallback detection updates the remembered object, not a duplicate.
-                # Past the limit it is a different instance and deserves its own node.
+                # Reuse a nearby matching object; give distant detections a new node.
                 object_id = location.object_id
                 if object_id is not None and np.linalg.norm(
                     points.mean(axis=0)[:2]
@@ -536,11 +527,11 @@ def search(scene, obj, navigator, furniture=None, top_k=3, observe=locate, views
                     )
                 label, name = (obj, "")
                 if object_id is not None:
-                    # Keep the asset label. Renaming it to the query splits the label
-                    # space, and sibling instances stop matching each other.
+                    # Preserve the saved label and name so future queries still match.
                     label = scene.nodes[object_id]["label"]
                     name = scene.nodes[object_id]["name"]
                 furniture_id, relation = observed_furniture(scene, points)
+                # Save the measured box and its furniture relation before returning success.
                 object_id = sg.record_object(
                     scene,
                     label,
@@ -554,6 +545,7 @@ def search(scene, obj, navigator, furniture=None, top_k=3, observe=locate, views
                 )
                 print(f"Found {obj} in map at {points.mean(axis=0).round(3).tolist()}")
                 return (FOUND, object_id)
+            # Move to the next search location once this location's view budget is used.
             if observations >= limit:
                 break
         if observations == 0:

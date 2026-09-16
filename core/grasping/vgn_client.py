@@ -18,9 +18,10 @@ SHAPE = (RESOLUTION,) * 3
 
 
 def predict(grid, threshold=0.9, timeout=10, *, quality=False, metadata=None):
-    """Return grasp frames (M, 4, 4) in the grid's frame, widths (M,) in metres
-    and qualities (M,), best first; with quality=True, also the (40, 40, 40)
-    quality volume. M may be 0: nothing graspable has been seen yet."""
+    """Return grid-frame grasp poses, widths in metres, and scores, best first.
+
+    With quality=True, also return the dense quality grid. Zero grasps is valid."""
+    # Pack the TSDF in the float32 grid layout expected by VGN.
     grid = np.ascontiguousarray(grid, dtype=np.float32)
     if grid.shape != SHAPE or not np.isfinite(grid).all():
         raise ValueError(f"Expected a finite {SHAPE} TSDF grid")
@@ -29,12 +30,14 @@ def predict(grid, threshold=0.9, timeout=10, *, quality=False, metadata=None):
     count = meta.get("num_grasps")
     if isinstance(count, bool) or not isinstance(count, int) or count < 0:
         raise RuntimeError("Malformed VGN grasp count")
+    # Find the byte ranges for poses, widths, scores, and the optional quality grid.
     poses_end = count * 16 * 4
     widths_end = poses_end + count * 4
     qualities_end = widths_end + count * 4
     volume = int(np.prod(SHAPE)) * 4 if quality else 0
     if len(body) != qualities_end + volume:
         raise RuntimeError("Malformed VGN reply")
+    # Decode candidate transforms and matching width and quality arrays.
     poses = np.frombuffer(body[:poses_end], np.float32).reshape(count, 4, 4).astype(np.float64)
     widths = np.frombuffer(body[poses_end:widths_end], np.float32)
     qualities = np.frombuffer(body[widths_end:qualities_end], np.float32)
@@ -47,11 +50,12 @@ def predict(grid, threshold=0.9, timeout=10, *, quality=False, metadata=None):
 
 def fingertips(poses):
     """(M, 3) points midway between each grasp's fingertips."""
+    # Move from each grasp origin along approach Z to the fingertip centre.
     return poses[:, :3, 3] + FINGER_DEPTH * poses[:, :3, 2]
 
 
 def inside(poses, low, high):
-    """Which grasps close on the box [low, high]. VGN grasps whatever is in the
-    cube; this is active_grasp's test that a grasp is on the target."""
+    """Check which grasp fingertip centres lie inside the target box [low, high]."""
+    # Keep grasps whose fingertip centre falls inside the target box.
     tips = fingertips(poses)
     return np.all((tips >= low) & (tips <= high), axis=1)

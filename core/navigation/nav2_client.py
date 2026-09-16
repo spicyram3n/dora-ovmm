@@ -21,9 +21,8 @@ from core.utils.transforms import matrix_from_transform
 
 FRAME = "map"
 BASE = "base_footprint"
-# config/nav2/nav2_params.yaml keeps one goal checker on purpose: a second makes every
-# FollowPath abort, because the stock behaviour tree sends an empty checker id.
-# Both its tolerances are dynamic, so a precise leg tightens them and puts them back.
+# Use the single configured goal checker; the stock tree sends no checker ID.
+# Its tolerances can be tightened temporarily for precise parking.
 CONTROLLER = "/controller_server"
 GOAL_CHECKER = "general_goal_checker"
 
@@ -34,6 +33,7 @@ def _pose(x, y, yaw):
     pose = PoseStamped()
     pose.header.frame_id = FRAME
     pose.pose.position.x, pose.pose.position.y = (float(x), float(y))
+    # Encode the planar heading as a quaternion around the vertical axis.
     pose.pose.orientation.z = math.sin(yaw / 2)
     pose.pose.orientation.w = math.cos(yaw / 2)
     return pose
@@ -46,12 +46,14 @@ class Navigator(Node):
             "scene_graph_navigator",
             parameter_overrides=[Parameter("use_sim_time", value=use_sim_time)],
         )
+        # Create separate clients for checking paths and executing navigation goals.
         self.planner = ActionClient(self, ComputePathToPose, "compute_path_to_pose")
         self.driver = ActionClient(self, NavigateToPose, "navigate_to_pose")
         self.tf_buffer = Buffer()
         self.listener = TransformListener(self.tf_buffer, self)
 
     def _lifecycle_call(self, service_type, service, request, timeout=15):
+        # Bound both service discovery and response time during a navigation handoff.
         client = self.create_client(service_type, service)
         try:
             if not client.wait_for_service(timeout_sec=timeout):
@@ -79,6 +81,7 @@ class Navigator(Node):
             ManageLifecycleNodes.Request(command=ManageLifecycleNodes.Request.PAUSE), timeout=30)
         if not response.success:
             raise RuntimeError("Nav2 pause rejected; refusing MoveIt handoff")
+        # Confirm every motion node is inactive before handing the base to MoveIt.
         for name in ("controller_server", "behavior_server", "bt_navigator", "waypoint_follower"):
             if self.navigation_state(name) != State.PRIMARY_STATE_INACTIVE:
                 raise RuntimeError(f"{name} is not inactive; refusing MoveIt handoff")
@@ -88,6 +91,7 @@ class Navigator(Node):
         """Resume a previously paused navigation stack for a new search."""
         from lifecycle_msgs.msg import State
         from nav2_msgs.srv import ManageLifecycleNodes
+        # Resume only when the controller is paused; leave an already-running stack alone.
         if self.navigation_state("controller_server") != State.PRIMARY_STATE_INACTIVE:
             return
         response = self._lifecycle_call(
@@ -100,6 +104,7 @@ class Navigator(Node):
     def _run(self, client, goal, timeout):
         if not client.wait_for_server(timeout_sec=10):
             raise RuntimeError("Nav2 action server is unavailable")
+        # Send the goal and wait for the server to accept or reject it.
         sent = client.send_goal_async(goal)
         rclpy.spin_until_future_complete(self, sent, timeout_sec=10)
         if not sent.done():
@@ -118,6 +123,7 @@ class Navigator(Node):
             raise RuntimeError("Nav2 returned no goal acknowledgement")
         if not handle.accepted:
             return None
+        # Wait for completion; cancel the motion on timeout or interruption.
         finished = handle.get_result_async()
         try:
             rclpy.spin_until_future_complete(self, finished, timeout_sec=timeout)
@@ -133,8 +139,7 @@ class Navigator(Node):
         cancelled = handle.cancel_goal_async()
         rclpy.spin_until_future_complete(self, cancelled, timeout_sec=5)
         rclpy.spin_until_future_complete(self, finished, timeout_sec=5)
-        # Do not send another goal until the previous motion has ended. A cancelled
-        # goal still completes its result future, carrying STATUS_CANCELED.
+        # Confirm the previous motion ended before allowing another goal.
         if not finished.done() or finished.exception() is not None:
             raise RuntimeError(
                 "Navigation cancellation unconfirmed; refusing another goal"
@@ -151,9 +156,7 @@ class Navigator(Node):
             except TransformException:
                 continue
             age = (self.get_clock().now() - Time.from_msg(stamped.header.stamp)).nanoseconds / 1e9
-            # A cached pose after a connection loss is not an arrival measurement.
-            # A stamp slightly ahead of our clock is fresh, not stale: sim time and
-            # the TF publisher tick separately, so allow the same slack either way.
+            # Reject stale poses; allow small clock differences in either direction.
             if abs(age) <= max_age:
                 transform = stamped.transform
                 break
@@ -171,6 +174,7 @@ class Navigator(Node):
 
     def frame_transform(self, target_frame, source_frame, timeout=10):
         """(4, 4) target_from_source, waited for rather than assumed published."""
+        # Wait for the requested frame relationship instead of assuming it is already published.
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             rclpy.spin_once(self, timeout_sec=0.1)
@@ -198,6 +202,7 @@ class Navigator(Node):
         path = outcome.result.path
         if not path.poses or path.header.frame_id != FRAME:
             return False
+        # Check that the returned path actually ends near the requested position.
         end = path.poses[-1].pose.position
         return math.hypot(end.x - x, end.y - y) <= 0.1
 
@@ -210,6 +215,7 @@ class Navigator(Node):
         outcome = self._run(self.driver, goal, timeout)
         reached = False
         if outcome is not None and outcome.status == GoalStatus.STATUS_SUCCEEDED:
+            # Verify the measured arrival pose after Nav2 reports success.
             offset, error = self.residual(x, y, yaw)
             reached = offset <= tolerance and error <= yaw_tolerance
         events.emit("drive", pose=[x, y, yaw], reached=reached)
@@ -218,6 +224,7 @@ class Navigator(Node):
     def residual(self, x, y, yaw):
         """How far the base actually is from a goal, as (metres, radians)."""
         current_x, current_y, heading = self.robot_pose()
+        # Wrap heading error so crossing -pi/pi does not look like a full turn.
         error = abs(math.atan2(math.sin(heading - yaw), math.cos(heading - yaw)))
         return (math.hypot(current_x - x, current_y - y), error)
 
@@ -233,8 +240,7 @@ class Navigator(Node):
                 parameter.value.type = ParameterType.PARAMETER_DOUBLE
                 parameter.value.double_value = float(value)
                 request.parameters.append(parameter)
-            # A holonomic base needs a small backward correction if it passes
-            # a precise parking goal. Normal travel retains forward-only vx.
+            # Allow a small reverse correction during precise parking.
             reverse = ParameterMsg(name='FollowPath.vx_min')
             reverse.value.type = ParameterType.PARAMETER_DOUBLE
             reverse.value.double_value = -.08 if xy < .1 else 0.
@@ -258,12 +264,12 @@ class Navigator(Node):
         pivot = self.tf_buffer.lookup_transform(FRAME, "head_pan_link", Time()).transform.translation
         bearing = math.atan2(point[1] - pivot.y, point[0] - pivot.x) - yaw
         pan = math.atan2(math.sin(bearing), math.cos(bearing))
-        # The asymmetric joint range extends past -pi. A positive bearing
-        # outside the upper limit can still be reachable as pan - 2*pi.
+        # Try the equivalent negative angle when it fits the head's wider left range.
         if pan > 1.75 and pan-2*math.pi >= -3.84:
             pan -= 2*math.pi
         # HSRC RGB-D camera sits roughly 0.25 m above the head pivot.
         distance = math.hypot(point[0] - pivot.x, point[1] - pivot.y)
+        # Aim vertically from the camera height toward the target point.
         tilt = math.atan2(point[2] - pivot.z - 0.248, distance)
         if not (-3.84 <= pan <= 1.75 and -1.57 <= tilt <= 0.52):
             return False

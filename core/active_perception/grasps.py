@@ -17,27 +17,30 @@ MAX_CLOUD_POINTS = 8192  # as core/grasping/pick.py
 
 
 def graspgenx_grasps(points):
-    """grasp_fn: GraspGenX on a centred sample of the surface, palm poses back in the map."""
+    """Generate palm poses and scores from surface points in map coordinates."""
+    # Limit the cloud size and centre it for the grasp model.
     sample = points[np.random.default_rng(0).choice(len(points), min(len(points), MAX_CLOUD_POINTS), replace=False)]
     centre = sample.mean(axis=0)
     poses, scores = graspgenx_client.generate(sample - centre, GRIPPER)
     poses = poses.copy()
+    # Move the predicted palm positions back into map coordinates.
     poses[:, :3, 3] += centre
     return poses, scores
 
 
 def ik_reachable(navigator, obstacles="--costmap", top_k=5, timeout=30.0):
-    """reachable_fn: which map-frame palm poses the IK service finds a base
-    placement and arm solution for. Grasps come best first; only the first
-    `top_k` are asked, since the service takes one call per pose."""
+    """Build a check for base and arm solutions for the first top_k map-frame grasps."""
     from core.navigation import base_placement
 
     def reachable(poses):
         poses = np.asarray(poses, dtype=float)
         odom_from_map = navigator.frame_transform("odom", "map")
+        # Check only the best few grasps to limit service calls.
         asked = poses[:top_k]
+        # Transform map poses into odom, the frame expected by the IK service.
         results = base_placement.solve(odom_from_map @ asked, obstacles=obstacles,
                                        goal_frame="odom", timeout=timeout)
+        # Mark unchecked grasps as unreachable in the returned mask.
         mask = np.zeros(len(poses), dtype=bool)
         mask[:len(asked)] = [len(bases) > 0 for bases, _ in results]
         return mask

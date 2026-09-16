@@ -9,9 +9,11 @@ def matrix_from_transform(transform):
     """geometry_msgs/Transform -> (4, 4)."""
     rotation, translation = (transform.rotation, transform.translation)
     matrix = np.eye(4)
+    # Convert the ROS quaternion into the rotation part of the matrix.
     matrix[:3, :3] = Rotation.from_quat(
         [rotation.x, rotation.y, rotation.z, rotation.w]
     ).as_matrix()
+    # Store XYZ translation in the final column of the transform.
     matrix[:3, 3] = [translation.x, translation.y, translation.z]
     return matrix
 
@@ -20,6 +22,7 @@ def pose_from_matrix(matrix):
     """(4, 4) -> geometry_msgs/Pose."""
     pose = Pose()
     pose.position.x, pose.position.y, pose.position.z = matrix[:3, 3]
+    # Convert the matrix rotation back to ROS quaternion order: x, y, z, w.
     pose.orientation.x, pose.orientation.y, pose.orientation.z, pose.orientation.w = (
         Rotation.from_matrix(matrix[:3, :3]).as_quat()
     )
@@ -29,6 +32,7 @@ def pose_from_matrix(matrix):
 def translation_matrix(x, y, z=0.0):
     """(4, 4) that shifts by (x, y, z) and does not rotate."""
     matrix = np.eye(4)
+    # Keep identity rotation and fill only the translation column.
     matrix[:3, 3] = [x, y, z]
     return matrix
 

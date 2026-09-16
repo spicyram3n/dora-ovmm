@@ -12,5 +12,5 @@ def emit(kind, **data):
     if not os.environ.get("MISSION_EVENTS"):
         return
     data["kind"] = kind
-    # numpy arrays and numpy scalars both turn into plain JSON with tolist().
+    # Convert NumPy values to JSON and flush so the dashboard updates immediately.
     print(PREFIX + json.dumps(data, default=lambda value: value.tolist()), flush=True)

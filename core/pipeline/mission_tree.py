@@ -41,8 +41,7 @@ from core.scene_graph import graph as sg
 from core.utils import events
 
 ROOT = Path(__file__).resolve().parents[2]
-# The failing leaf decides the exit code, matching core.pipeline's, which
-# launch/actions.launch.py reads. Anything unexpected raises and exits 3.
+# Map the failed mission step to a process exit code; unexpected failures use 3.
 EXIT_CODES = {"Choose location": 1, "Find target": 1, "Go there": 2, "Park": 2, "Pick": 4}
 
 
@@ -58,9 +57,7 @@ class Step(py_trees.behaviour.Behaviour):
         self.started = False
 
     def update(self):
-        # Report RUNNING for one tick first. A tick that only ever sees finished
-        # steps runs the whole mission in one go, and the viewers, which update
-        # after each tick, would see nothing until the end.
+        # Show RUNNING for one tick so viewers can display the active step.
         if not self.started:
             self.started = True
             return py_trees.common.Status.RUNNING
@@ -73,6 +70,7 @@ def build(steps, grasp=True, navigate_only=False, active_perception=False):
     """The mission tree over `steps`, a dict of name -> action."""
     # Home first: it needs only the arm controller, and every later step assumes it.
     children = [Step("Home arm", steps["home"]), Step("Ready", steps["ready"])]
+    # Use a shorter sequence when the user only wants to drive to a likely location.
     if navigate_only:
         children.append(Step("Choose location", steps["choose"]))
         children.append(Step("Go there", steps["go"]))
@@ -83,6 +81,7 @@ def build(steps, grasp=True, navigate_only=False, active_perception=False):
         children.append(Step("Explore views", steps["explore"]))
     # Parking already tries every base pose the IK solver returns; once is enough.
     children.append(Step("Park", steps["park"]))
+    # Hand base control to MoveIt before running the pick step.
     if grasp:
         children.append(Step("Pause Nav2", steps["pause"]))
         children.append(Step("Pick", steps["pick"]))
@@ -92,6 +91,7 @@ def build(steps, grasp=True, navigate_only=False, active_perception=False):
 def snapshot(node):
     """A behaviour and its children with their status, as the dashboard draws them."""
     children = []
+    # Copy the tree recursively so the dashboard can display every step status.
     for child in node.children:
         children.append(snapshot(child))
     return {"name": node.name, "type": type(node).__name__,
@@ -107,6 +107,7 @@ def exit_code(root):
 def mission_steps(navigator, scene, target, graph_path, top_k, bearings, timeout, perception, mode="auto",
                   rerun=False):
     """The existing pipeline functions, as the tree's actions."""
+    # Share the selected location and detected object between mission steps.
     chosen = {}
 
     def ready():
@@ -114,9 +115,7 @@ def mission_steps(navigator, scene, target, graph_path, top_k, bearings, timeout
         return True
 
     def home():
-        # Homing now waits for the arm controller to activate, not just to
-        # appear, so it shares the startup budget rather than a shorter one of
-        # its own: on a cold start the spawners finish well after the action does.
+        # Give the controller time to activate before sending the home pose.
         remaining, wait = actions.waiter(navigator, time.monotonic() + timeout)
         actions.home_arm(navigator, wait, remaining)
         return True
@@ -159,8 +158,7 @@ def mission_steps(navigator, scene, target, graph_path, top_k, bearings, timeout
         if status == actions.NOT_FOUND:
             # Every place failed, DeepSeek's cached picks included: ask afresh next time.
             query.forget(scene, target)
-        # Keep the observation, and DeepSeek's cached picks, even if nothing was found
-        # or a later step fails.
+        # Save observations and cached guesses before later motion steps can fail.
         sg.save(scene, graph_path)
         return status == actions.FOUND
 
@@ -191,6 +189,7 @@ def mission_steps(navigator, scene, target, graph_path, top_k, bearings, timeout
 
 def render(grasp, navigate_only, active_perception=False):
     """Save the tree as a picture under outputs/, without ROS or the robot."""
+    # Build named placeholder actions for drawing; rendering never executes them.
     placeholders = {}
     for name in ("ready", "home", "choose", "go", "find", "explore", "park", "pause", "pick"):
         placeholders[name] = None  # never run: drawing needs names only
@@ -243,10 +242,10 @@ def run(argv=None):
     viewers = SingleThreadedExecutor()
     try:
         tree.setup(node_name="mission_tree", timeout=15.0)
-        # The tree's node answers the watcher and viewer from its own thread, so
-        # they can connect while a long step (Ready, a drive, a pick) is running.
+        # Serve viewer requests on another thread while mission actions block.
         viewers.add_node(tree.node)
         threading.Thread(target=viewers.spin, daemon=True).start()
+        # Run the sequence until a step fails or the whole mission succeeds.
         while True:
             tree.tick()
             # A step blocks inside its tick, so this lands once per status change.
@@ -258,6 +257,7 @@ def run(argv=None):
         print(f"[RESULT] {tree.root.status.value}, last step: {tree.root.tip().name}", flush=True)
         return exit_code(tree.root)
     finally:
+        # Stop the viewer thread and release tree and navigation resources on every exit.
         viewers.shutdown()
         tree.shutdown()
         navigator.destroy_node()

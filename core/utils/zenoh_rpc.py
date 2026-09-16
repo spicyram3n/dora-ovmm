@@ -19,6 +19,7 @@ _session_lock = threading.Lock()
 def close():
     """Close the process's shared client session after callers have stopped."""
     global _session
+    # Wait for exclusive access before closing and clearing the shared session.
     with _session_lock:
         if _session is not None:
             _session.close()
@@ -38,8 +39,10 @@ def query(selector, payload, timeout, *, metadata=None):
     if not math.isfinite(timeout) or timeout <= 0:
         raise ValueError("timeout must be finite and positive")
     context = dict(metadata or {})
+    # Tag the request so a reply can be checked against the original call.
     context.update(request_id=uuid.uuid4().hex, timeout_s=timeout)
     attachment = json.dumps(context).encode()
+    # Open one shared connection safely, even when several threads call at once.
     with _session_lock:
         if _session is None:
             config = zenoh.Config()
@@ -58,6 +61,7 @@ def query(selector, payload, timeout, *, metadata=None):
             if message == "Timeout" or message.startswith("TIMEOUT:"):
                 raise TimeoutError(f"{selector}: {message}")
             raise RuntimeError(f"{selector}: {message}")
+        # Read reply metadata and verify that it belongs to this request.
         meta = json.loads(reply.ok.attachment.to_bytes())
         if meta.get("request_id") != context["request_id"]:
             raise RuntimeError("Model reply has missing or mismatched request_id; rebuild model images")
@@ -93,6 +97,7 @@ def serve(key, handler, endpoint):
             timeout = float(context.get("timeout_s", 30))
             if not math.isfinite(timeout) or timeout <= 0:
                 raise ValueError("invalid timeout_s")
+            # Queue the request without blocking; reject it if the waiting queue is full.
             pending.put_nowait((request, context, time.monotonic() + timeout))
         except queue.Full:
             error(request, "BUSY: model queue is full; retry later")
@@ -103,13 +108,16 @@ def serve(key, handler, endpoint):
         while True:
             request, context, deadline = pending.get()
             try:
+                # Skip queued work whose caller deadline has already passed.
                 if time.monotonic() >= deadline:
                     error(request, "TIMEOUT: expired before inference")
                     continue
+                # Run one inference at a time and discard results that miss the deadline.
                 meta, body = handler(request)
                 if time.monotonic() >= deadline:
                     error(request, "TIMEOUT: inference exceeded deadline")
                     continue
+                # Echo the request identity and observation metadata with the reply.
                 meta.update({k: context[k] for k in ("request_id", "frame_id", "stamp", "object_id") if k in context})
                 request.reply(request.key_expr, payload=body, attachment=json.dumps(meta).encode())
             except Exception as exc:
@@ -121,12 +129,12 @@ def serve(key, handler, endpoint):
     threading.Thread(target=worker, daemon=True).start()
     config = zenoh.Config()
     config.insert_json5("transport/shared_memory/enabled", "false")
-    # Host-networked models use dedicated TCP listeners; multicast scouting
-    # would also bind UDP 7446 and can collide with other host services.
+    # Use explicit TCP listeners to avoid multicast port conflicts on the host.
     config.insert_json5("scouting/multicast/enabled", "false")
     config.insert_json5("listen/endpoints", json.dumps([endpoint]))
     with zenoh.open(config) as session:
         inference = session.declare_queryable(key, enqueue)
+        # Expose a small readiness reply alongside the inference endpoint.
         health = session.declare_queryable(key.split("/")[0] + "/health", lambda q: q.reply(q.key_expr, payload=b"ready"))
         print(f"[{key}] ready", flush=True)
         while True:

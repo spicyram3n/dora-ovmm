@@ -10,11 +10,12 @@ DEFAULT_MODEL = "deepseek-v4-flash"
 
 
 def have_key():
-    """Whether a fallback guess is possible at all, so callers can skip it cleanly."""
+    """Check whether an API key is available for model-based search guesses."""
     return bool(os.getenv("DEEPSEEK_API_KEY"))
 
 
 def get_client():
+    # Load the API key from the environment without storing it in the code.
     key = os.getenv("DEEPSEEK_API_KEY")
     if not key:
         raise ValueError("Set DEEPSEEK_API_KEY in your terminal")
@@ -24,6 +25,7 @@ def get_client():
 
 
 def ask_json(client, system, user, schema, model=DEFAULT_MODEL):
+    # Request JSON, then validate it against the caller's expected schema.
     reply = client.chat.completions.create(
         model=model,
         messages=[
@@ -34,6 +36,7 @@ def ask_json(client, system, user, schema, model=DEFAULT_MODEL):
         extra_body={"thinking": {"type": "disabled"}},
         max_tokens=4096,
     )
+    # Reject truncated or empty answers before validating their JSON.
     choice = reply.choices[0]
     if choice.finish_reason != "stop" or not choice.message.content:
         raise ValueError("DeepSeek returned an empty or incomplete answer")
@@ -56,6 +59,7 @@ def assign(scene, client, model=DEFAULT_MODEL):
     if not listing:
         return {}
     answer = ask_json(client, ROOM_SYSTEM, json.dumps(listing), Rooms, model)
+    # Require one nonempty room assignment for every supplied furniture ID.
     expected = set()
     for item in listing:
         expected.add(str(item["id"]))
@@ -68,8 +72,10 @@ def assign(scene, client, model=DEFAULT_MODEL):
         raise ValueError(
             "DeepSeek must assign a nonempty room to every furniture ID exactly once"
         )
+    # Convert JSON string IDs back into integer graph node IDs.
     assignment = {}
     for key, room in answer.rooms.items():
         assignment[int(key)] = room.strip()
+    # Apply room names to furniture and propagate them to its objects.
     sg.set_rooms(scene, assignment)
     return assignment

@@ -6,12 +6,10 @@ import trimesh
 
 
 def shrink(mask, pixels=3):
-    """Drop the mask's boundary ring, where depth mixes object and background.
-
-    A segmentation edge sits astride both, so those pixels carry the background's
-    depth and deproject metres down the view ray, stretching the object's box."""
+    """Remove mask-edge pixels that may contain background depth."""
     if pixels < 1:
         return np.asarray(mask, dtype=bool)
+    # Peel away one pixel around the mask for each requested iteration.
     eroded = cv2.erode(
         np.asarray(mask, dtype=np.uint8), np.ones((3, 3), np.uint8), iterations=pixels
     ).astype(bool)
@@ -22,23 +20,19 @@ def shrink(mask, pixels=3):
 
 
 def largest_cluster(points, gap=0.03, minimum=20):
-    """The biggest group of points joined through `gap`-sized voxels, or None.
-
-    Whatever survives erosion still lands on the surface behind the object, far
-    from the object's own points. Distance separates them; the mask cannot.
-    Linkage runs over voxels rather than points, because a mask covering a sofa
-    carries hundreds of thousands of them and neighbour search would not scale."""
+    """Keep the largest point group connected through gap-sized voxels, or return None."""
     from scipy.ndimage import label
 
     points = np.asarray(points, dtype=float)
     if len(points) < minimum:
         return None
+    # Group points into small voxels to make connected-region detection cheaper.
     voxels = np.floor(points / gap).astype(np.int64)
     voxels -= voxels.min(axis=0)
+    # Build a 3D occupancy array and mark the voxels containing points.
     occupied = np.zeros(voxels.max(axis=0) + 1, dtype=bool)
     occupied[tuple(voxels.T)] = True
-    # A 3x3x3 structure joins voxels touching at a corner too, which is the same
-    # surface seen at an angle.
+    # Join neighbouring voxels, including those touching only at a corner.
     labels, groups = label(occupied, structure=np.ones((3, 3, 3)))
     if groups > 1:
         # Biggest by point count, not by voxel count: density is the evidence.
@@ -50,22 +44,20 @@ def largest_cluster(points, gap=0.03, minimum=20):
 
 
 def object_depth_mask(depth_m, mask, step=0.02):
-    """Keep the largest depth-connected part of `mask`.
-
-    An alternative to shrink()+largest_cluster() for grasping, where the mask
-    must stay in pixel space: it splits the background off across the depth
-    discontinuity at the object's silhouette instead of eroding the boundary,
-    so the full visible surface survives for the cylinder fit."""
+    """Keep the largest region joined by similar neighbouring depths, preserving pixel locations."""
     from scipy.sparse import coo_matrix
     from scipy.sparse.csgraph import connected_components
 
+    # Keep masked pixels only when their depth is finite and positive.
     valid = mask & np.isfinite(depth_m) & (depth_m > 0)
     count = int(valid.sum())
     if count == 0:
         raise RuntimeError("no valid depth inside the mask")
+    # Give each valid pixel an index for the neighbour graph.
     indices = np.full(mask.shape, -1, dtype=np.int32)
     indices[valid] = np.arange(count)
     rows, columns = ([], [])
+    # Compare vertically and horizontally adjacent pixels to build depth connections.
     for first, second in ((np.s_[:-1, :], np.s_[1:, :]), (np.s_[:, :-1], np.s_[:, 1:])):
         # A jump larger than `step` between neighbours is an edge, not a surface.
         joined = valid[first] & valid[second] & (np.abs(depth_m[first] - depth_m[second]) < step)
@@ -73,8 +65,10 @@ def object_depth_mask(depth_m, mask, step=0.02):
         columns.append(indices[second][joined])
     rows, columns = (np.concatenate(rows), np.concatenate(columns))
     linkage = coo_matrix((np.ones(len(rows)), (rows, columns)), shape=(count, count))
+    # Group pixels linked by similar depth and keep the largest group.
     _, labels = connected_components(linkage, directed=False)
     sizes = np.bincount(labels)
+    # Reject a fragmented detection if no connected region contains half the pixels.
     if sizes.max() < count / 2:
         raise RuntimeError("target depth is fragmented; acquire another view")
     result = np.zeros_like(valid)
@@ -90,7 +84,9 @@ def deproject(depth_m, k, mask):
     cy = k[1, 2]
     # Missing depth cannot define a 3D object point.
     rows, cols = np.nonzero(mask & np.isfinite(depth_m) & (depth_m > 0))
+    # Use each selected pixel's measured depth as its camera Z coordinate.
     z = depth_m[rows, cols]
+    # Use the camera calibration to turn pixel offsets and depth into metres.
     x = (cols - cx) * z / fx
     y = (rows - cy) * z / fy
     return np.stack([x, y, z], axis=1).astype(np.float32)
@@ -98,6 +94,7 @@ def deproject(depth_m, k, mask):
 
 def transform_points(matrix, points):
     """Apply a (4, 4) transform to (N, 3) points."""
+    # Rotate the points, then add the translation into the destination frame.
     return points @ matrix[:3, :3].T + matrix[:3, 3]
 
 
@@ -107,4 +104,5 @@ def transform_poses(matrix, poses):
 
 
 def save_ply(points, path):
+    # Write the XYZ points as a point-cloud file for later inspection.
     trimesh.PointCloud(points).export(str(path))

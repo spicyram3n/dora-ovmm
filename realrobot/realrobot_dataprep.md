@@ -21,6 +21,7 @@
 - **Whole lab, one run.** Boxer lifts each 2D detection to a 3D box on its own and fuses afterwards, so there is no room-sized limit. `--stride N` in step 3 keeps every Nth keyframe for a faster run.
 - Step 8: `--save-only` writes the recording without opening a window; `python3 -m rerun outputs/realrobot/lab_20260811/scene_graph.rrd` reopens it.
 - After step 7: `python3 -m core.reasoner.query '<object>' --graph config/realrobot/scene_graph/lab_20260811.json` prints the search order.
+- Replay navigation on the finished map and graph, with no robot: [realrobot/navigation/](README.md#realrobotnavigation).
 - Real robot: Nav2 takes `map:=/home/ws/config/realrobot/map/lab_20260811.yaml`; the mission takes `--graph config/realrobot/scene_graph/lab_20260811.json` ([navigation README](../core/navigation/README.md#real-robot)). `launch/search.launch.py` is simulation-only.
 
 ## Files in `realrobot/`

@@ -16,8 +16,7 @@ import numpy as np
 
 from core.navigation.standoff import ROBOT_RADIUS, blocks, free
 
-# HSRC: camera 1.015 m over the floor with the torso down (lab_20260811
-# keyframes); the torso lift adds up to 0.345 m (hsrb_description torso_v0).
+# Camera height with the torso down, and its added lift, in metres.
 CAMERA_HEIGHT = 1.015
 TORSO_LIFT = 0.345
 # head_tilt_joint limits (hsrb_description head_v2): looking down is negative.
@@ -27,12 +26,14 @@ CLEARANCE = ROBOT_RADIUS + 0.05
 
 
 def spherical_to_cartesian(r, theta, phi):
+    # Turn radius, polar angle, and azimuth into an XYZ offset from the target.
     return np.r_[r * np.sin(theta) * np.cos(phi), r * np.sin(theta) * np.sin(phi), r * np.cos(theta)]
 
 
 def look_at(eye, center, up):
     """vgn.utils.look_at: a camera at `eye` with its optical axis on `center`."""
     eye, center = (np.asarray(eye, dtype=float), np.asarray(center, dtype=float))
+    # Point the optical Z axis at the target, then build perpendicular camera axes.
     forward = center - eye
     forward /= np.linalg.norm(forward)
     right = np.cross(forward, up)
@@ -40,6 +41,7 @@ def look_at(eye, center, up):
     up = np.cross(right, forward)
     m = np.eye(4)
     m[:3, 0] = right
+    # Use the optical camera convention: X right, Y down, Z forward.
     m[:3, 1] = -up
     m[:3, 2] = forward
     m[:3, 3] = eye
@@ -50,18 +52,17 @@ class ViewHalfSphere:
     """ETH's sphere around the target, sampled where the HSR head can be."""
 
     def __init__(self, bbox, min_z_dist, floor_z=0.0, grid=None, blockers=(), phis=8, rings=3, ring_step=0.3):
-        """`blockers` are furniture footprints (centre, dimensions, yaw) in the
-        base frame, as core.scene_graph.graph.footprint gives them."""
+        """Use furniture footprints (centre, dimensions, yaw) in the base frame."""
         self.bbox = bbox
         self.blockers = list(blockers)
         self.rejected = []  # eyes Nav2 refused to drive under; not offered again
         self.center = bbox.center
         self.r = 0.5 * bbox.size[2] + min_z_dist
-        # A base cannot hover over the table like the Panda's camera, so the
-        # sphere is repeated at larger radii until it stands clear of furniture.
+        # Try larger viewing radii so the base can stand outside the furniture.
         self.radii = self.r + ring_step * np.arange(rings)
         self.floor_z = floor_z
         self.grid = grid
+        # Space viewpoints evenly around the target in the horizontal direction.
         self.phis = np.arange(phis) * (2 * np.pi / phis)
 
     def get_view(self, theta, phi, r):
@@ -69,9 +70,9 @@ class ViewHalfSphere:
         return look_at(eye, self.center, up=np.r_[0.0, 0.0, 1.0])
 
     def thetas(self, r):
-        """Polar angles that put the camera at the torso's lowest and highest
-        height, in place of ETH's fixed 15 and 30 degrees."""
+        """Find viewing angles at the lowest and highest camera heights."""
         heights = self.floor_z + CAMERA_HEIGHT + np.array([0.0, TORSO_LIFT])
+        # Keep only torso heights that intersect this viewing sphere.
         cos = (heights - self.center[2]) / r
         return np.arccos(cos[np.abs(cos) < 1.0])
 
@@ -79,7 +80,9 @@ class ViewHalfSphere:
         eye, forward = (view[:3, 3], view[:3, 2])
         height = eye[2] - self.floor_z
         tilt = np.arcsin(np.clip(forward[2], -1.0, 1.0))
+        # Require the camera's base position to lie outside the expanded target footprint.
         clear = np.any((eye[:2] < self.bbox.min[:2] - CLEARANCE) | (eye[:2] > self.bbox.max[:2] + CLEARANCE))
+        # Keep views within head limits, clear of obstacles, and not already rejected.
         return (
             CAMERA_HEIGHT - 1e-6 <= height <= CAMERA_HEIGHT + TORSO_LIFT + 1e-6
             and TILT_MIN <= tilt <= TILT_MAX
@@ -90,11 +93,12 @@ class ViewHalfSphere:
         )
 
     def all_views(self):
+        # Combine every radius, reachable camera height, and horizontal angle.
         for r in self.radii:
             for theta in self.thetas(r):
                 for phi in self.phis:
                     yield self.get_view(theta, phi, r)
 
     def candidates(self):
-        """NextBestView.generate_views() with feasible() in place of solve_cam_ik()."""
+        """Return the sampled camera poses that pass the robot and obstacle checks."""
         return [view for view in self.all_views() if self.feasible(view)]

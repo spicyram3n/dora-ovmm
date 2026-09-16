@@ -14,11 +14,8 @@ from core.utils.transforms import matrix_from_transform
 from sensor_msgs.msg import CameraInfo, Image
 from tf2_ros import Buffer, TransformListener
 
-# HSR_REAL_ROBOT=1 selects the real robot: wall clock, best-effort image QoS,
-# and RGB-D through vision transport RX, whose output topics carry the prefix
-# HSR_IMAGE_PREFIX (default /remote, vision-transport-poorna/deployment/config/
-# rx.yaml). CameraInfo is small and RX does not carry it, so it comes straight
-# from the robot over DDS. launch/grasp_real.launch.py sets both variables.
+# Select the real robot clock and image topics with HSR_REAL_ROBOT=1.
+# HSR_IMAGE_PREFIX overrides /remote; camera calibration arrives directly over DDS.
 REAL_ROBOT = os.environ.get("HSR_REAL_ROBOT", "") == "1"
 USE_SIM_TIME = not REAL_ROBOT
 IMAGE_PREFIX = os.environ.get("HSR_IMAGE_PREFIX", "/remote" if REAL_ROBOT else "")
@@ -26,8 +23,7 @@ RGB_TOPIC = IMAGE_PREFIX + "/head_rgbd_sensor/rgb/image_rect_color"
 DEPTH_TOPIC = IMAGE_PREFIX + "/head_rgbd_sensor/depth_registered/image_rect_raw"
 CAMERA_INFO_TOPIC = "/head_rgbd_sensor/rgb/camera_info"
 BASE_FRAME = "odom"
-# A fresh node on the robot's LAN needs several seconds to discover the RX
-# publishers and the robot's static transforms before the first usable pair.
+# Allow extra time to discover real-robot image publishers and transforms.
 CAPTURE_TIMEOUT = 45. if REAL_ROBOT else 15.
 
 
@@ -40,23 +36,21 @@ class RobotTransforms:
 
     def transform(self,link='hand_palm_link'):
         deadline=time.monotonic()+3.
+        # Process incoming transforms until a fresh pose is available or time runs out.
         while time.monotonic()<deadline:
             rclpy.spin_once(self.node,timeout_sec=.02)
             if not self.buffer.can_transform(BASE_FRAME,link,Time()):
                 continue
             pose=self.buffer.lookup_transform(BASE_FRAME,link,Time())
             age=(self.node.get_clock().now()-Time.from_msg(pose.header.stamp)).nanoseconds/1e9
+            # Accept only a recent pose so feedback does not use an old robot position.
             if age<=.5:
                 return matrix_from_transform(pose.transform)
         raise RuntimeError(f'No fresh {BASE_FRAME}-to-{link} transform')
 
 
 def grab_hand_rgb(timeout=8., use_sim_time=USE_SIM_TIME):
-    """Return rectified hand-camera BGR, K, odom pose and stamped palm pose.
-
-    The hand camera is monocular. No head depth pixels are paired with it.
-    Both poses are looked up at the image timestamp.
-    """
+    """Return rectified hand-camera BGR, intrinsics, and odom camera/palm poses at image time."""
     import cv2
     owns_context = not rclpy.ok()
     if owns_context:
@@ -65,6 +59,7 @@ def grab_hand_rgb(timeout=8., use_sim_time=USE_SIM_TIME):
     try:
         buffer = Buffer()
         listener = TransformListener(buffer, node)
+        # Store the most recent hand image and calibration while waiting for a usable pair.
         frames = {}
         qos = QoSProfile(depth=2, reliability=ReliabilityPolicy.RELIABLE) if use_sim_time else qos_profile_sensor_data
         node.create_subscription(Image, '/hand_camera/image_raw', lambda m: frames.update(image=m), qos)
@@ -77,6 +72,7 @@ def grab_hand_rgb(timeout=8., use_sim_time=USE_SIM_TIME):
                 continue
             msg, info = frames['image'], frames['info']
             stamp = Time.from_msg(msg.header.stamp)
+            # Wait for a new image and reject images more than half a second old.
             if stamp.nanoseconds <= start:
                 continue
             if (node.get_clock().now()-stamp).nanoseconds > 500_000_000:
@@ -85,6 +81,7 @@ def grab_hand_rgb(timeout=8., use_sim_time=USE_SIM_TIME):
                 raise ValueError('Hand image and calibration do not match')
             if info.distortion_model not in ('plumb_bob','rational_polynomial'):
                 raise ValueError('Unsupported hand camera distortion model')
+            # Look up the camera and palm poses at the same image timestamp.
             links = [msg.header.frame_id, 'hand_palm_link']
             if not all(buffer.can_transform(BASE_FRAME, link, stamp) for link in links):
                 continue
@@ -92,6 +89,7 @@ def grab_hand_rgb(timeout=8., use_sim_time=USE_SIM_TIME):
             if not np.isfinite(k).all() or min(k[0,0],k[1,1]) <= 0:
                 raise ValueError('Invalid hand camera calibration')
             rgb = CvBridge().imgmsg_to_cv2(msg, desired_encoding='bgr8')
+            # Remove lens distortion when the calibration includes distortion coefficients.
             if np.any(info.d):
                 rgb = cv2.undistort(rgb,k,np.array(info.d),None,k)
             poses = [matrix_from_transform(buffer.lookup_transform(BASE_FRAME,link,stamp).transform) for link in links]
@@ -118,9 +116,7 @@ def grab_rgbd(target_frame=BASE_FRAME, timeout=CAPTURE_TIMEOUT, use_sim_time=USE
         listener = TransformListener(buffer, node)
         frames = {}
         capture_start = node.get_clock().now().nanoseconds
-        # Gazebo's bridge publishes reliable, fragmented megapixel images.
-        # Best-effort readers can lose virtually every pair under simulation load.
-        # Vision transport RX publishes best-effort, which only best-effort matches.
+        # Match reliable simulation images or best-effort vision-transport images.
         image_qos = (QoSProfile(depth=3, reliability=ReliabilityPolicy.RELIABLE)
                      if use_sim_time else qos_profile_sensor_data)
         rgb_sub = message_filters.Subscriber(
@@ -129,10 +125,12 @@ def grab_rgbd(target_frame=BASE_FRAME, timeout=CAPTURE_TIMEOUT, use_sim_time=USE
         depth_sub = message_filters.Subscriber(
             node, Image, DEPTH_TOPIC, qos_profile=image_qos
         )
+        # Pair RGB and depth images captured within 50 milliseconds.
         sync = message_filters.ApproximateTimeSynchronizer(
             [rgb_sub, depth_sub], 10, 0.05
         )
 
+        # Store synchronized RGB and depth together so their timestamps stay paired.
         def receive_images(rgb, depth):
             frames["rgb"] = rgb
             frames["depth"] = depth
@@ -147,6 +145,7 @@ def grab_rgbd(target_frame=BASE_FRAME, timeout=CAPTURE_TIMEOUT, use_sim_time=USE
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             rclpy.spin_once(node, timeout_sec=0.1)
+            # Wait until both images and the camera calibration have arrived.
             if not {"rgb", "depth", "info"} <= frames.keys():
                 continue
             rgb, depth, info = (frames["rgb"], frames["depth"], frames["info"])
@@ -175,6 +174,7 @@ def grab_rgbd(target_frame=BASE_FRAME, timeout=CAPTURE_TIMEOUT, use_sim_time=USE
                 depth_meters = depth_values / 1000
             else:
                 depth_meters = depth_values
+            # Return the calibration and camera pose alongside the converted images.
             intrinsics = np.array(info.k).reshape(3, 3)
             transform = buffer.lookup_transform(target_frame, frame, stamp).transform
             return (image, depth_meters, intrinsics, matrix_from_transform(transform))

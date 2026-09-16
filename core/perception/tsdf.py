@@ -21,9 +21,8 @@ TABLE_HEIGHT = 0.05
 
 
 def origin_for(centre, support_z=float("nan")):
-    """The cube's corner, in the fixed frame, for a target at `centre` standing
-    on a surface at height `support_z`. Without one, the cube is centred on the
-    target, and VGN sees no table where it expects one."""
+    """Place the cube 5 cm below the support, or centre it on the target if support is unknown."""
+    # Use the support height when known; otherwise centre the cube vertically.
     bottom = support_z - TABLE_HEIGHT if np.isfinite(support_z) else centre[2] - LENGTH / 2
     return np.array([centre[0] - LENGTH / 2, centre[1] - LENGTH / 2, bottom])
 
@@ -43,12 +42,13 @@ class GraspVolume:
         )
 
     def integrate(self, depth_m, k, frame_from_camera):
-        """Fuse one depth image, in metres, seen from `frame_from_camera` (4, 4)
-        with intrinsics `k` (3, 3). Missing depth may be 0, NaN or inf."""
+        """Fuse metre-valued depth using camera intrinsics k and a frame_from_camera pose."""
+        # Replace missing depth with zero before fusing the image.
         depth = np.nan_to_num(
             np.asarray(depth_m, dtype=np.float32), nan=0.0, posinf=0.0, neginf=0.0
         )
         height, width = depth.shape
+        # Build the depth input in metres; colour is unused.
         rgbd = o3d.geometry.RGBDImage.create_from_color_and_depth(
             o3d.geometry.Image(np.zeros_like(depth)),
             o3d.geometry.Image(depth),
@@ -58,14 +58,15 @@ class GraspVolume:
         intrinsic = o3d.camera.PinholeCameraIntrinsic(
             width, height, k[0, 0], k[1, 1], k[0, 2], k[1, 2]
         )
+        # Express the camera pose relative to the fixed fusion cube.
         grid_from_camera = np.linalg.inv(self.frame_from_grid) @ frame_from_camera
         # Open3D takes the extrinsic the other way round: grid points into the camera.
         self._volume.integrate(rgbd, intrinsic, np.linalg.inv(grid_from_camera))
         self.frames += 1
 
     def voxels(self):
-        """Voxels Open3D reports near a surface: (N, 3) centres in the fixed
-        frame, and each one's (tsdf + 1) / 2 in (0, 1)."""
+        """Return voxel centres in the fixed frame and their normalized signed distances."""
+        # Read the stored voxels and shift their centres into the fixed frame.
         cloud = self._volume.extract_voxel_point_cloud()
         return (
             np.asarray(cloud.points) + self.origin,
@@ -75,14 +76,16 @@ class GraspVolume:
     def grid(self):
         """(40, 40, 40) float32, indexed [x, y, z]: VGN's input."""
         cloud = self._volume.extract_voxel_point_cloud()
+        # Start with an empty grid, then fill voxels reported near a surface.
         grid = np.zeros((RESOLUTION,) * 3, dtype=np.float32)
         points = np.asarray(cloud.points)
         if len(points):
-            # Voxel centres, so the floor is exact: vgn.utils.map_cloud_to_grid.
+            # Convert voxel centres into grid indices and keep them within bounds.
             index = np.clip((points // VOXEL).astype(int), 0, RESOLUTION - 1)
             grid[tuple(index.T)] = np.asarray(cloud.colors)[:, 0]
         return grid
 
     def surface(self):
         """(N, 3) points on the fused surface, in the fixed frame."""
+        # Move the extracted surface points from cube coordinates into the fixed frame.
         return np.asarray(self._volume.extract_point_cloud().points) + self.origin

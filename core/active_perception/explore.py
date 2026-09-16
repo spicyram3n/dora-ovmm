@@ -50,27 +50,27 @@ GRAPH = Path(__file__).resolve().parents[2] / "config/scene_graph/kitchen_object
 
 def furniture_footprints(scene):
     """Every piece of furniture as (centre, dimensions, yaw): the base keeps out of them."""
+    # Collect the furniture outlines used to keep the moving base clear.
     return [sg.footprint(data) for data in sg.furniture(scene).values()]
 
 
 def detect_box(prompt, rgb, depth, k, map_from_camera):
+    # Detect the object, then keep its main cluster of valid depth points.
     mask, score = sam3_client.detect(rgb, prompt)
     points = largest_cluster(deproject(depth, k, shrink(mask)))
     if points is None:
         raise RuntimeError(f"'{prompt}' has too little depth to box")
+    # Transform the object points into the map before finding their bounding box.
     return AABBox.from_points(transform_points(map_from_camera, points)), score
 
 
 def grow_box(policy, prompt, rgb, depth, k, map_from_camera):
-    """Widen the target box with what the new view shows of the object.
-
-    ETH's box is the object's true extent from the start; ours comes from one
-    view, so a can seen head-on is a 2 cm deep sliver and almost no voxel
-    counts as inside it. The cube stays where the first box put it."""
+    """Expand the target box with newly observed points; leave the fusion cube fixed."""
     try:
         seen, _ = detect_box(prompt, rgb, depth, k, map_from_camera)
     except (sam3_client.ObjectNotFound, RuntimeError):
         return False
+    # Expand the box to include the new view; keep the fusion cube in place.
     grown = AABBox(np.minimum(policy.bbox.min, seen.min), np.maximum(policy.bbox.max, seen.max))
     if np.allclose(grown.size, policy.bbox.size):
         return False
@@ -80,6 +80,7 @@ def grow_box(policy, prompt, rgb, depth, k, map_from_camera):
 
 def set_torso(navigator, rise):
     """Lift the head by `rise` metres with the arm otherwise at its home pose."""
+    # The head rises by half the arm-lift travel; clamp to the joint limit.
     lift = float(np.clip(2 * rise, 0.0, ARM_LIFT_MAX))
     goal = FollowJointTrajectory.Goal()
     goal.trajectory.joint_names = ["arm_lift_joint", "arm_flex_joint", "arm_roll_joint",
@@ -94,10 +95,11 @@ def set_torso(navigator, rise):
 
 
 def go_to_view(navigator, view, target):
-    """Put the camera where `view` (map_from_camera) wants it: base under the
-    eye, facing along the optical axis, torso at its height, head on the target."""
+    """Move the base and torso to the camera pose, then aim at the target."""
+    # Read the desired camera position and viewing direction from its pose matrix.
     eye, forward = (view[:3, 3], view[:3, 2])
     yaw = math.atan2(forward[1], forward[0])
+    # Set camera height, drive underneath it, and turn the head toward the target.
     lifted = set_torso(navigator, eye[2] - CAMERA_HEIGHT)
     reached = navigator.drive_to(float(eye[0]), float(eye[1]), yaw)
     aimed = navigator.look_at(target)
@@ -106,21 +108,20 @@ def go_to_view(navigator, view, target):
 
 def explore(navigator, prompt, length=0.3, min_z_dist=0.6, max_steps=8, qual_thresh=0.9,
             grasps=True, ik=True, sim=True, out=None, rerun=False, blockers=()):
-    """The NBV loop on a live robot; returns the log dict, with `best_grasp`.
-
-    `navigator` is a running core.navigation.nav2_client.Navigator. The robot
-    must already see the object: this is where the mission's Find step ends."""
+    """Observe an already visible target from new views; return the log and best grasp."""
     out = out or OUTPUTS / time.strftime("explore_%Y%m%d_%H%M%S")
     out.mkdir(parents=True)
     rgb, depth, k, map_from_camera = grab_rgbd(target_frame="map", use_sim_time=sim)
     bbox, score = detect_box(prompt, rgb, depth, k, map_from_camera)
     print(f"[NBV] '{prompt}' ({score:.2f}) in a {np.round(bbox.size, 2)} m box at {np.round(bbox.center, 2)}", flush=True)
+    # Build camera positions that clear furniture and the costmap.
     sphere = ViewHalfSphere(bbox, min_z_dist, grid=base_placement.costmap_grid(navigator), blockers=blockers)
     policy = NextBestView(
         k, length=length, qual_thresh=qual_thresh,
         grasp_fn=graspgenx_grasps if grasps else None,
         reachable_fn=ik_reachable(navigator) if (grasps and ik) else None,
     )
+    # Start a fresh fusion volume and grasp history for this target.
     policy.activate(bbox, sphere)
     # Always recorded to the run folder; `rerun` also opens the viewer live.
     recording = Recording(k, depth.shape, path=out / "explore.rrd", spawn=rerun)
@@ -129,6 +130,7 @@ def explore(navigator, prompt, length=0.3, min_z_dist=0.6, max_steps=8, qual_thr
                feasible_views=len(sphere.candidates()), steps=[], best_grasp=None)
     print(f"[NBV] {log['feasible_views']} views the robot can take on radii {np.round(sphere.radii, 2)} m", flush=True)
     for step in range(1, max_steps + 1):
+        # Fuse this depth image and choose whether another view is useful.
         policy.update(depth, map_from_camera)
         recording.step(step, policy, depth, map_from_camera, image=rgb)
         record = dict(step=step, camera=map_from_camera[:3, 3].round(3).tolist(), done=policy.done,
@@ -142,14 +144,17 @@ def explore(navigator, prompt, length=0.3, min_z_dist=0.6, max_steps=8, qual_thr
                                  else "no view gains anything" if not policy.done else "policy done")
         log["steps"].append(record)
         print("[NBV] " + json.dumps(record), flush=True)
+        # Stop when the policy is finished or cannot offer another useful view.
         if policy.done or not policy.info:
             break
+        # Move to the chosen view before taking the next depth image.
         record["motion"] = go_to_view(navigator, policy.x_d, bbox.center)
         if not record["motion"]["reached"]:
-            sphere.rejected.append(policy.x_d[:3, 3].copy())  # ETH's arm never fails to move; a base can
+            sphere.rejected.append(policy.x_d[:3, 3].copy())  # Skip this failed camera position on later steps.
         rgb, depth, k, map_from_camera = grab_rgbd(target_frame="map", use_sim_time=sim)
         if grow_box(policy, prompt, rgb, depth, k, map_from_camera):
             print(f"[NBV] box grown to {np.round(policy.bbox.size, 3)} m", flush=True)
+    # Save the fused surface in map coordinates and the run details.
     origin = policy.base_from_task[:3, 3]
     o3d.io.write_point_cloud(str(out / "scene_cloud.ply"), policy.tsdf.get_scene_cloud().translate(origin))
     np.save(out / "grid.npy", policy.tsdf.get_grid())
@@ -175,8 +180,10 @@ def main():
     parser.add_argument("--output", type=Path, default=None)
     parser.add_argument("--rerun", action="store_true", help="open the Rerun viewer and stream the loop live")
     parser.add_argument("--graph", type=Path, default=GRAPH, help="scene graph whose furniture the base keeps clear of")
+    # Read the requested target and optional limits for this exploration run.
     args = parser.parse_args()
 
+    # Start ROS and release the navigator in the finally block when the run ends.
     rclpy.init()
     navigator = Navigator(use_sim_time=not args.real)
     try:

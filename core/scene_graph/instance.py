@@ -15,6 +15,7 @@ ROLES = ("furniture", "object", "structure")
 def normalize(label):
     """Turn asset names into lowercase words without trailing instance numbers."""
     lowercase_label = label.lower()
+    # Replace punctuation with spaces before removing numeric instance suffixes.
     separated_words = re.sub("[^a-z0-9]+", " ", lowercase_label)
     words = separated_words.split()
     clean_words = []
@@ -34,6 +35,7 @@ def _load(path):
             if name in classes:
                 raise ValueError(f"{name!r} is listed under two roles in {path}")
             classes[name] = role_name
+    # Resolve simulator names and synonyms to the same class vocabulary.
     aliases = {}
     for section in ("gazebo", "synonyms"):
         for target, names in data[section].items():
@@ -49,12 +51,11 @@ CLASSES, ALIASES = _load(LABELS)
 
 
 def scannet_class(label):
-    """The ScanNet200 class a label names, or None. The whole name is tried
-    first, then its last word: English puts the noun last, so a kitchen chair
-    is a chair, while "tv stand" stays a class of its own."""
+    """Try the complete label first, then its last word, using known classes and aliases."""
     words = normalize(label).split()
     if not words:
         return None
+    # Prefer full names such as tv stand before trying a general noun such as stand.
     for candidate in (" ".join(words), words[-1]):
         if candidate in CLASSES:
             return candidate
@@ -64,8 +65,7 @@ def scannet_class(label):
 
 
 def role(label):
-    """furniture, object or structure. A label outside the dictionary, such as a
-    search query, names an object."""
+    """Return furniture, object, or structure; treat unknown labels as objects."""
     return CLASSES.get(scannet_class(label), "object")
 
 
@@ -75,6 +75,7 @@ def match_score(label, wanted):
         set(normalize(label).split()),
         set(normalize(wanted).split()),
     )
+    # Score the fraction of unique words shared by the label and query.
     shared = label_words & query_words
     if shared:
         return len(shared) / len(label_words | query_words)
@@ -112,6 +113,7 @@ class Instance:
             raise ValueError("instance points must be finite")
         if len(self.points) == 0:
             raise ValueError(f"instance {self.label!r} has no points")
+        # Store the cloud bounds and mean position for later spatial checks.
         self.lower, self.upper = (self.points.min(axis=0), self.points.max(axis=0))
         self.centroid = self.points.mean(axis=0)
         if self.movable is None:
@@ -127,6 +129,7 @@ def from_box(label, centre, dimensions, **kwargs):
     dimensions = np.asarray(dimensions, float)
     valid_shape = dimensions.shape == (3,)
     valid_values = np.isfinite(dimensions).all()
+    # Require three valid nonnegative dimensions before constructing box corners.
     if not valid_shape or not valid_values or np.any(dimensions < 0):
         raise ValueError("dimensions must be three finite nonnegative lengths")
     points = box_corners(np.asarray(centre, float), dimensions)

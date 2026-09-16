@@ -93,8 +93,7 @@ MAX_CLOUD_POINTS = 8192  # bounds GraspGenX GPU memory
 OPEN_HAND = 1.1  # hand_motor_joint; wider breaks the distal finger limit
 GRASP_LIFT_MAX = 0.65  # reserve travel for approach and the verification lift
 CLOSE_EFFORT = -0.3  # Nm, negative closes
-# Fingertips closer than this hold nothing: 0 cm empty, 2.1 cm around a pringles
-# can. The motor angle cannot tell; the springs let it close past contact.
+# Use fingertip spacing to detect an empty grasp; motor angle alone is unreliable.
 EMPTY_GAP = 0.01
 # The whole_body group's active joints, for joint-space goals.
 WHOLE_BODY_JOINTS = ["odom_x", "odom_y", "odom_t", "arm_lift_joint", "arm_flex_joint",
@@ -112,9 +111,8 @@ JOINT_STATES = "/whole_body_moveit/joint_states"  # includes the base's odom joi
 
 GRIPPER_DIR = Path(__file__).resolve().parents[2] / 'docker/graspgenx/x_grippers/hsrc_hand'
 
-# Heights are metres in odom (floor-referenced), not camera depth. This is a
-# conservative selection heuristic; MoveIt still checks IK and collisions.
-# Cereal boxes use the cuboid policy, based on measured geometry, not a label.
+# Choose approaches from measured shape and floor height in odom metres.
+# MoveIt still checks reachability and collisions.
 SHAPE_POLICIES = {
     'cylinder': {'approach': 'front'},
     'sphere': {'approach': 'top_down', 'top_down_max_z': .95},
@@ -125,6 +123,7 @@ SHAPE_POLICIES = {
 
 
 def cloud(points):
+    # Require at least 100 finite XYZ points within the allowed grasp workspace.
     points = np.asarray(points, dtype=float)
     if points.ndim != 2 or points.shape[1] != 3 or len(points) < 100 or not np.isfinite(points).all():
         raise RuntimeError('Insufficient finite target geometry')
@@ -134,26 +133,28 @@ def cloud(points):
 
 
 def pad_for_width(width):
+    # Look up the calibrated pad centre for this opening width.
     profile = json.loads((GRIPPER_DIR / 'closing_profile.json').read_text())
     gaps = np.array([s['gap'][0] for s in profile])
     if not gaps[0] <= width <= gaps[-1] - .012:
         raise RuntimeError(f'Contact width {width:.3f} m outside calibrated aperture')
+    # Interpolate the pad centre between neighbouring calibrated finger openings.
     return np.array([np.interp(width, gaps, [s['center'][i] for s in profile]) for i in range(3)])
 
 
 def calibrated_palm_pose(rotation,contact,width):
-    """Place the calibrated contact centre, rather than the palm, at contact.
+    """Offset a canonical gripper pose so its calibrated pads meet the contact point.
 
-    Inputs use the canonical gripper frame. The caller converts to the robot
-    palm frame exactly once after this width-dependent offset is applied.
-    """
+    Convert the result to the robot palm frame once, in the caller."""
     pose=np.eye(4)
     pose[:3,:3]=rotation
+    # Rotate the calibrated pad offset and subtract it to locate the palm.
     pose[:3,3]=np.asarray(contact)-np.asarray(rotation)@pad_for_width(width)
     return pose
 
 
 def cylinder(points):
+    # Use the middle height band to fit the cylinder without its top and bottom.
     bottom, top = np.quantile(points[:, 2], [.01, .99])
     side = points[(points[:, 2] > bottom + .2*(top-bottom)) &
                   (points[:, 2] < top - .2*(top-bottom)), :2]
@@ -161,6 +162,7 @@ def cylinder(points):
         return None
     origin = side.mean(0)
     xy = side-origin
+    # Fit a circle to the visible side points in the horizontal plane.
     a = np.column_stack([2*xy, np.ones(len(xy))])
     if np.linalg.matrix_rank(a) < 3:
         return None
@@ -170,9 +172,11 @@ def cylinder(points):
         return None
     radius = np.sqrt(radius2)
     centre = origin+fit[:2]
+    # Reject poor fits, implausible sizes, or too little visible curvature.
     residual = np.sqrt(np.mean((np.linalg.norm(side-centre, axis=1)-radius)**2))
     if not .008 <= radius <= .15 or residual > .0015:
         return None
+    # Require enough of the cylinder arc to estimate its hidden centre.
     if np.linalg.norm(((side-centre)/radius).mean(0)) > .95:
         return None  # too little visible arc to infer the hidden centre
     return centre, radius, bottom, top
@@ -183,6 +187,7 @@ def top_rectangle(points):
     face = points[np.abs(points[:, 2]-top) < .003, :2]
     if len(face) < max(100, .08*len(points)):
         return None
+    # Fit a rectangle around the top surface and check how fully points cover it.
     rect = cv2.minAreaRect(face.astype(np.float32))
     corners = cv2.boxPoints(rect).astype(float)
     edges = np.roll(corners, -1, axis=0)-corners
@@ -192,6 +197,7 @@ def top_rectangle(points):
     area = ConvexHull(face).volume
     if area / (lengths[0]*lengths[1]) < .9:
         return None  # circular/irregular top, rather than a resolved rectangle
+    # Return the short top edge as the preferred finger-closing direction.
     index = int(np.argmin(lengths))
     return corners, edges[index]/lengths[index], lengths[index], top
 
@@ -205,6 +211,7 @@ def sphere(points):
     local = points-origin
     if np.linalg.svd(local, compute_uv=False)[-1]/np.sqrt(len(points)) < .004:
         return None
+    # Refit the sphere three times, trimming the largest surface errors each time.
     keep = np.ones(len(points), dtype=bool)
     for _ in range(3):
         a = np.column_stack([2*local[keep], np.ones(keep.sum())])
@@ -214,6 +221,7 @@ def sphere(points):
             return None
         radius = np.sqrt(squared); centre = origin+fit[:3]
         error = np.abs(np.linalg.norm(points-centre, axis=1)-radius)
+        # Keep the best-fitting 85 percent of points for the next sphere fit.
         keep = error <= np.quantile(error, .85)
     if not .015 <= radius <= .055 or np.sqrt(np.mean(error[keep]**2)) > .0025:
         return None
@@ -230,6 +238,7 @@ def rectangular_candidates(rect, bottom, camera_position):
         raise RuntimeError('Only a flat top is visible; object height is unresolved')
     lengths = np.linalg.norm(np.roll(corners, -1, axis=0)-corners, axis=1)
     dimensions = np.r_[lengths[:2], height]
+    # Choose the box policy from the measured proportions.
     shape = 'cube' if dimensions.max()/dimensions.min() < 1.15 else 'cuboid'
     policy = SHAPE_POLICIES[shape]
     centre = corners.mean(0)
@@ -242,6 +251,7 @@ def rectangular_candidates(rect, bottom, camera_position):
     profile = json.loads((GRIPPER_DIR/'closing_profile.json').read_text())
     max_width = profile[-1]['gap'][0]-.012
     mode = policy['approach']
+    # Use an overhead approach if the front is too wide, unless the object is too high.
     if horizontal_width > max_width:
         mode = policy.get('wide_approach', 'top_down')
     if top > policy['top_down_max_z']:
@@ -249,6 +259,7 @@ def rectangular_candidates(rect, bottom, camera_position):
 
     poses, widths = [], []
     axes = [short_axis, np.array([-short_axis[1], short_axis[0]])]
+    # Try closing along each box axis, keeping only calibrated opening widths.
     for axis in axes:
         width = float(np.ptp(corners@axis))
         if mode == 'top_down' and width > short_width*1.1:
@@ -269,6 +280,7 @@ def rectangular_candidates(rect, bottom, camera_position):
                     continue
                 closing = -np.cross([0., 0., 1.], approach)
                 depth = float(np.ptp(corners@approach[:2]))
+                # Place contact slightly inside the observed front face, bounded by object size.
                 penetration = min(.025, .35*width, .45*depth)
                 contact = np.r_[centre, (bottom+top)/2]
                 contact -= approach*(depth/2-penetration)
@@ -276,8 +288,7 @@ def rectangular_candidates(rect, bottom, camera_position):
             poses.append(calibrated_palm_pose(orientation, contact, width))
             widths.append(width)
             if mode == 'front' and shape == 'cuboid':
-                # The opposite wrist roll can clear the forearm from a low
-                # table. Recalibrate at each contact, preserving pad placement.
+                # Try another wrist roll and a higher contact to clear low tables.
                 raised = contact + np.array([0., 0., min(.04, .2*height)])
                 flipped = orientation @ np.diag([-1., -1., 1.])
                 for rotation, point in [(flipped, contact), (orientation, raised), (flipped, raised)]:
@@ -290,14 +301,13 @@ def rectangular_candidates(rect, bottom, camera_position):
 
 
 def contact_candidates(points, palms, camera_position):
-    """Return collision envelope, corrected palm poses, widths, and geometry kind.
+    """Return the collision envelope, calibrated palm poses, widths, and measured shape.
 
-    Cylinder side grasps retain generated headings. Resolved rectangular tops
-    follow SHAPE_POLICIES for width and height. Other shapes retain feasible
-    front GraspGenX orientations and use only observed local contact sections.
-    """
+    Use fitted cylinders, boxes, or spheres when available; otherwise use
+    observed front contact sections with compatible model orientations."""
     points = cloud(points)
     rotation = np.array(json.loads((GRIPPER_DIR/'config.json').read_text())['base_rotation'])
+    # Convert palm poses into the model's gripper frame for contact calibration.
     canonical = np.asarray(palms) @ np.linalg.inv(rotation)
     cyl, rect = cylinder(points), top_rectangle(points)
     results, widths = [], []
@@ -307,6 +317,7 @@ def contact_candidates(points, palms, camera_position):
         centre, radius, bottom, top = cyl
         width = 2*radius
         pad = pad_for_width(width)
+        # Build a full cylinder outline for collision checking, including its hidden side.
         theta = np.linspace(0, 2*np.pi, 64, endpoint=False)
         envelope = np.array([[centre[0]+radius*np.cos(t), centre[1]+radius*np.sin(t), z]
                              for z in [bottom, top] for t in theta])
@@ -320,17 +331,14 @@ def contact_candidates(points, palms, camera_position):
             if approach@toward / np.linalg.norm(toward[:2]) < .5:
                 continue
             closing = np.cross([0., 0., 1.], approach)
-            # The parallel hand admits the opposite closing direction too.
-            # Prefer palm +X upward: the alternative wrist roll puts the
-            # forearm across the head camera's view in the HSRC side posture.
+            # Keep palm +X upward so the forearm is less likely to hide the target.
             closing *= -1
             corrected = np.eye(4)
             corrected[:3, :3] = np.column_stack([closing, np.cross(approach, closing), approach])
-            # Higher side contact reproduced the sustained can hold; keep
-            # the adjustment proportional for shorter cylinders and below
-            # the upper rim. This uses observed dimensions, not object names.
+            # Place side contact slightly above centre, staying below the rim.
             contact = np.r_[centre, (bottom+top)/2 + min(.03, .25*(top-bottom))]
             corrected = calibrated_palm_pose(corrected[:3,:3],contact,width)
+            # Reject a corrected cylinder grasp that moves too far from the model proposal.
             if np.linalg.norm(corrected[:3, 3]-pose[:3, 3]) > .10:
                 continue
             results.append(corrected@rotation); widths.append(width)
@@ -338,6 +346,7 @@ def contact_candidates(points, palms, camera_position):
         corners, short_axis, width, top = rect
         bottom = np.quantile(points[:, 2], .01)
         envelope = np.array([[x, y, z] for z in [bottom, top] for x, y in corners])
+        # Use the resolved top rectangle to generate calibrated box grasps.
         poses, widths, kind = rectangular_candidates(rect, bottom, camera_position)
         results = [pose@rotation for pose in poses]
     elif sphere(points) is not None:
@@ -349,6 +358,7 @@ def contact_candidates(points, palms, camera_position):
         toward = centre[:2]-np.asarray(camera_position)[:2]
         heading = np.arctan2(toward[1], toward[0])
         kind = 'sphere'
+        # Offer top-down sphere grasps only when the object is low enough.
         if centre[2]+radius <= SHAPE_POLICIES['sphere']['top_down_max_z']:
             for angle in heading+np.array([0., np.pi/2, np.pi, 3*np.pi/2]):
                 closing = np.array([np.cos(angle), np.sin(angle), 0.])
@@ -356,6 +366,7 @@ def contact_candidates(points, palms, camera_position):
                 orientation = np.column_stack([closing, np.cross(approach, closing), approach])
                 results.append(calibrated_palm_pose(orientation, centre, width)@rotation)
                 widths.append(width)
+        # Also try side approaches around the direction of the observing camera.
         for angle in heading+np.array([0., -.26, .26, -.52, .52]):
             approach = np.array([np.cos(angle), np.sin(angle), 0.])
             closing = -np.cross([0.,0.,1.], approach)
@@ -372,6 +383,7 @@ def contact_candidates(points, palms, camera_position):
             if abs(approach[2]) > .35 or approach@toward/np.linalg.norm(toward) < .65:
                 continue
             local = (points-pose[:3, 3])@pose[:3, :3]
+            # Measure the visible surface in the narrow band where the pads will close.
             section = local[np.abs(local[:,1]-.01276) < .0175]
             if len(section) < 100:
                 continue
@@ -389,6 +401,7 @@ def contact_candidates(points, palms, camera_position):
             if np.linalg.norm(corrected[:3,3]-pose[:3,3]) > .06:
                 continue
             results.append(corrected@rotation); widths.append(width)
+    # Fail if no candidate fits both the observed geometry and the hand opening.
     if not results:
         raise RuntimeError(f'No aperture-compatible {kind} grasp in the observed geometry')
     return envelope, np.asarray(results), np.asarray(widths), kind
@@ -400,13 +413,13 @@ def verify_object_lift(before, after, expected):
     expected = np.asarray(expected, dtype=float)
     if expected[2] < .015:
         raise RuntimeError('Test lift was too small to verify')
-    # Fingers can hide the lower cylinder after closure. Its resolved axis,
-    # radius and upper rim remain comparable without requiring the hidden base.
+    # Compare cylinder radius, centre, and top; fingers may hide the bottom.
     first, second = cylinder(before), cylinder(after)
     if first is not None and second is not None:
         centre0, radius0, _, top0 = first
         centre1, radius1, _, top1 = second
         rise = top1-top0
+        # Undo the expected lift and compare the remaining surface with the original cloud.
         distances = cKDTree(before).query(after-expected)[0]
         coverage = float(np.mean(distances < .01))
         if (abs(radius1-radius0) <= .003 and
@@ -414,14 +427,13 @@ def verify_object_lift(before, after, expected):
                 rise >= .6*expected[2] and abs(rise-expected[2]) <= .01 and
                 coverage >= .7):
             return {'rise_m': float(rise), 'surface_coverage': coverage}
-    # A closed hand can hide the bottom of a sphere. Keep its pre-grasp
-    # radius fixed while estimating translation from the remaining surface;
-    # changing visible quantiles alone is not evidence of an object lift.
+    # Keep the original sphere radius when fitting motion from the visible surface.
     first, second = sphere(before), sphere(after)
     if first is not None and second is not None:
         centre, radius = first
         _, observed_radius = second
         sample = after[::max(1, len(after)//3000)]
+        # Estimate sphere translation with a robust fit that tolerates small surface errors.
         fit = least_squares(lambda c: np.linalg.norm(sample-c, axis=1)-radius,
                             centre, loss='soft_l1', f_scale=.002, max_nfev=50)
         motion = fit.x-centre
@@ -433,6 +445,7 @@ def verify_object_lift(before, after, expected):
                 and top_rise >= .6*expected[2] and abs(top_rise-expected[2]) <= .01
                 and coverage >= .7):
             return {'rise_m': float(motion[2]), 'surface_coverage': coverage}
+    # For other shapes, compare height changes and surface overlap in both directions.
     dz = np.quantile(after[:,2],[.05,.5,.95])-np.quantile(before[:,2],[.05,.5,.95])
     if dz[-1] < .6*expected[2] or np.max(np.abs(dz-expected[2])) > .012:
         raise RuntimeError('Object did not rise with the hand (or became too occluded to verify)')
@@ -447,6 +460,7 @@ def verify_object_lift(before, after, expected):
 
 def side_waypoint(overhead, base_xy, distance=.12):
     """Keep overhead height/orientation, offset horizontally toward the robot."""
+    # Create a side waypoint only for a nearly vertical downward approach.
     if overhead[2, 2] > -.9:
         return None
     toward = np.asarray(base_xy)-overhead[:2, 3]
@@ -454,6 +468,7 @@ def side_waypoint(overhead, base_xy, distance=.12):
     if norm < .01:
         return None
     side = overhead.copy()
+    # Shift toward the base without moving more than halfway to it.
     side[:2, 3] += min(distance, norm/2)*toward/norm
     return side
 
@@ -469,10 +484,8 @@ def pregrasp_routes(planner, overhead, parked, base_xy, group, hand, frame, ik=N
         stage.group = group
         ik_frame = PoseStamped(); ik_frame.header.frame_id = hand; ik_frame.pose.orientation.w = 1.
         stage.ik_frame = ik_frame
-        # A pose goal makes OMPL sample IK from random seeds; the HSR solver
-        # keeps the base near its seed, so the samples land outside the base
-        # window. A solution seeded from where the robot stands is a joint
-        # goal that needs no sampling. Fall back to the pose when there is none.
+        # Prefer IK seeded from the current robot pose to keep the base nearby.
+        # Fall back to a pose goal if that joint solution is unavailable.
         goal_state = ik(matrix) if ik is not None else None
         if goal_state is not None:
             print(f'[IK] {name}: seeded whole-body solution inside the base window', flush=True)
@@ -481,10 +494,12 @@ def pregrasp_routes(planner, overhead, parked, base_xy, group, hand, frame, ik=N
             timeout = max(timeout, 15.)
         else:
             stage.setGoal(goal)
+        # Keep the base within its parking window along the whole planned route.
         stage.path_constraints = parked
         stage.timeout = timeout
         return stage
 
+    # For overhead grasps, try a robot-facing waypoint before the direct route.
     side = side_waypoint(overhead, base_xy)
     if side is None:
         return move('pregrasp', overhead)
@@ -502,6 +517,7 @@ def mask_feature(mask):
     v,u=np.nonzero(mask)
     if len(u)<100:
         raise RuntimeError('Too few hand-camera target pixels')
+    # Reject clipped masks because their visible centre may not be the target centre.
     if u.min()==0 or v.min()==0 or u.max()==mask.shape[1]-1 or v.max()==mask.shape[0]-1:
         raise RuntimeError('Target is clipped by the hand camera image boundary')
     return np.array([u.mean(),v.mean()]),len(u)
@@ -511,6 +527,7 @@ def project_feature(point,k):
     point=np.asarray(point,float)
     if not np.isfinite(point).all() or point[2]<.05:
         raise RuntimeError('Invalid hand-camera feature depth')
+    # Project the 3D point with camera intrinsics, then divide by depth to get pixels.
     pixel=k@point
     return pixel[:2]/pixel[2]
 
@@ -519,10 +536,12 @@ def hand_image_velocity(uv,depth,desired_uv,k,basis_camera):
     """Translate the camera so the observed image feature approaches its goal."""
     point=np.array([(uv[0]-k[0,2])/k[0,0],(uv[1]-k[1,2])/k[1,1],1.])*depth
     velocity,error=image_velocity(point,desired_uv,k,basis_camera,min_depth=.05)
+    # Reverse the sign because moving the camera moves the image in the opposite direction.
     return -velocity,error
 
 
 def orientation_velocity(desired,current):
+    # Turn orientation error into angular velocity and cap its speed.
     error=Rotation.from_matrix(desired@current.T).as_rotvec()
     velocity=1.5*error
     velocity*=min(1.,.08/max(np.linalg.norm(velocity),1e-12))
@@ -533,6 +552,7 @@ def approach_velocity(start,current,distance):
     """Bounded Cartesian final approach; never accept a short or skewed reach."""
     axis=start[:3,2]
     delta=current[:3,3]-start[:3,3]
+    # Separate forward progress from sideways drift along the planned approach.
     progress=float(delta@axis)
     lateral=delta-progress*axis
     angle=Rotation.from_matrix(start[:3,:3].T@current[:3,:3]).magnitude()
@@ -541,6 +561,7 @@ def approach_velocity(start,current,distance):
     if np.linalg.norm(lateral)>.004 or angle>.04:
         raise RuntimeError('Servo approach left its alignment corridor')
     remaining=distance-progress
+    # Finish only when forward distance, sideways drift, and rotation are all small.
     finished=abs(remaining)<.002 and np.linalg.norm(lateral)<.002 and angle<.02
     velocity=axis*np.clip(.8*remaining,0.,.006)-.8*lateral
     velocity*=min(1.,.006/max(np.linalg.norm(velocity),1e-12))
@@ -551,6 +572,7 @@ def feature(depth, k, mask):
     valid = pointcloud.object_depth_mask(depth, mask)
     v, u = np.nonzero(valid)
     uv = np.array([u.mean(), v.mean()])
+    # Estimate target depth near the mask centre, with the full mask as a fallback.
     near = (u-uv[0])**2+(v-uv[1])**2 < 25
     z = np.median(depth[v[near],u[near]]) if near.any() else np.median(depth[valid])
     xyz = np.array([(uv[0]-k[0,2])*z/k[0,0],(uv[1]-k[1,2])*z/k[1,1],z])
@@ -558,17 +580,19 @@ def feature(depth, k, mask):
 
 
 def image_velocity(tool_point_camera, target_uv, k, basis_camera, gain=.6, max_speed=.012, min_depth=.15):
-    """Positive robot-point image Jacobian for a stationary eye-to-hand camera."""
+    """Compute a bounded image-error correction for a fixed camera."""
     x,y,z = np.asarray(tool_point_camera,float)
     if not np.isfinite([x,y,z]).all() or z < min_depth:
         raise RuntimeError('Control feature is behind/too close to the camera')
     predicted = np.array([k[0,0]*x/z+k[0,2],k[1,1]*y/z+k[1,2]])
     error = np.asarray(target_uv)-predicted
+    # Relate small 3D movements to image-pixel movement using camera intrinsics.
     interaction = np.array([[k[0,0]/z,0,-k[0,0]*x/z**2],
                             [0,k[1,1]/z,-k[1,1]*y/z**2]])
     jacobian = interaction@basis_camera
     if not np.isfinite(jacobian).all() or np.linalg.cond(jacobian) > 50:
         raise RuntimeError('Image Jacobian cannot resolve transverse alignment from this view')
+    # Solve for the correction in the allowed motion directions and limit speed.
     velocity = gain*np.linalg.solve(jacobian,error)
     velocity *= min(1.,max_speed/max(np.linalg.norm(velocity),1e-12))
     return velocity, error
@@ -579,6 +603,7 @@ class VisualServo:
         self.node = node
         self.buffer = Buffer()
         self.listener = TransformListener(self.buffer,node)
+        # Send Cartesian velocity commands and listen for Servo stop or error status.
         self.publisher = node.create_publisher(TwistStamped,'/grasp_servo/delta_twist_cmds',10)
         self.status = None
         self.status_time = 0.
@@ -596,12 +621,14 @@ class VisualServo:
             if self.buffer.can_transform('odom',link,stamp):
                 transform = self.buffer.lookup_transform('odom',link,stamp)
                 age = (self.node.get_clock().now()-Time.from_msg(transform.header.stamp)).nanoseconds/1e9
+                # Ignore transforms older than half a second during motion feedback.
                 if age > .5:
                     continue
                 return matrix_from_transform(transform.transform)
         raise RuntimeError(f'No fresh odom-to-{link} transform')
 
     def service(self,name,kind=Trigger,request=None):
+        # Call the named Servo control service and require a successful reply.
         client=self.node.create_client(kind,'/grasp_servo/'+name)
         try:
             if not client.wait_for_service(timeout_sec=5.):
@@ -616,6 +643,7 @@ class VisualServo:
     def command(self,linear,angular=None):
         msg=TwistStamped()
         msg.header.stamp=self.node.get_clock().now().to_msg()
+        # Express the velocity command in odom so it matches the feedback poses.
         msg.header.frame_id='odom'
         msg.twist.linear.x,msg.twist.linear.y,msg.twist.linear.z=map(float,linear)
         if angular is not None:
@@ -623,12 +651,12 @@ class VisualServo:
         self.publisher.publish(msg)
 
     def stop(self):
-        # Flush zero commands before pausing; do not leave a position trajectory
-        # or residual smoothing velocity active during MTC's next action.
+        # Send zero velocity before pausing so smoothing does not leave motion active.
         end=time.monotonic()+.3
         while time.monotonic()<end:
             self.command(np.zeros(3));rclpy.spin_once(self.node,timeout_sec=.02)
         self.service('pause_servo')
+        # Wait for measured hand motion to settle before returning control to MTC.
         first=self.transform()
         end=time.monotonic()+3.
         while time.monotonic()<end:
@@ -646,8 +674,7 @@ class VisualServo:
         history=[];converged=0
         try:
             self.service('start_servo')
-            # Keep orientation regulated: free rotational drift can reduce
-            # image error by rotating the camera instead of aligning the pads.
+            # Hold orientation so image correction comes from translation.
             self.service('change_drift_dimensions',ChangeDriftDimensions,
                          ChangeDriftDimensions.Request())
             self.service('unpause_servo')
@@ -664,7 +691,9 @@ class VisualServo:
                     raise RuntimeError('Target too close to hand camera')
                 observed=np.array([(uv[0]-k[0,2])/k[0,0],
                                    (uv[1]-k[1,2])/k[1,1],1.])*target_camera[2]
+                # Project the target from the planned pregrasp to set the desired image position.
                 if desired_uv is None:
+                    # Find the fixed hand-to-camera transform from poses captured with this image.
                     hand_camera=np.linalg.inv(image_hand)@odom_camera
                     desired_point=(np.linalg.inv(pregrasp@hand_camera)@np.r_[reference_feature,1.])[:3]
                     desired_uv=project_feature(desired_point,k)
@@ -673,9 +702,11 @@ class VisualServo:
                     hand_area=area
                 if time.monotonic()-captured > 1.:
                     raise RuntimeError('Visual observation became stale during detection')
+                # Reject large mask-size changes that can indicate occlusion or another object.
                 if not .6 <= area/hand_area <= 1.5:
                     raise RuntimeError('Target became occluded or changed identity during IBVS')
                 target_world=odom_camera[:3,:3]@observed+odom_camera[:3,3]
+                # Reject target changes or robot drift before issuing another correction.
                 if np.linalg.norm(target_world-reference_feature) > .035:
                     raise RuntimeError('Target association moved beyond the bounded alignment region')
                 hand=self.transform();current_base=self.transform('base_footprint')
@@ -691,13 +722,13 @@ class VisualServo:
                 angular=orientation_velocity(pregrasp[:3,:3],hand[:3,:3])
                 norm=float(np.linalg.norm(error));history.append(norm)
                 print(f'[IBVS] image error {norm:.2f} px',flush=True)
+                # Require three consecutive aligned observations before accepting convergence.
                 converged=converged+1 if norm < 2. else 0
                 if converged >= 3:
                     return history
                 if len(history)>8 and min(history[-4:]) > min(history[:-4])+2.:
                     raise RuntimeError('IBVS image error is increasing')
-                # A short velocity burst on fresh visual evidence. Always stop
-                # while waiting for the next RGB/SAM3 result (including exceptions).
+                # Move briefly using this observation, then stop for the next image.
                 until=time.monotonic()+.15
                 while time.monotonic()<until:
                     rclpy.spin_once(self.node,timeout_sec=.02)
@@ -710,13 +741,9 @@ class VisualServo:
             self.stop()
 
     def approach(self,prompt,reference_feature,distance=.08,start_pose=None):
-        """Servo owns the final straight reach; MTC sends no trajectory here.
+        """Move straight toward the target using pose feedback and camera checks.
 
-        TF closes the distance/orientation loop. Hand-camera segmentation
-        checks that the target remains on its predicted image ray. Its outline
-        may leave the image during the close approach, so do not use a clipped
-        silhouette centroid as an IBVS translation error.
-        """
+    A clipped target outline is used for detection only, not centring."""
         if not 0.<distance<=.08:
             raise ValueError('Final approach must be within 80 mm')
         start=self.transform() if start_pose is None else np.asarray(start_pose,float)
@@ -735,6 +762,7 @@ class VisualServo:
                 mask,_=sam3_client.detect(rgb,prompt,timeout=5.)
                 if time.monotonic()-captured>1.:
                     raise RuntimeError('Approach target observation became stale')
+                # Check that the detected target still contains its expected image position.
                 point=(np.linalg.inv(camera)@np.r_[reference_feature,1.])[:3]
                 pixel=project_feature(point,k)
                 u,v=np.rint(pixel).astype(int)
@@ -755,11 +783,11 @@ class VisualServo:
                 if settled>=3:break
                 if progress>best+.0005:
                     best=progress;last_progress=time.monotonic()
+                # Abort if the approach stops making measurable forward progress.
                 if not finished and time.monotonic()-last_progress>20.:
                     raise RuntimeError('Servo approach made no measurable progress')
                 angular=orientation_velocity(start[:3,:3],hand[:3,:3])
-                # Sustain commands long enough for Servo's smoothing filter
-                # while supervising TF and Servo status throughout the burst.
+                # Keep checking pose and Servo status while sending this motion burst.
                 until=time.monotonic()+1.
                 while time.monotonic()<until:
                     rclpy.spin_once(self.node,timeout_sec=.02)
@@ -782,18 +810,19 @@ class VisualServo:
 
 # Scene payload
 
-# MoveIt Humble PlanningScene::setPlanningSceneDiffMsg ignores an empty map;
-# setPlanningSceneMsg replaces it. Preserve that distinction here.
-# https://github.com/moveit/moveit2/blob/humble/moveit_core/planning_scene/src/planning_scene.cpp
+# Empty maps mean no change in a scene diff, but replace the map in a full scene.
 
 
 def compact(solution):
+    # Track the last map so repeated map data can be omitted from scene diffs.
     previous = serialize_message(solution.start_scene.world.octomap)
     for step in solution.sub_trajectory:
         scene = step.scene_diff
         encoded = serialize_message(scene.world.octomap)
+        # Remove only repeated nonempty diff maps; full scene replacements keep their meaning.
         if scene.is_diff and scene.world.octomap.octomap.data and encoded == previous:
             scene.world.octomap = OctomapWithPose()
+        # Update the remembered map when a stage supplies new data or replaces the full scene.
         elif scene.world.octomap.octomap.data or not scene.is_diff:
             previous = encoded
     return solution
@@ -801,17 +830,14 @@ def compact(solution):
 # Contact closure
 
 def wait_for_hold(read_contact, clock, seconds=5., timeout=90.):
-    """Require uninterrupted bilateral contact for a simulated-time dwell.
-
-    This only establishes contact persistence; the caller must also verify
-    that the object stayed elevated using a fresh camera observation.
-    """
+    """Require continuous contact for a robot-clock dwell; verify elevation separately."""
     started = None
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         left, right = read_contact()
         if not contact_state(left, right, .06):
             raise RuntimeError('Object slipped: bilateral contact lost after lift')
+        # Measure the hold with the supplied robot clock and detect clock resets.
         now = clock()
         if started is None:
             started = now
@@ -828,6 +854,7 @@ def contact_state(left, right, threshold):
         raise ValueError('Non-finite finger feedback')
     if not .06 <= threshold <= .18:
         raise ValueError('Contact threshold outside calibrated range')
+    # Stop excessive finger deflection before deciding whether both fingers touched.
     if max(left, right) > .20:
         raise RuntimeError('Excessive or asymmetric finger contact; closure stopped')
     return min(left, right) > threshold
@@ -845,10 +872,12 @@ def close(node, threshold=.06):
             samples.append(dict(time=time.time(), motor=q['hand_motor_joint'], left=left, right=right))
             Path(diagnostics).mkdir(parents=True, exist_ok=True)
             (Path(diagnostics)/'closure_feedback.json').write_text(json.dumps(samples, indent=2))
+        # Stop if contact disappears after the fingers have already touched the object.
         if seen_contact and min(left, right) < .02:
             raise RuntimeError('Object contact lost during closure; refusing further squeezing')
         seen_contact |= min(left, right) > .06
         if contact_state(left, right, threshold):
+            # Confirm contact persists across several feedback samples before holding position.
             for _ in range(3):
                 time.sleep(.2)
                 held = joint_positions(node)
@@ -857,6 +886,7 @@ def close(node, threshold=.06):
                     raise RuntimeError('Bilateral contact was lost during position hold')
             print(f'[CONTACT] position hold, springs {left:.3f}, {right:.3f}', flush=True)
             return {'left': left, 'right': right, 'motor': q['hand_motor_joint']}
+        # Close in smaller steps once both fingers begin to make contact.
         motor -= .005 if min(left, right) > .06 else .02
         if motor < .10:
             raise RuntimeError('Minimum closure reached without bilateral contact')
@@ -879,6 +909,7 @@ class GeometryOccluded(RuntimeError):
 
 def aim_head(node,pan,tilt):
     goal=FollowJointTrajectory.Goal()
+    # Send pan and tilt together so the head reaches one observation pose.
     goal.trajectory.joint_names=['head_pan_joint','head_tilt_joint']
     goal.trajectory.points=[JointTrajectoryPoint(positions=[float(pan),float(tilt)],
                                                 time_from_start=Duration(sec=2))]
@@ -893,6 +924,7 @@ def reframe_target(node,poses,centre):
     yaw=math.atan2(base[1,0],base[0,0])
     offset=centre-pivot
     pan=math.atan2(offset[1],offset[0])-yaw
+    # Wrap the pan angle before checking the head's joint limits.
     pan=math.atan2(math.sin(pan),math.cos(pan))
     # Same HSRC camera-height approximation used by navigation.look_at.
     tilt=math.atan2(offset[2]-.248,np.linalg.norm(offset[:2]))
@@ -905,14 +937,15 @@ def foreground_occlusion(depth, mask, support_mask=None):
     """Fraction of the silhouette adjacent to a distinctly nearer surface."""
     mask=np.asarray(mask,bool)
     outer=cv2.dilate(mask.astype(np.uint8),np.ones((5,5),np.uint8)).astype(bool)&~mask
-    # Use interior target pixels: mixed depth on the segmentation boundary
-    # can otherwise make the target itself appear to be a foreground blocker.
+    # Compare against interior depth to avoid mixed pixels at the object boundary.
     interior=cv2.erode(mask.astype(np.uint8),np.ones((5,5),np.uint8)).astype(bool)
     if not interior.any():
         interior=mask
+    # Find the nearest interior target depth for pixels around the silhouette.
     _, nearest=distance_transform_edt(~interior,return_indices=True)
     target_depth=depth[nearest[0],nearest[1]]
     valid=outer&np.isfinite(depth)&(depth>0)&np.isfinite(target_depth)&(target_depth>0)
+    # Exclude the supporting surface from the foreground-blocker test.
     if support_mask is not None:
         valid &= ~support_mask
     if not valid.any():
@@ -925,6 +958,7 @@ def support_pixels(depth,k,transform,target):
     v,u=np.indices(depth.shape)
     x=(u-k[0,2])*depth/k[0,0];y=(v-k[1,2])*depth/k[1,1]
     xyz=np.stack([x,y,depth],axis=-1)@transform[:3,:3].T+transform[:3,3]
+    # Subsample the depth cloud to reduce the support-surface search cost.
     sample=xyz[::4,::4].reshape(-1,3)
     centre=np.median(target,axis=0);bottom=np.quantile(target[:,2],.01)
     valid=np.isfinite(sample).all(axis=1)&(np.linalg.norm(sample[:,:2]-centre[:2],axis=1)<.35)
@@ -932,10 +966,10 @@ def support_pixels(depth,k,transform,target):
     sample=sample[valid]
     if len(sample)<100:
         return np.zeros(depth.shape,bool)
+    # Group nearby points by height to find a broad support surface.
     bins=np.floor(sample[:,2]/.01).astype(int)
     values=np.unique(bins)
-    # From a low camera, only the broad table edge may be visible, so require
-    # lateral span rather than a fully visible two-dimensional tabletop patch.
+    # A broad horizontal edge is enough when the camera cannot see the full tabletop.
     for value in values[::-1]:
         plane=sample[bins==value]
         if len(plane)<100 or np.max(np.ptp(plane[:,:2],axis=0))<.30:
@@ -954,6 +988,7 @@ def observe(prompt):
     _, image_point, area = feature(depth, k, mask)
     v,u=np.nonzero(mask)
     clipped=bool(u.min()<3 or v.min()<3 or u.max()>=mask.shape[1]-3 or v.max()>=mask.shape[0]-3)
+    # Put the target points and image feature into odom coordinates.
     world_points=pointcloud.transform_points(odom_from_camera, points)
     support=support_pixels(depth,k,odom_from_camera,world_points)
     return dict(points=world_points,
@@ -967,6 +1002,7 @@ def merge_target_views(views):
     merged = views[0]['points'].copy()
     for view in views[1:]:
         points = view['points']
+        # Require overlap in both directions before merging another target view.
         forward = cKDTree(merged).query(points)[0]
         reverse = cKDTree(points).query(merged)[0]
         if min(np.mean(forward < .012), np.mean(reverse < .012)) < .15:
@@ -987,6 +1023,7 @@ def observe_geometry(node, prompt):
     def aim(value):
         aim_head(node,pan,value)
     try:
+        # Look slightly above and below the original head angle for more target geometry.
         for offset in [-.20, .20]:
             angle = float(np.clip(tilt+offset, -1.57, .52))
             if abs(angle-tilt) < .01:
@@ -1007,6 +1044,7 @@ def observe_geometry(node, prompt):
     if len(views)<2:
         raise RuntimeError('Could not obtain complementary target depth views')
     result = merge_target_views(views)
+    # Require at least one unclipped view and no strongly foreground-blocked view.
     if all(view['clipped'] for view in views) or any(view['occlusion']>.08 for view in views):
         raise GeometryOccluded('Head scan remains clipped or contains foreground-occluded geometry',
                                (result['points'].min(0)+result['points'].max(0))/2)
@@ -1019,11 +1057,14 @@ def perceive(prompt, node=None):
     """Generate candidates, then place calibrated pads using observed geometry."""
     observation = observe_geometry(node,prompt) if node is not None else observe(prompt)
     points = observation['points']
+    # Limit and centre the object cloud before asking the grasp model.
     sample = points[np.random.choice(len(points), min(len(points), MAX_CLOUD_POINTS), replace=False)]
+    # Remember the cloud centre so predicted grasps can be returned to odom.
     centre = sample.mean(axis=0)
     poses, scores = graspgenx_client.generate(sample - centre, GRIPPER)
     poses[:, :3, 3] += centre
     best = np.argsort(scores)[::-1]
+    # Refine the ranked grasps using measured shape and calibrated finger contact.
     envelope, grasps, widths, kind = contact_candidates(points, poses[best], observation['camera'])
     observation['geometry_kind'] = kind
     print(f"{prompt}: SAM3 {observation['score']:.2f}, {len(points)} points, "
@@ -1051,12 +1092,14 @@ def joint_positions(node):
     )
     if not received:
         raise RuntimeError(f"no {JOINT_STATES}")
+    # Pair each reported joint name with its measured position.
     return dict(zip(message.name, message.position))
 
 
 def fingertip_gap(node):
     buffer = Buffer()
     listener = TransformListener(buffer, node)  # noqa: F841, fills buffer while spun
+    # Measure the relative transform between the left and right fingertips.
     tips = ("hand_l_finger_tip_frame", "hand_r_finger_tip_frame", Time())
     deadline = time.monotonic() + 5.0
     while not buffer.can_transform(*tips):
@@ -1064,15 +1107,13 @@ def fingertip_gap(node):
             raise RuntimeError("no fingertip TF")
         rclpy.spin_once(node, timeout_sec=0.1)
     gap = buffer.lookup_transform(*tips).transform.translation
+    # Use the translation length as the physical gap between fingertips.
     return float(np.linalg.norm([gap.x, gap.y, gap.z]))
 
 
 def model_target(node, points):
-    """Put the target in move_group's scene as a box, replacing the last one.
-
-    The depth updater leaves modelled objects out of new frames, so clearing
-    the octomap rebuilds it without the target's voxels but with everything
-    around it, such as the table the target stands on."""
+    """Replace the target box and rebuild the depth map around it, excluding target voxels."""
+    # Represent the target by its axis-aligned box in the planning scene.
     lower, upper = points.min(axis=0), points.max(axis=0)
     box = CollisionObject(id=TARGET, operation=CollisionObject.ADD)
     box.header.frame_id = BASE_FRAME
@@ -1094,12 +1135,10 @@ def model_target(node, points):
             object=CollisionObject(operation=CollisionObject.REMOVE)
         )
     ]
+    # Replace the old target with the newly measured collision box.
     scene.world.collision_objects = [box]
-    # Empty the octomap before applying anything, or move_group can die here:
-    # applying a diff republishes monitored_planning_scene with the whole world,
-    # octomap included, and a map of everywhere the robot has driven exceeds
-    # CycloneDDS's MaxSampleSize (.devcontainer/cyclonedds_sim.xml). The clear
-    # after the apply is the one that rebuilds the map around the box.
+    # Clear the old map before publishing the scene to stay within DDS size limits.
+    # Rebuild it below with the target box excluded from depth updates.
     call(node, Empty, "/clear_octomap", Empty.Request())
     if not call(
         node,
@@ -1109,13 +1148,10 @@ def model_target(node, points):
     ).success:
         raise RuntimeError("move_group rejected the target box")
     depth_relay(node, True)
-    # The relay is off until now, so these are the updater's first frames
-    # since startup; the first rebuilt map has overlapped the robot while
-    # later ones did not. Rebuild a few times before refusing motion.
+    # Retry early depth maps that incorrectly overlap the robot.
     for attempt in range(1, 4):
         call(node, Empty, "/clear_octomap", Empty.Request())
-        # The updater uses simulation time; three wall seconds may contain no
-        # update. Require actual map data after clearing, then check the start.
+        # Wait for actual map data, then check that the current robot state is clear.
         deadline = time.monotonic() + 30.0
         while True:
             snapshot = call(node, GetPlanningScene, '/get_planning_scene',
@@ -1139,8 +1175,7 @@ def model_target(node, points):
         time.sleep(2.)
     else:
         raise RuntimeError('Robot overlaps the rebuilt collision scene; refusing motion')
-    # Freeze it: move_group stops a running plan when new voxels (a new view
-    # or the moving arm itself) appear on its path.
+    # Freeze the map so new depth voxels do not interrupt the planned motion.
     depth_relay(node, False)
 
 
@@ -1157,10 +1192,7 @@ def run_action(node, kind, name, goal, seconds):
     try:
         if not client.wait_for_server(timeout_sec=10.0):
             raise RuntimeError(f"{name} unavailable")
-        # wait_for_server returns once the server's services show in the
-        # graph, before every request/reply channel has matched. To the real
-        # robot over the LAN the first goal request was then lost and never
-        # answered (2026-09-16), so resend until the server acknowledges one.
+        # Retry unanswered goals while the real-robot connection finishes discovery.
         for attempt in range(1, 4):
             future = client.send_goal_async(goal)
             rclpy.spin_until_future_complete(node, future, timeout_sec=5.0)
@@ -1170,13 +1202,13 @@ def run_action(node, kind, name, goal, seconds):
             print(f"[ACTION] {name}: no goal response in 5 s (attempt {attempt}/3), resending", flush=True)
         else:
             raise RuntimeError(f"{name} goal timed out")
+        # Proceed to result waiting only after the action server accepts a goal.
         if not handle.accepted:
             raise RuntimeError(f"{name} rejected the goal")
         try:
             return wait(node, handle.get_result_async(), name, seconds)
         except BaseException:
-            # Includes Ctrl+C: wait for cancellation acknowledgement before
-            # dropping the client, rather than leaving an action moving.
+            # On errors or Ctrl+C, request cancellation before releasing the client.
             cancellation = handle.cancel_goal_async()
             rclpy.spin_until_future_complete(node, cancellation, timeout_sec=5.0)
             raise
@@ -1185,13 +1217,7 @@ def run_action(node, kind, name, goal, seconds):
 
 
 def open_hand(node):
-    """Open the hand on the hardware before the reach is planned.
-
-    The finger springs are passive. Closed on nothing, the real hand reports
-    them at about 0.8 rad, and a planned open-hand stage keeps those values
-    while spreading the fingers, so the pregrasp start state had a finger
-    inside the torso (2026-09-16). Opened for real, the springs relax and
-    the plan starts from the true state."""
+    """Open the physical hand before planning so passive finger springs can relax."""
     goal = FollowJointTrajectory.Goal()
     goal.trajectory.joint_names = ['hand_motor_joint']
     goal.trajectory.points = [JointTrajectoryPoint(
@@ -1199,6 +1225,7 @@ def open_hand(node):
     result = run_action(node, FollowJointTrajectory, '/gripper_controller/follow_joint_trajectory', goal, 15.)
     if result.status != GoalStatus.STATUS_SUCCEEDED or result.result.error_code != 0:
         raise RuntimeError('the hand did not open')
+    # Wait briefly for the measured hand opening and passive springs to settle.
     deadline = time.monotonic() + 5.
     while time.monotonic() < deadline:
         q = joint_positions(node)
@@ -1209,6 +1236,7 @@ def open_hand(node):
 
 
 def close_hand(node):
+    # Read the optional closing effort and require it to stay within the calibrated range.
     effort = float(os.environ.get('HSR_GRASP_EFFORT_NM', str(CLOSE_EFFORT)))
     if not np.isfinite(effort) or not -.3 <= effort <= -.012:
         raise ValueError('HSR_GRASP_EFFORT_NM must be between -0.3 and -0.012 Nm')
@@ -1221,6 +1249,7 @@ def close_hand(node):
 
 def mtc_node():
     """An rclcpp node carrying move_group's robot model and planner settings."""
+    # Give the C++ MTC node the same robot model, planner settings, and clock mode.
     with tempfile.NamedTemporaryFile("w", suffix=".yaml") as params:
         yaml.safe_dump(
             {"/**": {"ros__parameters": {**planning_model.moveit_params(), "use_sim_time": USE_SIM_TIME}}}, params
@@ -1235,6 +1264,7 @@ def mtc_node():
 def stamped(frame, matrix=np.eye(4)):
     pose = PoseStamped()
     pose.header.frame_id = frame
+    # Copy matrix translation and rotation into a frame-labelled ROS pose.
     position, orientation = pose.pose.position, pose.pose.orientation
     position.x, position.y, position.z = matrix[:3, 3].tolist()
     orientation.x, orientation.y, orientation.z, orientation.w = (
@@ -1250,6 +1280,7 @@ def move_hand(name, planner, direction, frame, min_distance, max_distance):
     stage.ik_frame = stamped(HAND)
     stage.min_distance = min_distance
     stage.max_distance = max_distance
+    # Label the motion direction with the frame in which it is expressed.
     vector = Vector3Stamped()
     vector.header.frame_id = frame
     vector.vector.x, vector.vector.y, vector.vector.z = direction
@@ -1258,13 +1289,9 @@ def move_hand(name, planner, direction, frame, min_distance, max_distance):
 
 
 def seeded_ik(node, matrix, base, frame=BASE_FRAME):
-    """Collision-free whole-body IK for a palm pose, seeded from the current state.
+    """Solve whole-body IK from the current state, then check base limits and collisions.
 
-    OMPL's goal sampler seeds IK from random states and the HSR solver keeps
-    the base near its seed, so on the real robot every sampled pregrasp put
-    the base outside BASE_SLACK and the stage timed out (2026-09-16). Seeded
-    from where the robot stands, the same solver lands inside the window.
-    Returns a diff RobotState over WHOLE_BODY_JOINTS, or None."""
+    Return a diff RobotState over WHOLE_BODY_JOINTS, or None."""
     scene = call(node, GetPlanningScene, "/get_planning_scene", GetPlanningScene.Request(
         components=PlanningSceneComponents(components=PlanningSceneComponents.ROBOT_STATE))).scene
     request = GetPositionIK.Request()
@@ -1272,17 +1299,18 @@ def seeded_ik(node, matrix, base, frame=BASE_FRAME):
     request.ik_request.robot_state = scene.robot_state
     request.ik_request.ik_link_name = HAND
     request.ik_request.pose_stamped = stamped(frame, matrix)
-    # Not avoid_collisions: when the seeded answer is rejected, the service
-    # retries from random seeds and reports no solution at all. Take the
-    # seeded answer and check it against the live scene instead.
+    # Preserve the current-state seed; check collisions separately below.
+    # The service's collision retry would otherwise switch to random seeds.
     request.ik_request.avoid_collisions = False
     request.ik_request.timeout = Duration(sec=1)
     response = call(node, GetPositionIK, "/compute_ik", request)
     if response.error_code.val != MoveItErrorCodes.SUCCESS:
         return None
     solution = dict(zip(response.solution.joint_state.name, response.solution.joint_state.position))
+    # Keep the solved base position and heading within the allowed parking slack.
     if any(abs(solution[joint] - base[joint]) > slack for joint, slack in BASE_SLACK.items()):
         return None
+    # Reject the IK solution if it collides with the current scene.
     valid = call(node, GetStateValidity, "/check_state_validity",
                  GetStateValidity.Request(robot_state=response.solution, group_name=GROUP))
     if not valid.valid:
@@ -1295,11 +1323,11 @@ def seeded_ik(node, matrix, base, frame=BASE_FRAME):
 
 class Pick:
     def __init__(self, node, ik=None):
-        """ik(matrix, base) -> RobotState or None gives pregrasp stages a
-        joint-space goal; see seeded_ik."""
+        """Use the optional ik(matrix, base) callback to supply pregrasp joint goals."""
         self.node = node
         self.ik = ik
         self.ompl = None
+        # Use short, slow Cartesian steps for the final approach and lift.
         self.cartesian = core.CartesianPath()
         self.cartesian.step_size = 0.005  # enough steps for MoveIt's joint-jump check
         for planner in (self.cartesian,):
@@ -1310,8 +1338,7 @@ class Pick:
         task = core.Task()
         task.name = name
         task.loadRobotModel(self.node)
-        # PipelinePlanner caches a pipeline bound to the first task's model.
-        # Humble can reload that model between tasks, so do not reuse planners.
+        # Make a fresh planner for the robot model loaded by this task.
         self.ompl = core.PipelinePlanner(self.node, 'move_group')
         self.ompl.max_velocity_scaling_factor = .15
         self.ompl.max_acceleration_scaling_factor = .15
@@ -1321,14 +1348,10 @@ class Pick:
     def reach(self, grasps, base):
         """Plan pregrasp and complete approach together before executing either."""
         task = self.task("reach")
-        # A previous attempt may have left target contact enabled in the scene.
-        # Transit and opening must check the target as well as the table.
+        # Restore target collision checks before opening or moving to pregrasp.
         protect = stages.ModifyPlanningScene("check target during pregrasp")
         protect.allowCollisions(TARGET, FINGERS, False)
-        # The real camera's octomap always holds one voxel at the sensor
-        # origin, inside the camera housing (2026-09-16). It blocks base
-        # shifts of a few centimetres through the two head links, which no
-        # arm plan can bring near anything real.
+        # Allow head-link overlap with the camera-origin voxel seen in real depth maps.
         protect.allowCollisions("<octomap>", HEAD_LINKS, True)
         task.add(protect)
         if abs(base.get("hand_motor_joint", 0.0) - OPEN_HAND) > 0.005:
@@ -1349,16 +1372,20 @@ class Pick:
                 for joint, slack in BASE_SLACK.items()
             ]
         )
+        # Reserve arm-lift travel for the approach and verification lift.
         parked.joint_constraints.append(JointConstraint(
             joint_name='arm_lift_joint',position=GRASP_LIFT_MAX/2,
             tolerance_above=GRASP_LIFT_MAX/2,tolerance_below=GRASP_LIFT_MAX/2,
             weight=1.))
+        # Move backward along palm Z to get each pregrasp pose.
         back_off = np.eye(4)
         back_off[2, 3] = -APPROACH
         # Best-scored first; stop at the first grasp that works.
+        # Try each grasp as a complete pregrasp-and-approach sequence.
         candidates = core.Fallbacks("grasp candidates")
         for index, grasp in enumerate(grasps):
             candidate = core.SerialContainer(f"grasp {index}")
+            # Unfold the arm first when the grasp approaches from directly above.
             if grasp[2, 2] < -.9:
                 clearance = stages.MoveTo('unfold arm for overhead reach', self.ompl)
                 clearance.group = 'arm'
@@ -1372,6 +1399,7 @@ class Pick:
                 [base['odom_x'], base['odom_y']], GROUP, HAND, BASE_FRAME,
                 ik=(lambda matrix: self.ik(matrix, base)) if self.ik else None)
             candidate.insert(pregrasp)
+            # Allow finger contact only after reaching pregrasp, then approach straight in.
             allow = stages.ModifyPlanningScene("allow finger contact")
             allow.allowCollisions(TARGET, FINGERS, True)
             candidate.insert(allow)
@@ -1392,6 +1420,7 @@ class Pick:
         move = stages.MoveTo('bounded endpoint correction', self.cartesian)
         move.group = GROUP
         move.ik_frame = stamped(HAND)
+        # Use the selected calibrated grasp as the small endpoint-correction goal.
         move.setGoal(stamped(BASE_FRAME, grasp))
         task.add(move)
         return task
@@ -1400,6 +1429,7 @@ class Pick:
         task=self.task('clear arm from target observation')
         home=stages.MoveTo('observation home',self.ompl)
         home.group='arm'
+        # Fold the arm into the observation pose so the head can see the target again.
         home.setGoal(dict(zip(['arm_lift_joint','arm_flex_joint','arm_roll_joint',
                               'wrist_flex_joint','wrist_roll_joint'],[0.,0.,-1.57,-1.57,0.])))
         home.timeout=10.
@@ -1410,6 +1440,7 @@ class Pick:
         """Attach the closed-on object to the hand and raise it."""
         task = self.task("lift")
         attach = stages.ModifyPlanningScene("attach target")
+        # Attach the target to the palm in the planning scene before moving upward.
         attach.attachObject(TARGET, HAND)
         task.add(attach)
         task.add(
@@ -1419,16 +1450,12 @@ class Pick:
 
 
 def execute(node, task):
-    """Plan task and have move_group execute the best solution.
-
-    Sent through rclpy: task.execute() once reported an abort while
-    move_group went on to execute the motion."""
+    """Plan one solution and execute it through the rclpy MTC action client."""
     if not task.plan(max_solutions=1):
         raise RuntimeError(f"MTC found no {task.name} plan")
     solution = task.solutions[0].toMsg()
     compact(solution)
-    # Preserve the collision snapshot throughout execution. Replacing it with
-    # empty maps can erase the scene used by the next manipulation stage.
+    # Check payload size while preserving the collision scene for later stages.
     size = len(serialize_message(solution))
     print(f'[MTC] execution payload {size/1024/1024:.2f} MiB', flush=True)
     if size > 32*1024*1024:
@@ -1443,6 +1470,7 @@ def execute(node, task):
 
 def clear_observation_pose(node, planner):
     """Use one collision-map snapshot during the camera-clearance motion."""
+    # Freeze depth updates during the clearance motion, then restart them afterward.
     depth_relay(node, False)
     try:
         execute(node, planner.clear_view())
@@ -1459,6 +1487,7 @@ def pick(prompt, mode='auto'):
     try:
         poses = RobotTransforms(node)
         planner = Pick(mtc_node(), ik=lambda matrix, base: seeded_ik(node, matrix, base))
+        # Restore lift travel before observing if the torso is already too high.
         if joint_positions(node)['arm_lift_joint'] > GRASP_LIFT_MAX:
             previous=observe(prompt)['points']
             print('[GRASP] restoring arm-lift margin before replanning',flush=True)
@@ -1466,15 +1495,16 @@ def pick(prompt, mode='auto'):
             reframe_target(node,poses,(previous.min(0)+previous.max(0))/2)
         try:
             points, grasps, widths, observation = perceive(prompt,node)
+        # Try one camera-clearance motion and a fresh observation when geometry is hidden.
         except GeometryOccluded as blocked:
             print('[GEOMETRY] foreground blocks target; planning one return to observation home',flush=True)
             clear_observation_pose(node,planner)
             reframe_target(node,poses,blocked.centre)
             points, grasps, widths, observation = perceive(prompt,node)
-        # Small explicit trial adjustment, in the grasp approach frame. Zero
-        # remains the calibration baseline; do not bake one object's tuning in.
+        # Auto mode test-lifts cylinders; other shapes stop at a contact hold.
         is_can = observation.get('geometry_kind') == 'cylinder'
         lift_requested = mode == 'pickup' or (mode == 'auto' and is_can)
+        # Allow a bounded insertion adjustment along the approach; cylinders default to 1 cm.
         insertion = float(os.environ.get('HSR_GRASP_INSERTION_M', '.01' if is_can else '0'))
         if not np.isfinite(insertion) or not 0 <= insertion <= .01:
             raise ValueError('HSR_GRASP_INSERTION_M must be between 0 and 0.01 m')
@@ -1488,30 +1518,37 @@ def pick(prompt, mode='auto'):
             np.savez(Path(diagnostics)/'planned_grasps.npz', points=points, grasps=grasps, widths=widths)
         if joint_positions(node)['hand_motor_joint'] < OPEN_HAND - .05:
             open_hand(node)
+        # Build the collision scene and execute the first complete reachable grasp plan.
         model_target(node, points)
         execute(node, planner.reach(grasps, joint_positions(node)))
         reached = poses.transform()
+        # Match the measured palm pose to the candidate the planner reached.
         distances = np.linalg.norm(grasps[:, :3, 3]-reached[:3, 3], axis=1)
         angles = Rotation.from_matrix(
             grasps[:, :3, :3].transpose(0, 2, 1) @ reached[:3, :3]).magnitude()
         index = int(np.argmin(distances + .1*angles))
+        # Correct a small position error only when orientation is already close.
         if .004 < distances[index] <= .01 and angles[index] <= .04:
             print(f'[GRASP] correcting {distances[index]*1000:.1f} mm endpoint error', flush=True)
             execute(node, planner.correct_endpoint(grasps[index]))
             reached = poses.transform()
             distances[index] = np.linalg.norm(grasps[index,:3,3]-reached[:3,3])
             angles[index] = Rotation.from_matrix(grasps[index,:3,:3].T@reached[:3,:3]).magnitude()
+        # Refuse to close unless the measured palm position and orientation match the grasp.
         if distances[index] > .004 or angles[index] > .04:
             raise RuntimeError(f'Palm did not reach the calibrated grasp pose '
                                f'({distances[index]*1000:.1f} mm, {angles[index]:.3f} rad); refusing closure')
         print(f"[GRASP] reached candidate {index}, contact width {widths[index]*1000:.1f} mm", flush=True)
+        # Close until both finger springs show contact, then rule out an empty grasp.
         close(node, threshold=.14 if lift_requested else .10)
         gap = fingertip_gap(node)
         if gap < EMPTY_GAP:
             raise RuntimeError("the hand closed on nothing")
+        # Return a contact-only hold when this mode does not request a test lift.
         if not lift_requested:
             print('[GRASPED] bilateral contact; holding without lift', flush=True)
             return 'grasped'
+        # Test-lift the object and use fresh depth to verify that it moved with the hand.
         before_lift = poses.transform()
         execute(node, planner.lift())
         after_lift = poses.transform()
@@ -1526,7 +1563,9 @@ def pick(prompt, mode='auto'):
             q = joint_positions(node)
             rclpy.spin_once(node, timeout_sec=0.)  # update the /clock subscription
             return tuple(q[f'hand_{s}_spring_proximal_joint'] for s in 'lr')
+        # Require sustained bilateral contact before taking the final verification image.
         wait_for_hold(read_contact, lambda: node.get_clock().now().nanoseconds / 1e9)
+        # After the contact dwell, check again that the object remains elevated.
         held = observe(prompt)
         if diagnostics:
             np.savez(Path(diagnostics)/'hold_observation.npz', before=observation['points'],

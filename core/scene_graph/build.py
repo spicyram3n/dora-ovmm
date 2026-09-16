@@ -12,6 +12,7 @@ WORLD = ROOT / "ros2_ws/src/tmc_gazebo/tmc_gazebo_worlds/worlds/apartment.world"
 
 
 def planar_pose(x, y, yaw):
+    # Combine planar translation and heading into one 4x4 transform.
     c, s = (np.cos(yaw), np.sin(yaw))
     return np.array([[c, -s, 0, x], [s, c, 0, y], [0, 0, 1, 0], [0, 0, 0, 1]])
 
@@ -42,6 +43,7 @@ def register(argv):
             planar_pose(*args.world_base)
         )
         args.output.parent.mkdir(parents=True, exist_ok=True)
+        # Save the calibration matrix with its source frame for later graph builds.
         args.output.write_text(
             json.dumps(
                 {"source_frame": "gazebo_world", "map_from_source": transform.tolist()},
@@ -76,9 +78,11 @@ def main():
         "--rooms", action="store_true", help="ask DeepSeek to assign rooms"
     )
     args = parser.parse_args()
+    # Load the calibration that puts Gazebo geometry into map coordinates.
     registration = json.loads(args.transform.read_text())
     if registration["source_frame"] != "gazebo_world":
         raise ValueError("The world-file loader requires source_frame=gazebo_world")
+    # Load collision geometry, transform it into map, and infer object relations.
     scene = sg.build(
         gazebo.load_world(args.world),
         source_frame=registration["source_frame"],
@@ -86,6 +90,7 @@ def main():
     )
     scene.graph["source"] = str(args.world.resolve())
     scene.graph["snapshot"] = "initial_world_file"
+    # Optionally add room names before saving the graph.
     if args.rooms:
         from core.reasoner import deepseek
         from core.reasoner.deepseek import get_client

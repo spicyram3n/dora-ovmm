@@ -45,6 +45,7 @@ def remembered(scene, obj, near=None):
     """Every remembered instance, nearest first, each kept even without a furniture edge."""
     sg.require_map(scene)
     locations = []
+    # Turn saved matching objects into locations, even if they have no furniture link.
     for node in sg.find_objects(scene, obj, near):
         data = scene.nodes[node]
         furniture_id, relation = sg.location_of(scene, node)
@@ -64,6 +65,7 @@ def remembered(scene, obj, near=None):
 
 def _guessed(scene, furniture_id, relation, reason):
     """A furniture location DeepSeek picked, fresh or cached."""
+    # Describe a guessed destination using the furniture already stored in the graph.
     data = scene.nodes[furniture_id]
     return Location(
         furniture_id=furniture_id,
@@ -81,10 +83,12 @@ def predict(scene, obj, client=None, top_k=3, hint="", exclude=(), model=DEFAULT
     sg.require_map(scene)
     if not obj.strip() or type(top_k) is not int or top_k < 1:
         raise ValueError("Supply an object name and a positive top_k")
+    # Remove furniture already searched before asking for new guesses.
     listing = []
     for item in sg.furniture_listing(scene):
         if item["id"] not in exclude:
             listing.append(item)
+    # Ask for no more locations than the eligible furniture list contains.
     k = min(top_k, len(listing))
     if not k:
         return []
@@ -119,6 +123,7 @@ def described(scene, locations):
     """Locations as the dashboard shows them, each with its furniture's name."""
     result = []
     for location in locations:
+        # Convert each location to dashboard data and add its readable furniture name.
         item = asdict(location)
         item["furniture"] = None
         if location.furniture_id is not None:
@@ -140,11 +145,10 @@ def search_order(
         yield location
         if location.furniture_id is not None:
             excluded.append(location.furniture_id)
-    # All of these run only if the caller is still searching.
-    # DeepSeek's picks per object live in the graph and are saved with it, so a repeat
-    # query skips the model. Their furniture IDs hold only for this graph; a rebuild starts empty.
+    # Reuse guesses saved in this graph if remembered locations did not succeed.
     cache = scene.graph.setdefault("llm_guesses", {})
     key = normalize(obj)
+    # Skip cached locations already tried for a remembered object.
     if key in cache:
         guesses = []
         for picked in cache[key]:
@@ -154,12 +158,14 @@ def search_order(
                     locations=described(scene, guesses))
         yield from guesses
         return
+    # Finish with remembered results if no model client or API key is available.
     if client is None and not have_key():
         print("No DEEPSEEK_API_KEY set; searching remembered locations only.")
         events.emit("reason", target=obj, source="no_key")
         return
     events.emit("reason", target=obj, source="asking", top_k=top_k)
     guesses = predict(scene, obj, client, top_k, hint, tuple(excluded), model)
+    # Save the new guesses for later searches of the same object.
     cache[key] = []
     for guess in guesses:
         cache[key].append({"furniture_id": guess.furniture_id, "relation": guess.relation,
@@ -177,6 +183,7 @@ def main():
     parser.add_argument("--top-k", type=int, default=3, help="furniture guesses to ask DeepSeek for")
     parser.add_argument("--near", type=float, nargs=2, metavar=("X", "Y"), help="robot position")
     args = parser.parse_args()
+    # Load the saved graph and print the search order without moving the robot.
     scene = sg.load(args.graph)
     for location in described(scene, search_order(scene, args.object, top_k=args.top_k, near=args.near)):
         print(f"[{location['source']}] {location['relation']} {location['furniture'] or location['label']} "

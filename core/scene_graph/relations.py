@@ -10,6 +10,7 @@ def footprint(instance):
     try:
         boundary = ConvexHull(xy)
         boundary_points = xy[boundary.vertices]
+        # Triangulate the floor outline so point-inside checks are fast.
         triangles = Delaunay(boundary_points)
 
         def inside_hull(query):
@@ -17,6 +18,7 @@ def footprint(instance):
             return triangle_ids >= 0
 
         return inside_hull
+    # Use a bounding box when the points cannot form a 2D hull.
     except QhullError:
         lower = xy.min(axis=0)
         upper = xy.max(axis=0)
@@ -35,6 +37,7 @@ def overlap(obj, shadow):
 
 def distance_to(point, piece):
     """Distance from a point to a piece's box, zero inside it."""
+    # Measure only how far the point lies beyond each box face.
     outside = np.maximum(np.maximum(piece.lower - point, point - piece.upper), 0.0)
     return float(np.linalg.norm(outside))
 
@@ -58,12 +61,15 @@ def classify(
     shares = []
     for shadow in shadows:
         shares.append(overlap(obj, shadow))
+    # Look for furniture whose top touches the object and overlaps its footprint.
     on = []
     for index, piece in enumerate(furniture):
         if shares[index] >= min_overlap and abs(obj.lower[2] - piece.upper[2]) <= gap:
             on.append((-shares[index], index))
+    # Choose the supporting surface with the greatest footprint overlap.
     if on:
         return (min(on)[1], "on")
+    # Otherwise choose the smallest furniture box that contains the object vertically.
     inside = []
     for index, piece in enumerate(furniture):
         if (
@@ -72,8 +78,10 @@ def classify(
             and (obj.upper[2] <= piece.upper[2] + tolerance)
         ):
             inside.append((np.prod(piece.dimensions), index))
+    # Prefer the smallest enclosing furniture when several pieces contain the object.
     if inside:
         return (min(inside)[1], "in")
+    # If neither test passes, choose nearby furniture within the distance limit.
     distances = []
     for piece in furniture:
         distances.append(distance_to(obj.centroid, piece))

@@ -15,6 +15,7 @@ class UniformTSDFVolume:
     def __init__(self, length, resolution):
         self.length = length
         self.resolution = resolution
+        # Divide the cube side length by the number of cells along one axis.
         self.voxel_size = self.length / self.resolution
         self.sdf_trunc = 4 * self.voxel_size
         self.o3dvol = o3d.pipelines.integration.UniformTSDFVolume(
@@ -25,16 +26,17 @@ class UniformTSDFVolume:
         )
 
     def integrate(self, depth_img, intrinsic, extrinsic):
-        """Fuse one depth image, float32 metres with 0 for no reading, taken
-        with the (3, 3) intrinsic from the camera at `extrinsic` = camera_from_task."""
+        """Fuse metre-valued depth using camera intrinsics and a camera_from_task transform."""
         depth_img = np.ascontiguousarray(depth_img, dtype=np.float32)
         height, width = depth_img.shape
+        # Package metre-valued depth for Open3D; this volume does not use colour.
         rgbd = o3d.geometry.RGBDImage.create_from_color_and_depth(
             o3d.geometry.Image(np.empty_like(depth_img)),
             o3d.geometry.Image(depth_img),
             depth_scale=1.0,
             convert_rgb_to_intensity=False,
         )
+        # Build Open3D's camera model from image size, focal lengths, and image centre.
         intrinsic = o3d.camera.PinholeCameraIntrinsic(
             width, height, intrinsic[0, 0], intrinsic[1, 1], intrinsic[0, 2], intrinsic[1, 2]
         )
@@ -51,21 +53,24 @@ class UniformTSDFVolume:
     def get_grid(self):
         map_cloud = self.get_map_cloud()
         points = np.asarray(map_cloud.points)
+        # Read normalized signed distances from the voxel cloud's first colour channel.
         distances = np.asarray(map_cloud.colors)[:, [0]]
         return map_cloud_to_grid(self.voxel_size, self.resolution, points, distances)
 
 
 def map_cloud_to_grid(voxel_size, resolution, points, distances):
-    """vgn.utils.map_cloud_to_grid, with the grid size passed in rather than 40."""
+    """Place the stored voxel distances into a dense 3D array."""
+    # Start with zero for every cell, including cells with no stored surface data.
     grid = np.zeros((resolution,) * 3, dtype=np.float32)
+    # Convert voxel-centre coordinates into integer grid indices.
     indices = (points // voxel_size).astype(int)
     grid[tuple(indices.T)] = distances.squeeze()
     return grid
 
 
 def base_from_task(bbox, length):
-    """Policy.calibrate_task_frame: the cube's corner, as a (4, 4) translation
-    of the base frame, for a cube of `length` around `bbox`."""
+    """Return the cube origin as a 4x4 transform into the base frame."""
+    # Centre the cube in XY and place its floor 5 cm below the target.
     xyz = np.r_[bbox.center[:2] - length / 2, bbox.min[2] - 0.05]
     matrix = np.eye(4)
     matrix[:3, 3] = xyz

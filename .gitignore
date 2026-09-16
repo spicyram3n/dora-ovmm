@@ -18,6 +18,7 @@ log/
 ros2_ws/src/*
 !ros2_ws/src/grasp_execution/
 !ros2_ws/src/hsr_rgbd/
+!ros2_ws/src/moveit_simple_controller_manager/
 
 # Secrets: HF_TOKEN and the cached HF login it produces
 docker/sam3/.env

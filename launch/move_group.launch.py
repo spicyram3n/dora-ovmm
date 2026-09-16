@@ -49,6 +49,11 @@ def generate_launch_description():
             "enable_grasp_servo", default_value="false", choices=["true", "false"]
         ),
         DeclareLaunchArgument(
+            "controllers_config",
+            default_value="",
+            description="Path to a MoveIt controllers YAML; empty uses hsrb_moveit_config's hsrb_controllers.yaml.",
+        ),
+        DeclareLaunchArgument(
             "sensors_config",
             default_value="sensors_xtion.yaml",
             description="Octomap file under config/moveit/. sensors_xtion_remote.yaml "
@@ -90,6 +95,12 @@ def octomap_wiring(context):
 
 def launch_setup(context):
     sensors, relay_inputs, octomap_remappings = octomap_wiring(context)
+    controllers_path = LaunchConfiguration("controllers_config").perform(context)
+    if controllers_path:
+        with open(controllers_path) as handle:
+            controllers = yaml.safe_load(handle)
+    else:
+        controllers = yaml.safe_load(theirs("hsrb_controllers.yaml"))
     sim_time = LaunchConfiguration("use_sim_time")
     model = [planning_model.moveit_params()]
     move_group = Node(
@@ -113,9 +124,7 @@ def launch_setup(context):
                 "capabilities": "move_group/ExecuteTaskSolutionCapability",
                 "moveit_manage_controllers": True,
                 "moveit_controller_manager": "moveit_simple_controller_manager/MoveItSimpleControllerManager",
-                "moveit_simple_controller_manager": yaml.safe_load(
-                    theirs("hsrb_controllers.yaml")
-                ),
+                "moveit_simple_controller_manager": controllers,
                 "trajectory_execution.allowed_execution_duration_scaling": 1.2,
                 "trajectory_execution.allowed_goal_duration_margin": 0.5,
                 "trajectory_execution.allowed_start_tolerance": 0.01,

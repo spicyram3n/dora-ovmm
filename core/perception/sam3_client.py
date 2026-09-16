@@ -15,6 +15,7 @@ def detect_all(image_bgr, prompt, conf=0.5, timeout=30, *, metadata=None):
     Empty results are valid. Indices are local to this image, not tracking IDs.
     Caller-supplied object_id identifies the requested target, not every mask.
     """
+    # Compress the image before sending it to the detector.
     ok, jpeg = cv2.imencode(".jpg", image_bgr)
     if not ok:
         raise ValueError("Could not encode image")
@@ -23,14 +24,18 @@ def detect_all(image_bgr, prompt, conf=0.5, timeout=30, *, metadata=None):
         metadata=metadata,
     )
     count, height, width = (meta["num_instances"], meta["height"], meta["width"])
+    # Split the reply into masks, bounding boxes, and confidence scores.
     masks_end = count * height * width
     boxes_end = masks_end + count * 4 * 4
+    # Check the exact reply size before interpreting its bytes as arrays.
     if len(body) != boxes_end + count * 4:
         raise RuntimeError("Malformed SAM3 reply")
+    # Decode one mask, box, and score per detected object.
     masks = np.frombuffer(body[:masks_end], dtype=bool).reshape(count, height, width)
     boxes = np.frombuffer(body[masks_end:boxes_end], dtype=np.float32).reshape(count, 4).copy()
     scores = np.frombuffer(body[boxes_end:], dtype=np.float32)
     target_h, target_w = image_bgr.shape[:2]
+    # Resize detections back to the original image size when needed.
     if (height, width) != (target_h, target_w):
         masks = np.asarray([
             cv2.resize(m.astype(np.uint8), (target_w, target_h), interpolation=cv2.INTER_NEAREST)
@@ -45,5 +50,6 @@ def detect(image_bgr, prompt, conf=0.5, timeout=30, *, metadata=None):
     result = detect_all(image_bgr, prompt, conf, timeout, metadata=metadata)
     if not len(result["scores"]):
         raise ObjectNotFound(f"SAM3 found no instance of '{prompt}'")
+    # Choose the most confident instance when the caller wants only one object.
     best = int(np.argmax(result["scores"]))
     return result["masks"][best], float(result["scores"][best])

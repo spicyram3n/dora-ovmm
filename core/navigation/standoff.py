@@ -13,22 +13,18 @@ WORKING_DISTANCE = 0.8
 ROBOT_RADIUS = 0.3
 # Spacing of candidate poses along the standoff line, so bigger furniture gets more.
 POSE_SPACING = 0.5
-# Head camera field of view, narrowed from roughly 58 x 45 degrees so objects at
-# the image edge are not counted as seen. Check against the HSR-C camera_info.
+# Narrow the usable camera view to leave a margin at image edges.
 HALF_FOV = 0.45
 HALF_FOV_VERTICAL = 0.35
-# Beyond this a small object is few pixels, and looking down a long table at a
-# grazing angle hides objects behind each other, so it does not count as seen.
+# Ignore distant surface samples where small objects are hard to see.
 MAX_RANGE = 1.5
 # Surface samples used to count how much of the furniture a view takes in.
 SURFACE_SPACING = 0.1
-# A view must show this share of new surface to be worth a drive; gains within
-# the same step count as equal and the shorter drive wins.
+# Group similar coverage gains; prefer shorter drives within each group.
 GAIN_STEP = 0.05
 MIN_VIEWS = 2
 MAX_VIEWS = 6
-# Storage is looked into only through faces at least this share of its longest
-# side: a bookcase opens on its long face, not its end panels.
+# Search storage from its long faces so the camera looks into the shelves.
 FACE_SHARE = 0.75
 
 
@@ -45,9 +41,9 @@ def blocks(pose, blockers):
 
 
 def free(grid, pose):
-    """Whether `pose` stands on a free cell of `grid`, a map-frame costmap as
-    base_placement.costmap_grid returns it; walls and off-map poses are not free."""
+    """Check a map costmap cell; treat blocked and off-map positions as unavailable."""
     info = grid.info
+    # Convert the base position to a grid cell; reject cells outside the map.
     column = math.floor((pose[0] - info.origin.position.x) / info.resolution)
     row = math.floor((pose[1] - info.origin.position.y) / info.resolution)
     if not (0 <= column < info.width and 0 <= row < info.height):
@@ -56,8 +52,8 @@ def free(grid, pose):
 
 
 def aim_point(xy, centre, dimensions, yaw):
-    """Where a view from `xy` should centre: level with it along the piece's long
-    axis and halfway through its depth, so one view takes in the whole depth."""
+    """Aim halfway through the furniture depth, aligned with the viewer along its long side."""
+    # Work in furniture-aligned coordinates so the same aiming rule handles rotated boxes.
     local = to_local(xy, centre, yaw)
     if dimensions[0] >= dimensions[1]:
         aim = [np.clip(local[0], -dimensions[0] / 2, dimensions[0] / 2), 0.0]
@@ -67,11 +63,9 @@ def aim_point(xy, centre, dimensions, yaw):
 
 
 def _standoff_line(dimensions):
-    """Box-frame points WORKING_DISTANCE out from the footprint, about POSE_SPACING
-    apart, the corners rounded by quarter circles."""
+    """Sample a path WORKING_DISTANCE outside the box, with rounded corners."""
     half_x, half_y = (dimensions[0] / 2, dimensions[1] / 2)
-    # Counter-clockwise from the +x face: each face runs between two corners,
-    # then a quarter circle turns around the second corner to the next face.
+    # Walk around each face, joining adjacent faces with a rounded corner.
     corners = [(half_x, -half_y), (half_x, half_y), (-half_x, half_y), (-half_x, -half_y)]
     lengths = [2 * half_y, 2 * half_x, 2 * half_y, 2 * half_x]
     arc = WORKING_DISTANCE * math.pi / 2
@@ -79,17 +73,20 @@ def _standoff_line(dimensions):
     count = max(4, round(perimeter / POSE_SPACING))
     samples = []
     for index in range(count):
+        # Space sample positions evenly around the full offset perimeter.
         along = perimeter * index / count
         for face in range(4):
             normal = face * math.pi / 2
             start = np.array(corners[face])
             end = np.array(corners[(face + 1) % 4])
+            # Place samples on this straight face until its length has been used.
             if along < lengths[face]:
                 point = start + (end - start) * along / lengths[face]
                 offset = [math.cos(normal), math.sin(normal)]
                 samples.append(point + WORKING_DISTANCE * np.array(offset))
                 break
             along -= lengths[face]
+            # Place the next samples on the quarter-circle around this corner.
             if along < arc:
                 angle = normal + along / WORKING_DISTANCE
                 offset = [math.cos(angle), math.sin(angle)]
@@ -100,12 +97,12 @@ def _standoff_line(dimensions):
 
 
 def _long_faces(dimensions):
-    """Box-frame points WORKING_DISTANCE off each long face, end to end and at most
-    POSE_SPACING apart, so even a narrow bookcase gets two poses per face."""
+    """Sample positions outside the long faces, at most POSE_SPACING apart."""
     points = []
     for axis in (0, 1):
         # The face whose outward normal runs along `axis` spans the other one.
         length = dimensions[1 - axis]
+        # Skip short end panels when generating views into storage furniture.
         if length < FACE_SHARE * max(dimensions[0], dimensions[1]):
             continue
         count = math.ceil(length / POSE_SPACING) + 1
@@ -119,10 +116,8 @@ def _long_faces(dimensions):
 
 
 def candidates(centre, dimensions, yaw=0.0, blockers=(), storage=False):
-    """Poses around the furniture, each facing its aim point, clear of `blockers`.
-
-    Storage gets poses only off its long faces, since the ends and corners
-    look at side panels rather than into the shelves."""
+    """Return clear viewing poses; use only the long faces when searching storage."""
+    # Use long-face views for shelves and a full surrounding path for other furniture.
     if storage:
         samples = _long_faces(dimensions)
     else:
@@ -131,6 +126,7 @@ def candidates(centre, dimensions, yaw=0.0, blockers=(), storage=False):
     for local in samples:
         x, y = to_map(local, centre, yaw)
         aim = aim_point((x, y), centre, dimensions, yaw)
+        # Turn each base pose toward its selected point on the furniture.
         pose = (float(x), float(y), float(math.atan2(aim[1] - y, aim[0] - x)))
         if not blocks(pose, blockers):
             poses.append(pose)
@@ -140,9 +136,11 @@ def candidates(centre, dimensions, yaw=0.0, blockers=(), storage=False):
 def surface_points(centre, dimensions, yaw):
     """Map XY samples covering the footprint: what the views together must take in."""
     axes = []
+    # Generate regularly spaced X and Y samples across the furniture surface.
     for size in dimensions[:2]:
         count = int(math.ceil(size / SURFACE_SPACING)) + 1
         axes.append(np.linspace(-size / 2, size / 2, count))
+    # Combine every X and Y sample to cover the furniture footprint.
     grid = np.stack(np.meshgrid(axes[0], axes[1], indexing="ij"), axis=-1)
     return to_map(grid.reshape(-1, 2), centre, yaw)
 
@@ -151,19 +149,18 @@ def sees(pose, points):
     """Which points lie inside the camera's horizontal view from `pose`."""
     offset = np.asarray(points, dtype=float) - np.asarray(pose[:2])
     bearing = np.arctan2(offset[:, 1], offset[:, 0]) - pose[2]
+    # Wrap the angle to [-pi, pi] before checking the camera limits.
     bearing = np.arctan2(np.sin(bearing), np.cos(bearing))
     distance = np.hypot(offset[:, 0], offset[:, 1])
     return (distance <= MAX_RANGE) & (np.abs(bearing) <= HALF_FOV)
 
 
 def order(poses, points, robot_xy=None):
-    """Poses in visiting order, and how many views the location needs.
+    """Order views by new surface coverage and travel distance; return the required view count.
 
-    The first view is the nearest one showing within GAIN_STEP of what the best
-    single view shows. Each next view shows the most still-unseen surface, the
-    shorter drive winning near-ties. Once no view adds a GAIN_STEP of new surface, the view furthest
-    from those already chosen among those still seeing some of it comes next,
-    so a retry looks from another side."""
+    Start near the robot with good coverage. Once gains are small, prefer a
+    different side for retries. Clamp the required count to MIN_VIEWS/MAX_VIEWS."""
+    # Precompute the surface points visible from each candidate pose.
     visible = []
     best_first = 0.0
     for pose in poses:
@@ -176,6 +173,7 @@ def order(poses, points, robot_xy=None):
     here = robot_xy
     while remaining:
 
+        # Measure only surface points that earlier chosen views have not covered.
         def gain(index):
             return np.count_nonzero(visible[index] & ~seen) / len(points)
 
@@ -197,10 +195,12 @@ def order(poses, points, robot_xy=None):
                 return (gain(index) < best_first - GAIN_STEP, travel)
             return (-step, blind, -separation, travel)
 
+        # Select the best remaining view and remember when extra coverage becomes small.
         best = min(remaining, key=rank)
         if needed is None and gain(best) < GAIN_STEP:
             needed = len(ordered)
         remaining.remove(best)
+        # Mark this view's surface as seen before choosing the next view.
         seen |= visible[best]
         ordered.append(poses[best])
         here = poses[best][:2]
@@ -211,6 +211,7 @@ def order(poses, points, robot_xy=None):
 
 def shelf_heights(lower, upper, distance):
     """Aim heights whose views, stacked, cover [lower, upper] from `distance` away."""
+    # Find the height covered by one view, then stack enough views for the shelf.
     band = 2 * distance * math.tan(HALF_FOV_VERTICAL)
     count = max(1, math.ceil((upper - lower) / band))
     step = (upper - lower) / count

@@ -15,6 +15,7 @@ def rigid_transform(matrix):
     matrix = np.asarray(matrix, dtype=float)
     if matrix.shape != (4, 4) or not np.isfinite(matrix).all():
         raise ValueError("map_from_source must be a finite 4x4 matrix")
+    # Reject scale, reflection, or malformed transforms before moving any points.
     rotation = matrix[:3, :3]
     if (
         not np.allclose(matrix[3], [0, 0, 0, 1])
@@ -28,11 +29,13 @@ def rigid_transform(matrix):
 
 
 def transform_instance(item, matrix):
+    # Move the cloud into the new frame while preserving its label and metadata.
     points = item.points @ matrix[:3, :3].T + matrix[:3, 3]
     return Instance(item.label, points, item.confidence, item.movable, item.name)
 
 
 def _attributes(label, centroid, dimensions, movable, confidence, name, room=None):
+    # Convert NumPy values to rounded Python numbers for compact JSON storage.
     rounded_centroid = []
     for value in np.asarray(centroid, float).reshape(3):
         rounded_centroid.append(round(float(value), 3))
@@ -52,6 +55,7 @@ def _attributes(label, centroid, dimensions, movable, confidence, name, room=Non
 
 def _fitted_footprint(points):
     """A furniture node's turned floor outline, rounded like its other attributes."""
+    # Fit a rotated floor rectangle instead of using a larger axis-aligned outline.
     centre, size, yaw = geometry.fit_footprint(points)
     rounded_centre = []
     for value in centre:
@@ -68,6 +72,7 @@ def footprint(data):
     Graphs saved before footprints were fitted fall back to the axis-aligned bounds."""
     lower, upper = np.asarray(data["bounds"], dtype=float)
     centre, dimensions = ((lower + upper) / 2, upper - lower)
+    # Use the old axis-aligned box when a graph has no fitted footprint.
     if "footprint" not in data:
         return (centre, dimensions, 0.0)
     centre[:2] = data["footprint"]["centre"]
@@ -87,6 +92,7 @@ def build(instances, *, source_frame, map_from_source, drop_structure=True, **kw
     instances = []
     for item in previous_instances:
         instances.append(transform_instance(item, matrix))
+    # Optionally remove walls and other structural geometry from the graph.
     if drop_structure:
         previous_instances = instances
         instances = []
@@ -125,6 +131,7 @@ def build(instances, *, source_frame, map_from_source, drop_structure=True, **kw
     shadows = []
     for piece in pieces:
         shadows.append(relations.footprint(piece))
+    # Connect each movable object to the furniture that supports or contains it.
     for node_id, item in enumerate(instances):
         if not item.movable:
             continue
@@ -141,6 +148,7 @@ def require_map(graph):
 
 def furniture_listing(graph):
     results = []
+    # Send the reasoner only the furniture ID, label, room, and map position.
     for node_id, data in furniture(graph).items():
         results.append(
             dict(
@@ -157,6 +165,7 @@ def furniture(graph):
     """The nodes the LLM chooses between, and that Nav2 goals derive from."""
     results = {}
     for node_id, data in graph.nodes(data=True):
+        # Furniture nodes are the fixed places the robot can search around.
         if not data["movable"]:
             results[node_id] = data
     return results
@@ -165,6 +174,7 @@ def furniture(graph):
 def objects(graph):
     results = {}
     for node_id, data in graph.nodes(data=True):
+        # Movable nodes represent the objects being searched for.
         if data["movable"]:
             results[node_id] = data
     return results
@@ -175,17 +185,18 @@ def find_objects(graph, label, near=None):
     scored_objects = []
     best_score = 0.0
     for node_id, data in objects(graph).items():
-        # A class such as "container" cannot tell a pringles can from a jar; the
-        # model or instance name can.
+        # Match both the shared class and the more specific instance name.
         score = max(match_score(data["label"], label), match_score(data["name"], label))
         scored_objects.append((score, node_id))
         best_score = max(best_score, score)
+    # Return no match when neither the label nor instance name shares query words.
     if best_score == 0.0:
         return []
     matches = []
     for score, node_id in scored_objects:
         if score == best_score:
             matches.append(node_id)
+    # Break equal label matches by confidence, or by distance if a location was supplied.
     if near is None:
 
         def confidence(node_id):
@@ -251,6 +262,7 @@ def record_object(
     item = from_box(
         label, centroid, dimensions, movable=True, confidence=confidence, name=name
     )
+    # Allocate a new node ID only when this is not an update to an existing object.
     if node_id is None:
         node_id = max(graph.nodes, default=-1) + 1
     if furniture_id is not None:
@@ -264,6 +276,7 @@ def record_object(
         )
     )
     graph.nodes[node_id]["bounds"] = [item.lower.tolist(), item.upper.tolist()]
+    # Replace the object's old furniture link with the latest observation.
     graph.remove_edges_from(list(graph.out_edges(node_id)))
     if furniture_id is not None:
         graph.add_edge(node_id, furniture_id, relation=relation)
@@ -275,6 +288,7 @@ def set_rooms(graph, assignment):
     for node_id, room in assignment.items():
         if node_id in graph:
             graph.nodes[node_id]["room"] = room
+    # Give each object the room assigned to its furniture.
     for node_id in objects(graph):
         target, _ = location_of(graph, node_id)
         if target is not None:
@@ -283,11 +297,13 @@ def set_rooms(graph, assignment):
 
 def save(graph, path):
     require_map(graph)
+    # Store graph metadata, nodes, and relations together in one JSON file.
     with open(path, "w") as handle:
         json.dump(nx.node_link_data(graph, edges=_EDGES), handle, indent=2)
 
 
 def load(path):
+    # Restore the saved graph, then require metre-valued map coordinates.
     with open(path) as handle:
         graph = nx.node_link_graph(json.load(handle), edges=_EDGES)
     require_map(graph)

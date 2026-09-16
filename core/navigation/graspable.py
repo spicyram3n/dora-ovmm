@@ -15,8 +15,7 @@ APPROACH_DEPTH = 0.07
 # config/nav2/nav2_params.yaml xy_goal_tolerance; the solver certifies a much tighter cluster.
 NAV_TOLERANCE = 0.25
 NAV_YAW_TOLERANCE = 0.25
-# The solver's robustness radius is 1.5 cells x 0.05 m, so parking inside 0.08 m
-# keeps the certificate it issued. Yaw is looser: the arm can roll to compensate.
+# Use tighter parking tolerances near the solver's 0.075 m robustness radius.
 PRECISE_TOLERANCE = 0.08
 PRECISE_YAW_TOLERANCE = 0.15
 APPROACH_TIMEOUT = 180
@@ -34,6 +33,7 @@ def _palm_pose(point, approach, closing):
         raise ValueError("Finger axis must not be parallel to the approach")
     y = y / length
     pose = np.eye(4)
+    # Complete the hand's perpendicular X, Y, and Z axes.
     pose[:3, 0] = np.cross(y, z)
     pose[:3, 1] = y
     pose[:3, 2] = z
@@ -52,6 +52,7 @@ def probes(centre, dimensions, bearings=6, top_down=True):
         raise ValueError("Expected a 3D centre and 3D dimensions")
     up = np.array([0.0, 0.0, 1.0])
     poses = []
+    # Sample approach directions evenly around the object.
     for angle in np.linspace(0, 2 * np.pi, bearings, endpoint=False):
         # The approach points at the object; the fingers stay level either side.
         approach = np.array([-np.cos(angle), -np.sin(angle), 0.0])
@@ -72,6 +73,7 @@ def probes(centre, dimensions, bearings=6, top_down=True):
 def _planar(matrix, pose):
     """(x, y, yaw) re-expressed by a planar (4, 4); map and odom differ only in the plane."""
     x, y, yaw = pose
+    # Transform the position and add the frame's change in heading.
     point = matrix @ np.array([x, y, 0.0, 1.0])
     turned = yaw + np.arctan2(matrix[1, 0], matrix[0, 0])
     return (
@@ -84,17 +86,14 @@ def _planar(matrix, pose):
 def _cluster(bases):
     """A returned pose near the middle of the tied-for-best cluster, and its radius."""
     centre = bases[:, :2].mean(axis=0)
+    # Measure how far each certified base pose is from the cluster centre.
     offsets = np.linalg.norm(bases[:, :2] - centre, axis=1)
     # Never drive to an averaged pose the solver did not actually certify.
     return (bases[int(np.argmin(offsets))], float(offsets.max()))
 
 
 def rank(results, robot_xy, map_from_odom):
-    """Every returned base pose in map, least travel first.
-
-    Do not collapse a probe's results to its centre before collision/path checks:
-    that representative may be blocked while other returned poses are usable.
-    """
+    """Return every solver base pose in map coordinates, ordered by travel distance."""
     options = []
     for index, (bases, _) in enumerate(results):
         if len(bases) == 0:
@@ -104,18 +103,14 @@ def rank(results, robot_xy, map_from_odom):
             x, y, yaw = _planar(map_from_odom, base)
             travel = float(np.hypot(x - robot_xy[0], y - robot_xy[1]))
             options.append((travel, index, (x, y, yaw), radius, len(bases)))
+    # Try the certified base positions with the shortest travel first.
     options.sort(key=lambda option: option[0])
     return options
 
 
 def _approach(navigator, pose):
-    """Drive the last leg with the goal checker tightened, then measure what we got.
-
-    The stock 0.25 m tolerance is three times the solver's robustness radius, so
-    arriving under it proves nothing about reach. Restore it whatever happens:
-    a permanently precise checker would make ordinary navigation fail."""
-    # Stop inside the acceptance band, leaving margin for final localization
-    # updates instead of repeatedly failing just beyond the same boundary.
+    """Temporarily tighten parking tolerances, restore them afterward, and measure the error."""
+    # Aim inside the acceptance limit to leave room for localization updates.
     navigator.set_goal_tolerance(PRECISE_TOLERANCE*.75, PRECISE_YAW_TOLERANCE*.75)
     try:
         navigator.drive_to(
@@ -124,6 +119,7 @@ def _approach(navigator, pose):
             tolerance=PRECISE_TOLERANCE,
             yaw_tolerance=PRECISE_YAW_TOLERANCE,
         )
+    # Restore normal navigation tolerances even if the precise drive fails.
     finally:
         navigator.set_goal_tolerance(NAV_TOLERANCE, NAV_YAW_TOLERANCE)
     # Where the base ended up decides this, not whether the action reported success.
@@ -141,15 +137,14 @@ def reposition(
     solid=(),
     hand_poses=None,
 ):
-    """Park at a base pose the IK solver certified.
+    """Try certified base poses until measured position and heading meet the parking limits.
 
-    `blockers` keep the base clear; the solver checks the whole robot, arm
-    included, against the `solid` boxes. Both are (centre, dimensions, yaw) in map.
-    Returns (pose, offset) only when the final measured position and yaw meet
-    the approach tolerances; otherwise returns None. Reach probes still do not
-    prove grasp feasibility at the measured joint/base configuration."""
+    blockers protect the base; solid boxes protect the whole robot. Both use
+    (centre, dimensions, yaw) in map. Return (pose, offset), or None on failure.
+    Reach probes alone do not prove that the robot can grasp the object."""
     from core.navigation import base_placement
 
+    # Use supplied grasp poses when available; otherwise build approximate reach probes.
     poses = probes(centre, dimensions, bearings) if hand_poses is None else np.asarray(hand_poses)
     # The IK service takes an unstamped hand goal: transform to odom ourselves.
     odom_from_map = navigator.frame_transform("odom", "map")
@@ -162,9 +157,7 @@ def reposition(
     )
     map_from_odom = navigator.frame_transform("map", "odom")
     options = rank(results, navigator.robot_xy(), map_from_odom)
-    # The costmap masks the IK search, but a table is four thin legs to a laser:
-    # under its top reads as free space. Apply the same box filter the
-    # observation poses get, or the base parks beneath the furniture.
+    # Reject bases under furniture tops that the laser costmap may miss.
     clear = []
     for option in options:
         if not standoff.blocks(option[2], blockers):
@@ -179,12 +172,13 @@ def reposition(
             f"  probe {index}: {count} base poses, cluster radius {radius:.2f} m,"
             f" {travel:.2f} m away -> ({pose[0]:+.2f}, {pose[1]:+.2f}, yaw {pose[2]:+.2f})"
         )
+        # Skip base poses for which Nav2 cannot find a path.
         if not navigator.reachable(*pose):
             continue
+        # Drive precisely, then measure the remaining position and heading errors.
         offset, error = _approach(navigator, pose)
         print(f"    parked {offset:.3f} m and {error:.3f} rad from it")
         if offset <= PRECISE_TOLERANCE and error <= PRECISE_YAW_TOLERANCE:
             return (pose, offset)
-    # Earlier misses do not describe the final robot pose, and a small XY
-    # residual alone must not hide a failed yaw check.
+    # Return no result unless both position and heading passed at the final pose.
     return None
