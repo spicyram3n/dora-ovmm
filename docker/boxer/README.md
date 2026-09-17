@@ -29,7 +29,7 @@ bash docker/boxer/run_boxer.sh --download-ckpts
 ## 1. Keyframes → Boxer layout · 1 s
 
 ```bash
-python3 realrobot/make_boxer_scene.py \
+python3 realrobot/dataprep/make_boxer_scene.py \
   --source outputs/realrobot/lab_20260811/keyframes \
   --output outputs/realrobot/lab_20260811/boxer/scannet/lab_20260811 \
   --registration config/realrobot/map/lab_20260811_boxer_to_map.json
@@ -125,7 +125,7 @@ docker/boxer/ckpts/                        step 0: model weights
 docker/boxer/cache/scannet200_classes.csv  every run_boxer.sh call: the prompt list
 ```
 
-Data prep steps 1–2 are in [realrobot_dataprep.md](../../realrobot/realrobot_dataprep.md). The pair `scannet/lab_20260811` + `lab_20260811` is Boxer's convention: it only reads ScanNet from a path containing `/scannet/`, and it names its results folder after the input folder.
+Data prep steps 1–2 are in [realrobot_dataprep.md](../../realrobot/dataprep/realrobot_dataprep.md). The pair `scannet/lab_20260811` + `lab_20260811` is Boxer's convention: it only reads ScanNet from a path containing `/scannet/`, and it names its results folder after the input folder.
 
 ---
 

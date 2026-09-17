@@ -3,7 +3,7 @@
 #   config/realrobot/map/lab_20260811.{pgm,yaml}       the Nav2 map
 #   outputs/realrobot/lab_20260811/slam/tf_mapping/    bag of /tf with SLAM's map->odom
 #   outputs/realrobot/lab_20260811/slam/posegraph.*    slam_toolbox's graph, for reuse
-# Usage: bash realrobot/slam_replay.sh [rate]          (rate 2 = 6.5 min for the 13 min bag)
+# Usage: bash realrobot/dataprep/slam_replay.sh [rate]          (rate 2 = 6.5 min for the 13 min bag)
 source /opt/ros/humble/setup.bash
 set -euo pipefail
 # Another ROS 2 system shares this machine; a private domain keeps its /tf out.
@@ -21,9 +21,9 @@ rm -rf "$OUT/tf_mapping"
 # A node left over from an earlier run would publish a second map->odom.
 pkill -f "[s]lam_toolbox_node" && sleep 2 || true
 # The bag's /tf goes to /tf_bag; tf_filter forwards it minus the old map->odom.
-python3 "$ROOT/realrobot/tf_filter.py" &
+python3 "$ROOT/realrobot/dataprep/tf_filter.py" &
 # The node binary is started directly: killing a `ros2 run` wrapper leaves its child alive.
-"$NODE" --ros-args --params-file "$ROOT/realrobot/slam_offline.yaml" > "$OUT/slam.log" 2>&1 &
+"$NODE" --ros-args --params-file "$ROOT/realrobot/dataprep/slam_offline.yaml" > "$OUT/slam.log" 2>&1 &
 ros2 bag record /tf /tf_static -o "$OUT/tf_mapping" > /dev/null 2>&1 &
 RECORDER=$!
 trap 'kill $(jobs -p) 2>/dev/null || true; wait 2>/dev/null || true' EXIT

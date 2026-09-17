@@ -59,6 +59,121 @@ ros2 launch hsrb_rosnav_config navigation_launch.py \
 
 ## Real robot
 
+Bring-up runbook and the record of what was measured on hardware:
+[launch/realrobot/navigation.readme](../../launch/realrobot/navigation.readme).
+The maths behind the localiser and the costmap rules:
+[docs/realrobot_navigation.tex](../../docs/realrobot_navigation.tex).
+
+The robot runs Toyota's own stack; this PC adds Nav2 on top of it. Both are on
+`ROS_DOMAIN_ID=5` with `.devcontainer/cyclonedds_profile.xml`, so every robot
+topic is already visible here. Vision transport RX carries only RGB-D; `/scan`,
+`/tf` and the odometry arrive over plain DDS.
+
+### Nav2 against the robot
+
+```bash
+ros2 launch /home/ws/launch/realrobot/nav2_real.launch.py
+```
+
+Starts map_server on `config/realrobot/map/lab_20260811.yaml`, the four Nav2
+servers with [config/realrobot/nav2/nav2_params_real.yaml](../../config/realrobot/nav2/nav2_params_real.yaml),
+and an `/initialpose` relay. **No AMCL:** the robot's `laser_2d_localizer` and
+`pose_integrator` already publish `map->odom` at 100 Hz, and the saved map is in
+that same frame -- zero shift against the robot's live `/static_obstacle_ros_map`,
+91% of its walls within 10 cm. A second `map->odom` publisher would fight it.
+Use `localization:=true` only with the robot's own localization stopped.
+
+### Localize before the first goal
+
+`laser_2d_localizer` is not seeded at boot: it reports the map origin, `/scan`
+misses the walls by 35 cm, and every plan aborts with "Either of the start or
+goal pose are an obstacle". Seed it once per boot; it tracks from then on, so
+this is not a per-goal step. Three ways, cheapest first:
+
+```bash
+python3 realrobot/live/localize.py            # matches /scan to the map, publishes the pose
+python3 realrobot/live/localize.py --near 2 -2   # same, but only around a guess
+python3 realrobot/live/localize.py --dry-run  # report only
+```
+
+`localize.py` publishes on `/laser_2d_correct_pose` and `/initialpose` both, so
+it needs nothing else running -- run it **before** Nav2. RViz's **2D Pose
+Estimate** does the same job by hand, but it only speaks `/initialpose`, so it
+needs the launch's relay and therefore Nav2 already up:
+
+```bash
+rviz2 -d /home/ws/ros2_ws/install/hsrb_rosnav_config/share/hsrb_rosnav_config/rviz/hsr_navigation2.rviz
+```
+
+Always check it took. `/laser_2d_localizer/score` reads about **-0.01** when the
+pose is right and **-0.07** when it is wrong, and in RViz `/scan` sits on the
+map walls. Measured at the right pose: median beam-to-wall 0 cm, 81% of beams
+within 10 cm; at the map origin, 35 cm and 13%.
+
+- **The map is five weeks older than the lab.** It was built from the
+  2026-08-11 bag; the desks and chairs have moved since, so scan matching on
+  clutter is ambiguous and only the walls are dependable. A plain
+  nearest-wall-distance score ties poses 3 m apart; `localize.py` uses AMCL's
+  likelihood field (`exp(-d^2)`) instead, which separates them. Trust
+  `/laser_2d_localizer/score` over any of it: that runs on the robot's own map.
+- For a repeatable start, park the robot at a known spot and seed from there.
+- **Localize first, then start Nav2.** The global costmap marks what the laser
+  sees but only clears within about 3 m of the robot, so anything painted in
+  while the pose was wrong stays there as a phantom wall, and routes across the
+  lab fail with "Could not generate path between the given poses". Re-localized
+  with Nav2 already up, wipe it:
+
+  ```bash
+  ros2 service call /global_costmap/clear_entirely_global_costmap \
+    nav2_msgs/srv/ClearEntireCostmap "{}"
+  ```
+
+### Send a goal
+
+Plan first -- `/compute_path_to_pose` returns a path without moving anything:
+
+```bash
+ros2 action send_goal /compute_path_to_pose nav2_msgs/action/ComputePathToPose \
+  "{goal: {header: {frame_id: map}, pose: {position: {x: X, y: Y},
+   orientation: {w: 1.0}}}}"
+```
+
+Then drive it. RViz's **2D Nav Goal** sends the same action:
+
+```bash
+ros2 action send_goal /navigate_to_pose nav2_msgs/action/NavigateToPose \
+  "{pose: {header: {frame_id: map}, pose: {position: {x: X, y: Y},
+   orientation: {w: 1.0}}}}"
+```
+
+Pick X and Y from cells with **clearance**, not merely cost 0: a cost-0 cell
+at the edge of the inflation halo flickers to 253 whenever someone walks past,
+and the plan dies with "start or goal pose are an obstacle". Ask for half a
+metre of cost-0 margin all round:
+
+```python
+from scipy.ndimage import distance_transform_edt
+clear = distance_transform_edt(costmap == 0) * resolution   # metres of slack
+```
+
+Keep a hand on the wireless stop for the first goal, and stand clear of both
+the robot and the goal: a person in the wrong place is enough to abort it.
+
+| Wired to | Why |
+| --- | --- |
+| `cmd_vel` -> `/base_velocity` | The input of `safety_velocity_limiter`, so its obstacle slowdown and the bumpers stay between Nav2 and the wheels. Toyota's own `navigation_launch.py` remaps to `/omni_base_controller/cmd_vel`, which skips them. |
+| `odom_topic: /switched_odom` | The robot publishes no `/odom`; `odometry_switcher` publishes this and broadcasts `odom->base_footprint`. |
+| `use_sim_time: False` | No `/clock` on the robot. |
+
+- **Never send a goal to Toyota's `/move_base` while this runs.** Its
+  `base_path_follower` publishes to `/base_velocity` too, and the two fight.
+- **Goals in a cluttered lab.** `robot_radius` 0.3 plus `inflation_radius` 0.35
+  buries most of the floor between the desks in the inflation halo, and Theta*
+  refuses a start or goal at cost 253. Pick goals from the free cells of
+  `/global_costmap/costmap`, not from the map image.
+
+### Mission
+
 1. Build the graph from Boxer's boxes ([Boxer README](../../docker/boxer/README.md)).
 2. Plot a piece before driving:
 
@@ -66,15 +181,25 @@ ros2 launch hsrb_rosnav_config navigation_launch.py \
    python3 visualization/viewpoints.py --furniture <name> --graph config/realrobot/scene_graph/lab_20260811.json
    ```
 
-3. Run the mission on a stack you started by hand:
+3. Run the mission on the stack above:
 
    ```bash
    python3 -m core.pipeline.mission_tree --target laptop --graph config/realrobot/scene_graph/lab_20260811.json
    ```
 
-   Nav2 must be localized in `config/realrobot/map/lab_20260811.yaml`, the map the graph was built in.
+   The graph was built in `config/realrobot/map/lab_20260811.yaml`, so Nav2 must
+   be localized in that map.
 
-- **Not covered yet:** `launch/search.launch.py` starts Gazebo and sets `use_sim_time:=true`, and every params file in `config/nav2/` is for the sim. This repo has no real-robot launch or Nav2 params file, and none of the real-robot steps are tested on hardware.
+- **Run one Nav2 and no more.** A second stack duplicates every node name, and
+  then `bt_navigator`'s action client takes goal replies from the wrong server:
+  "unknown goal response, ignoring..." followed by "BtActionNode::Tick: invalid
+  status value" and an immediate abort, while the orphaned `controller_server`
+  runs on until "Failed to make progress". Check with `ros2 node list | sort |
+  uniq -d` before blaming anything else.
+- **Tested on hardware so far:** the stack comes up, the map loads, the relay
+  and `localize.py` seed the localizer, and the planner returns a path. Nothing
+  has driven the base yet, and `launch/search.launch.py` remains
+  simulation-only.
 - **Footprints:** every graph build fits each furniture piece with the smallest turned rectangle seen from above, so turned pieces keep their yaw. Stray mask points stretch that rectangle and shift every viewpoint with it. Graphs built before this use axis-aligned boxes until rebuilt.
 
 ---

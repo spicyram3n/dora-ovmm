@@ -2,16 +2,31 @@
 
 Everything run against the HSR lab bag of 2026-08-11.
 
-| Folder | What it does |
-| --- | --- |
-| `realrobot/*.py`, `*.sh`, `realrobot_dataprep.md` | bag → Nav2 map → keyframes → Boxer boxes → scene graph. Steps 1–8 and their checks: [realrobot_dataprep.md](realrobot_dataprep.md) |
-| [`realrobot/navigation/`](navigation/) | replay navigation on the finished map and graph, with no robot |
+Grouped by what each script talks to: the bag, the recording, or the robot.
+
+| Folder | Talks to | What it does |
+| --- | --- | --- |
+| [`dataprep/`](dataprep/) | the bag | bag → Nav2 map → keyframes → Boxer boxes → scene graph. Steps 1–8 and their checks: [dataprep/realrobot_dataprep.md](dataprep/realrobot_dataprep.md) |
+| [`offline/`](offline/) | the recording | the finished map, graph and keyframes, no robot needed: path overlays, footprint checks, next-best-view replay |
+| [`live/`](live/) | the real HSR | seed its localizer so Nav2 can drive; check what a grasp needs before anything moves |
 
 ---
 
-## `realrobot/navigation/`
+## `realrobot/live/`
 
-Two scripts that read the two artefacts step 1 and step 7 leave behind,
+| File | Does |
+| --- | --- |
+| `localize.py` | seeds the robot's localizer by matching the live `/scan` to the map, so Nav2 can plan. Run it **before** Nav2 |
+| `grasp_preflight.py` | checks the robot, vision transport RX and the model servers answer, before a pick moves anything |
+
+Bring-up, the measurements and the failure modes:
+[launch/realrobot/navigation.readme](../launch/realrobot/navigation.readme).
+
+---
+
+## `realrobot/offline/`
+
+`plan_overlay.py` and `footprint_check.py` read the two artefacts step 1 and step 7 leave behind,
 `config/realrobot/map/lab_20260811.{pgm,yaml}` and
 `config/realrobot/scene_graph/lab_20260811.json`, and need nothing else running.
 
@@ -21,6 +36,8 @@ Two scripts that read the two artefacts step 1 and step 7 leave behind,
 | `footprint_check.py` | measure the scene graph's footprints against the laser map |
 | `planner.launch.py` | `map_server` + `planner_server` alone, no robot. `plan_overlay.py` starts it itself |
 | `lab_planner.yaml` | their parameters, taken from `config/nav2/nav2_params.yaml` minus the obstacle layer |
+| `nbv_replay.py` | replay recorded keyframes through the next-best-view policy and score what it would have chosen |
+| `target_tsdf.py` | keyframes + a text prompt → a TSDF cube around the detected target |
 
 `plan_overlay.py` needs ROS sourced; `footprint_check.py` does not.
 
@@ -37,12 +54,12 @@ about 40 s, most of it Nav2 coming up.
 
 | # | Command | Generates |
 | --- | --- | --- |
-| 1 | `python3 realrobot/navigation/footprint_check.py` | stdout only |
-| 2 | `python3 realrobot/navigation/plan_overlay.py --target laptop --seed 2` | `outputs/realrobot/lab_20260811/nav/laptop.png` · `nav/lab_20260811_blockers.{pgm,yaml}` |
-| 3 | `python3 realrobot/navigation/plan_overlay.py --furniture 8 --seed 4 --no-blockers --output outputs/realrobot/lab_20260811/nav/desk_8_laser_only.png` | `outputs/realrobot/lab_20260811/nav/desk_8_laser_only.png` |
-| 4 | `python3 realrobot/navigation/plan_overlay.py --furniture 4 --start -0.45 -4.7 --no-blockers --output outputs/realrobot/lab_20260811/nav/desk_4_laser_only.png` | `outputs/realrobot/lab_20260811/nav/desk_4_laser_only.png` |
-| 5 | `python3 realrobot/navigation/plan_overlay.py --furniture 4 --start -0.45 -4.7 --output outputs/realrobot/lab_20260811/nav/desk_4_with_blockers.png` | `outputs/realrobot/lab_20260811/nav/desk_4_with_blockers.png` |
-| 6 | `python3 realrobot/navigation/plan_overlay.py --furniture 8 --seed 4` | nothing: prints why every pose around desk (8) is unusable |
+| 1 | `python3 realrobot/offline/footprint_check.py` | stdout only |
+| 2 | `python3 realrobot/offline/plan_overlay.py --target laptop --seed 2` | `outputs/realrobot/lab_20260811/nav/laptop.png` · `nav/lab_20260811_blockers.{pgm,yaml}` |
+| 3 | `python3 realrobot/offline/plan_overlay.py --furniture 8 --seed 4 --no-blockers --output outputs/realrobot/lab_20260811/nav/desk_8_laser_only.png` | `outputs/realrobot/lab_20260811/nav/desk_8_laser_only.png` |
+| 4 | `python3 realrobot/offline/plan_overlay.py --furniture 4 --start -0.45 -4.7 --no-blockers --output outputs/realrobot/lab_20260811/nav/desk_4_laser_only.png` | `outputs/realrobot/lab_20260811/nav/desk_4_laser_only.png` |
+| 5 | `python3 realrobot/offline/plan_overlay.py --furniture 4 --start -0.45 -4.7 --output outputs/realrobot/lab_20260811/nav/desk_4_with_blockers.png` | `outputs/realrobot/lab_20260811/nav/desk_4_with_blockers.png` |
+| 6 | `python3 realrobot/offline/plan_overlay.py --furniture 8 --seed 4` | nothing: prints why every pose around desk (8) is unusable |
 
 - 4 and 5 are the same start and the same target on the two maps, so the paths can be compared. 3 and 6 are the same query, and only the laser-map run has anywhere to stand.
 - `--seed` is reproducible for a fixed map, `--clearance` and `--blockers`; change any of them and the same seed picks a different start, because the set of free cells it draws from changes.

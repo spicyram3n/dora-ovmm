@@ -1,14 +1,14 @@
 """Grasp test on the real HSR, PC side: move_group on the robot's DDS topics,
 RGB-D through vision transport RX, no simulator, no Nav2, no mission.
 
-    ros2 launch /home/ws/launch/grasp_real.launch.py
+    ros2 launch /home/ws/launch/realrobot/grasp_real.launch.py
     HSR_REAL_ROBOT=1 python3 -m core.grasping.pick "pringles can"   # another terminal
 
 Pass target:= to run one pick once move_group has settled; mode:=grasp holds
 without the test lift. Everything the robot already runs stays on the robot:
 controllers, joint states, TF, the camera driver and a vision transport TX.
 SAM3, GraspGenX and RX run on this PC in Docker. Run
-realrobot/grasp_preflight.py before the first pick. README: "Real robot:
+realrobot/live/grasp_preflight.py before the first pick. README: "Real robot:
 grasp test".
 """
 
@@ -27,7 +27,7 @@ from launch.event_handlers import OnProcessExit
 from launch.substitutions import LaunchConfiguration as Arg
 from launch.substitutions import PythonExpression
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 
 
 def generate_launch_description():
@@ -48,7 +48,7 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             "sensors_config",
-            default_value="sensors_xtion_remote.yaml",
+            default_value="realrobot/moveit/sensors_xtion_remote.yaml",
             description="Octomap file under config/moveit/ naming RX's depth output.",
         ),
         DeclareLaunchArgument(

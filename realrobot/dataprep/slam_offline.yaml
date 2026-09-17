@@ -1,6 +1,6 @@
 # slam_toolbox for replaying bags/playable_bag. Starts from the HSR's own
 # hsrb_mapping/config/mapping_params.yaml; the values changed for offline use
-# are marked. Read by realrobot/slam_replay.sh for both passes.
+# are marked. Read by realrobot/dataprep/slam_replay.sh for both passes.
 slam_toolbox:
   ros__parameters:
     use_sim_time: true                  # offline: the bag's clock

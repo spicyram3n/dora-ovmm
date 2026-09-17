@@ -14,7 +14,7 @@ exit code 3 reports a contact-only hold. Other failures return 1.
     HSR_REAL_ROBOT=1 python3 -m core.grasping.pick "pringles can"   # real HSR
 
 HSR_REAL_ROBOT=1 uses the wall clock and reads RGB-D from vision transport RX
-(core/perception/camera_ros2.py); launch/grasp_real.launch.py sets it.
+(core/perception/camera_ros2.py); launch/realrobot/grasp_real.launch.py sets it.
 """
 
 import sys

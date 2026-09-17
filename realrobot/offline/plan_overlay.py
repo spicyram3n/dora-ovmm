@@ -1,7 +1,7 @@
 """Ask Nav2 for a path to a queried scene-graph target and draw it on the lab map.
 
-    python3 realrobot/navigation/plan_overlay.py --target laptop
-    python3 realrobot/navigation/plan_overlay.py --furniture bookshelf --seed 3
+    python3 realrobot/offline/plan_overlay.py --target laptop
+    python3 realrobot/offline/plan_overlay.py --furniture bookshelf --seed 3
 
 No robot and no bag. `planner.launch.py` runs map_server and planner_server on the
 saved map, the start is drawn at random from its free cells, and the path is Nav2's
@@ -63,7 +63,7 @@ SKIN = 0.15
 # A path that stops short of the goal is a refusal, not a route: the same check
 # core.navigation.nav2_client.reachable makes before the mission drives.
 REACHED = 0.1
-# realrobot/visualize.py's palette, so the figures read as one set.
+# realrobot/dataprep/visualize.py's palette, so the figures read as one set.
 INK, MUTED, PATH, CAM = "#1f2933", "#7b8794", "#d14d1f", "#2464b0"
 FURNITURE, OBJECT, TARGET = "#2464b0", "#7b8794", "#1f9d55"
 

@@ -2,7 +2,7 @@
 # RX (vision-transport-poorna/deployment/config/rx.yaml) instead of DDS. Same
 # map settings as sensors_xtion.yaml; only the topics and QoS differ.
 # Select it with: ros2 launch launch/move_group.launch.py
-#   use_sim_time:=false sensors_config:=sensors_xtion_remote.yaml
+#   use_sim_time:=false sensors_config:=realrobot/moveit/sensors_xtion_remote.yaml
 octomap_resolution: 0.01
 octomap_frame: odom
 sensors:

@@ -16,6 +16,7 @@ from tf2_ros import Buffer, TransformListener
 
 # Select the real robot clock and image topics with HSR_REAL_ROBOT=1.
 # HSR_IMAGE_PREFIX overrides /remote; camera calibration arrives directly over DDS.
+# launch/realrobot/grasp_real.launch.py sets both.
 REAL_ROBOT = os.environ.get("HSR_REAL_ROBOT", "") == "1"
 USE_SIM_TIME = not REAL_ROBOT
 IMAGE_PREFIX = os.environ.get("HSR_IMAGE_PREFIX", "/remote" if REAL_ROBOT else "")

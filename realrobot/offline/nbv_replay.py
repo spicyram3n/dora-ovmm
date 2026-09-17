@@ -23,7 +23,7 @@ from core.active_perception.nbv import NextBestView
 from core.active_perception.record import Recording
 from core.active_perception.views import ViewHalfSphere
 from core.navigation.standoff import ROBOT_RADIUS
-from realrobot.target_tsdf import load, parse_frames
+from realrobot.offline.target_tsdf import load, parse_frames
 
 
 def occupancy_from_scene(keyframes, resolution=0.05, heights=(0.1, 1.0), self_radius=0.5):

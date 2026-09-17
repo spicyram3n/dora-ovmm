@@ -9,11 +9,12 @@ MoveIt Task Constructor solutions (core/grasping/pick.py). Controllers,
 joint limits and the SRDF are still loaded from that package unchanged, so
 nothing here writes to the vendor checkout.
 
-The octomap's topics live in one file under config/moveit/, chosen with
+The octomap's topics live in one file under config/, chosen with
 sensors_config:=. Its move_group part names the depth stream the updater
 subscribes to; its relay block names what the depth relay reads. Simulation
 uses sensors_xtion.yaml; the real robot, with depth arriving through vision
-transport RX, uses sensors_xtion_remote.yaml (launch/grasp_real.launch.py).
+transport RX, uses realrobot/moveit/sensors_xtion_remote.yaml
+(launch/realrobot/grasp_real.launch.py).
 """
 
 import os
@@ -55,9 +56,10 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             "sensors_config",
-            default_value="sensors_xtion.yaml",
-            description="Octomap file under config/moveit/. sensors_xtion_remote.yaml "
-            "reads the real robot's depth from vision transport RX.",
+            default_value="moveit/sensors_xtion.yaml",
+            description="Octomap file, named relative to config/. The real robot's "
+            "realrobot/moveit/sensors_xtion_remote.yaml reads its depth from "
+            "vision transport RX.",
         ),
         DeclareLaunchArgument(
             "depth_topic",
@@ -164,7 +166,7 @@ def launch_setup(context):
             condition=IfCondition(LaunchConfiguration("enable_grasp_servo")),
             output="screen",
             parameters=model
-            + [{"moveit_servo": ours("servo.yaml"), "use_sim_time": sim_time}],
+            + [{"moveit_servo": ours("moveit/servo.yaml"), "use_sim_time": sim_time}],
         ),
         Node(
             package="tf2_ros",

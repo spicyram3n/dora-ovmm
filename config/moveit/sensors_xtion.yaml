@@ -1,5 +1,5 @@
 # Simulation octomap. launch/move_group.launch.py loads this by default;
-# sensors_xtion_remote.yaml is the real-robot counterpart.
+# config/realrobot/moveit/sensors_xtion_remote.yaml is the real-robot counterpart.
 # The default 10 cm voxels are larger than the can and the finger clearance.
 octomap_resolution: 0.01
 octomap_frame: odom

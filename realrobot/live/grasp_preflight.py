@@ -1,7 +1,7 @@
 """Check what a real-robot grasp needs before moving anything.
 
-    python3 realrobot/grasp_preflight.py            # robot, RX and model servers
-    python3 realrobot/grasp_preflight.py --moveit   # also this PC's move_group
+    python3 realrobot/live/grasp_preflight.py            # robot, RX and model servers
+    python3 realrobot/live/grasp_preflight.py --moveit   # also this PC's move_group
 
 Run it in the container with ROS_DOMAIN_ID and CYCLONEDDS_URI set for the
 robot, RX up, and the model servers up. Each line is one check; the exit code
@@ -17,7 +17,8 @@ import sys
 import time
 
 os.environ.setdefault("HSR_REAL_ROBOT", "1")
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# realrobot/live/<this file>, so three levels up is the repository root.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 import rclpy  # noqa: E402
 from control_msgs.action import FollowJointTrajectory  # noqa: E402
@@ -147,7 +148,7 @@ def check_moveit(node, report):
     client = node.create_client(Empty, "/clear_octomap")
     ok = client.wait_for_service(timeout_sec=5.0)
     node.destroy_client(client)
-    report.line(ok, "move_group", "/clear_octomap answers" if ok else "not running (launch/grasp_real.launch.py)")
+    report.line(ok, "move_group", "/clear_octomap answers" if ok else "not running (launch/realrobot/grasp_real.launch.py)")
     executor = ActionClient(node, ExecuteTaskSolution, "/execute_task_solution")
     ok = executor.wait_for_server(timeout_sec=5.0)
     executor.destroy()

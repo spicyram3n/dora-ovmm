@@ -1,6 +1,6 @@
 """How much of each scene-graph footprint the laser map already knows about.
 
-    python3 realrobot/navigation/footprint_check.py
+    python3 realrobot/offline/footprint_check.py
 
 Boxer's boxes come from RGB-D at head height; the Nav2 map comes from a laser at
 19 cm. Neither knows about the other, so the overlap between them is a free check
@@ -37,7 +37,7 @@ sys.path.insert(0, str(ROOT))
 
 from core.scene_graph import graph as sg  # noqa: E402
 from core.utils import geometry  # noqa: E402
-from realrobot.navigation.plan_overlay import FLOOR, standing_on_floor  # noqa: E402
+from realrobot.offline.plan_overlay import FLOOR, standing_on_floor  # noqa: E402
 
 DEFAULT_GRAPH = ROOT / "config/realrobot/scene_graph/lab_20260811.json"
 DEFAULT_MAP = ROOT / "config/realrobot/map/lab_20260811.yaml"
@@ -46,7 +46,7 @@ FREE, UNKNOWN, OCCUPIED = 254, 205, 0
 # before its direction counts towards the room angle.
 WALL_RADIUS, WALL_STRAIGHTNESS = 0.25, 3.0
 # base_range_sensor_link above base_footprint, from /tf_static: the one height the
-# Nav2 map was ever able to see. realrobot/visualize.py uses the same number.
+# Nav2 map was ever able to see. realrobot/dataprep/visualize.py uses the same number.
 LASER_Z = 0.19
 
 

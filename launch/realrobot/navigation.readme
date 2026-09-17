@@ -1,0 +1,165 @@
+# Real-robot navigation: bring-up and what was found
+
+Nav2 on this PC against the real HSR, using the map in `config/realrobot/map/`.
+Everything here was measured on the robot on 2026-09-17. The maths behind the
+localiser and the costmap rules are in [docs/realrobot_navigation.tex](../../docs/realrobot_navigation.tex);
+the wider navigation reference is [core/navigation/README.md](../../core/navigation/README.md).
+For planning on the saved map with **no robot** -- path overlays, footprint
+checks -- use [realrobot/offline/](../../realrobot/offline/) instead; that
+runs `planner_server` alone, this drives the real base.
+
+## Run it
+
+```bash
+cd /home/ws && source /opt/ros/humble/setup.bash && source ros2_ws/install/setup.bash
+```
+
+| # | Command | Why |
+| --- | --- | --- |
+| 1 | `python3 realrobot/live/localize.py` | Seed the localiser. **Before** Nav2, not after. |
+| 2 | `ros2 topic echo /laser_2d_localizer/score --once` | Check it took: `-0.01` right, `-0.07` wrong. |
+| 3 | `ros2 launch /home/ws/launch/realrobot/nav2_real.launch.py` | One stack, never two. Wait ~35 s for `Managed nodes are active` twice. |
+| 4 | `rviz2 -d ros2_ws/src/hsrb_rosnav/hsrb_rosnav_config/rviz/hsr_navigation2.rviz` | Fixed frame `map`, has the Nav2 GoalTool. |
+| 5 | `/compute_path_to_pose` | Plan first. Nothing moves. |
+| 6 | `/navigate_to_pose` | Drive. Hand on the wireless stop. |
+
+```bash
+ros2 action send_goal /compute_path_to_pose nav2_msgs/action/ComputePathToPose \
+  "{goal: {header: {frame_id: map}, pose: {position: {x: X, y: Y}, orientation: {w: 1.0}}}}"
+
+ros2 action send_goal /navigate_to_pose nav2_msgs/action/NavigateToPose \
+  "{pose: {header: {frame_id: map}, pose: {position: {x: X, y: Y}, orientation: {w: 1.0}}}}"
+```
+
+- `localize.py --near X Y` searches 3 m around a guess; `--dry-run` reports and publishes nothing.
+- `localization:=true` adds AMCL. Only with the robot's own localisation stopped.
+- `/amcl_pose` in that RViz config stays empty on purpose — there is no AMCL.
+- Do **not** press *Startup* on RViz's Navigation 2 panel. The launch autostarts.
+
+## Files
+
+| File | Is |
+| --- | --- |
+| `nav2_real.launch.py` | map_server, the four Nav2 servers, and the `/initialpose` relay. No AMCL. |
+| `grasp_real.launch.py` | move_group on the robot's topics, RGB-D over vision transport RX. |
+| `../../config/realrobot/nav2/nav2_params_real.yaml` | Nav2 params: `use_sim_time: False`, `odom_topic: /switched_odom`, the lab map. |
+| `../../config/realrobot/moveit/sensors_xtion_remote.yaml` | Real-robot octomap sources. |
+| `../../realrobot/live/localize.py` | Seeds the localiser by matching `/scan` to the map. |
+
+## What runs where
+
+The robot keeps running Toyota's stack; this PC adds Nav2 on top. Same
+`ROS_DOMAIN_ID=5` and `.devcontainer/cyclonedds_profile.xml`, so every robot
+topic is visible here. Vision transport RX carries RGB-D only — `/scan`, `/tf`
+and odometry come over plain DDS.
+
+| Decision | Why |
+| --- | --- |
+| **No AMCL** | The robot already publishes `map→odom` at 100 Hz from `laser_2d_localizer` + `pose_integrator`, and the saved map is in that same frame. A frame gets one parent; two publishers make the base jump. |
+| `cmd_vel` → `/base_velocity` | Keeps `safety_velocity_limiter` (obstacle slowdown, bumpers) and `velocity_switcher` between Nav2 and the wheels. Toyota's own `navigation_launch.py` remaps to `/omni_base_controller/cmd_vel`, which skips them. |
+| `odom_topic: /switched_odom` | The robot publishes no `/odom`. |
+| `use_sim_time: False` | No `/clock`. |
+
+The full chain: `controller_server` → `/base_velocity` → `safety_velocity_limiter`
+→ `/command_velocity_autonomy` → `velocity_switcher` → `/omni_base_controller/cmd_vel`.
+
+**Never give Toyota's `/move_base` a goal while Nav2 runs.** It is an alternative
+source into the same pipe, not a part of Nav2 — its `base_path_follower`
+publishes to `/base_velocity` as well. Idle, `/base_velocity` carries nothing,
+so the two only fight if you ask them to.
+
+## The map is the robot's map
+
+Cross-correlating our occupied cells against the robot's live
+`/static_obstacle_ros_map` gives a best alignment at **exactly zero shift** over
+a ±1.5 m search. Distance from each of the robot's walls to the nearest of ours:
+median 5 cm, 78% within 5 cm, 91% within 10 cm, 98% within 20 cm. Same frame, no
+registration needed.
+
+Ours has 7176 occupied cells to the robot's 5032 — the extra ones are furniture
+that was there in August. **The map is five weeks older than the lab.** Walls
+are dependable; desks and chairs are not.
+
+## Localisation
+
+`laser_2d_localizer` is not seeded at boot: it reports the map origin and stays
+there. Seed it **once per boot** — it tracks from then on. Unseeded, every plan
+dies with *"Either of the start or goal pose are an obstacle"*, which sounds
+like a map fault and is not.
+
+| | localiser score | median beam-to-wall | within 10 cm |
+| --- | --- | --- | --- |
+| correct pose | −0.012 | 0–5 cm | 66–82% |
+| wrong pose (3.5 m off) | −0.070 | 5 cm | 66% |
+| unseeded (map origin) | −0.095 | 35 cm | 13% |
+
+Always cross-check with `/laser_2d_localizer/score`. It runs on the robot's
+*current* map, so it catches poses that look fine against our stale one — that
+row in the middle is a real pose that fooled a hand calculation and was rejected
+cleanly by the robot.
+
+## Three things that were wrong in `localize.py`
+
+1. **It found the wrong place.** Scoring poses by median beam-to-wall distance
+   saturates in a cluttered room: two poses 3.5 m and 50° apart both scored 5 cm.
+   Replaced with AMCL's likelihood field, `mean(exp(-d²/2σ²))` at σ = 0.1 m,
+   which does not saturate — a beam on a wall scores 0.98, one 6 cm off scores
+   0.16. The true pose separates.
+2. **It published where nobody listened.** RViz's *2D Pose Estimate* publishes on
+   `/initialpose`, and AMCL reads that — but this robot runs no AMCL, and
+   **nothing subscribes to `/initialpose`** on it. Toyota's localiser reads
+   `/laser_2d_correct_pose`. Two fixes: the launch runs a `topic_tools relay`
+   copying one onto the other so the RViz button works, and `localize.py`
+   publishes to both directly so it needs nothing running and can go first.
+3. **The message vanished.** It created the publisher and published in the same
+   instant, before DDS matched the subscriber, so the sample went nowhere while
+   the script printed "published". `ros2 topic pub --once` avoids this by waiting
+   for a listener. It now waits up to 10 s and says so out loud if there is none.
+
+## Why goals abort
+
+**"Either of the start or goal pose are an obstacle"** — Theta* accepts a cell
+only if its cost is under 252 (or 255 with `allow_unknown`). The inflation layer
+writes 253 at every cell within the inscribed radius, `robot_radius` = 0.30 m, of
+a lethal cell. So any start or goal within 30 cm of an obstacle is refused.
+
+A cost-0 cell sitting 32 cm from a desk therefore works until someone walks past.
+Measured on one such goal, its cost flipped to 253 in **1 costmap update out of
+24**. Pick goals with margin, not just cost 0:
+
+```python
+from scipy.ndimage import distance_transform_edt
+clear = distance_transform_edt(costmap == 0) * resolution   # want >= 0.5 m
+```
+
+**"Could not generate path between the given poses"** — no route at all. The
+global costmap marks what the laser sees out to 2.5 m but only clears by
+ray-tracing out to 3.0 m, so obstacles marked while the pose was wrong stay as
+phantom walls the robot never returns to clear. This is why localisation goes
+first. Re-localised with Nav2 already up:
+
+```bash
+ros2 service call /global_costmap/clear_entirely_global_costmap nav2_msgs/srv/ClearEntireCostmap "{}"
+```
+
+A goal that had failed three times running began succeeding the moment that
+clear fired.
+
+**"unknown goal response, ignoring…" then "BtActionNode::Tick: invalid status
+value"** — two Nav2 stacks. Duplicate node names, so `bt_navigator`'s action
+client takes replies from the wrong `controller_server`. Check with
+`ros2 node list | sort | uniq -d`.
+
+**"No transition matching 1 found for current state active"** — something asked
+an already-active node to configure, usually RViz's Navigation 2 *Startup*
+button. Harmless, but it means that button was pressed and it should not be.
+
+## State on 2026-09-17
+
+Verified on hardware: the stack comes up, the map loads, `localize.py` seeds the
+localiser standalone, the planner returns paths, and one `navigate_to_pose` drove
+the base 0.8 m and stopped 0.18 m from its goal — inside the 0.25 m tolerance.
+The velocity chain past `/base_velocity` is confirmed end to end.
+
+Not done yet: any longer traverse, the 0.06 m parking tolerance the mission
+tightens to, and the mission itself.

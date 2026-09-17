@@ -69,7 +69,7 @@ the `.rrd` without opening Rerun; `python3 -m rerun <file>.rrd` reopens it.
 
 - **Keyframes:** the robot's keyframes are already in `map`: the same robot, in the same SLAM run as `config/realrobot/map/lab_20260811.yaml`.
 - **Boxer's boxes:** Boxer moves its origin to the first camera, so its boxes are not in `map`.
-- **The fix:** `config/realrobot/map/lab_20260811_boxer_to_map.json` shifts them back (`source_frame: "boxer_lab_20260811"`, no rotation). `realrobot/make_boxer_scene.py --registration` writes it.
+- **The fix:** `config/realrobot/map/lab_20260811_boxer_to_map.json` shifts them back (`source_frame: "boxer_lab_20260811"`, no rotation). `realrobot/dataprep/make_boxer_scene.py --registration` writes it.
 
 ---
 

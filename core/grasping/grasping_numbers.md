@@ -356,7 +356,7 @@ Web UI (`web/server.py`): `POST /gripper/open` sends `OPEN_HAND = 1.1` over
   goal and releases the hand.
 - A fingertip gap alone cannot detect an empty hand when the motor is negative
   (the fingers have crossed). Check that `hand_motor_joint` is greater than 0 as well.
-- Real-robot preflight (`realrobot/grasp_preflight.py`) checks that `arm_lift_joint`,
+- Real-robot preflight (`realrobot/live/grasp_preflight.py`) checks that `arm_lift_joint`,
   `hand_motor_joint` and `head_pan_joint` appear on `/joint_states`, that the
   arm, head, gripper and grasp actions exist, and that TF is no older than 0.5 s.
 

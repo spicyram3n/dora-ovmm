@@ -15,7 +15,7 @@ from ament_index_python.packages import get_package_share_directory
 
 MOVEIT_CONFIG = get_package_share_directory("hsrb_moveit_config")
 REPOSITORY = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-CONFIG_DIR = os.path.join(REPOSITORY, "config", "moveit")
+CONFIG_DIR = os.path.join(REPOSITORY, "config")
 RVIZ_DIR = os.path.join(REPOSITORY, "config", "rviz")
 
 sys.path.append(os.path.join(MOVEIT_CONFIG, "launch"))
@@ -35,7 +35,11 @@ PASSIVE_SPRING_RANGE = (-0.2, 1.2)
 
 
 def ours(name):
-    """One of the MoveIt settings this project owns, under config/moveit/."""
+    """One of the settings this project owns, named relative to config/.
+
+    Simulation files sit in config/moveit/; the real robot's are under
+    config/realrobot/moveit/, so the caller passes the subdirectory too.
+    """
     with open(os.path.join(CONFIG_DIR, name)) as handle:
         return yaml.safe_load(handle)
 
@@ -65,13 +69,13 @@ def moveit_params():
             ]
         ),
         "start_state_max_bounds_error": 0.1,
-        **ours("ompl_planning.yaml"),
+        **ours("moveit/ompl_planning.yaml"),
     }
     return {
         "robot_description": urdf,
         "robot_description_semantic": semantic(urdf, theirs("hsrb.srdf")),
         "robot_description_planning": yaml.safe_load(theirs("joint_limits.yaml")),
-        **ours("kinematics.yaml"),
+        **ours("moveit/kinematics.yaml"),
         "move_group": ompl,
     }
 
