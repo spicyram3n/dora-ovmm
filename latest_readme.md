@@ -181,6 +181,8 @@ Weights once (1.2 GB): `bash docker/boxer/run_boxer.sh --download-ckpts`
 
 827 keyframes on an RTX 4080 SUPER: detect ~100 s, fuse ~20 s, graph ~1 s.
 
+To make the map hold a word it does not yet know, add it under `object:` in [scannet200.yaml](config/scene_graph/scannet200.yaml) and rerun this step — no re-record, no re-SLAM. Details: [docker/boxer/README.md](docker/boxer/README.md#the-vocabulary-is-a-prompt-list-you-control).
+
 If the host lacks numpy/scipy/networkx/yaml it stops early. Split:
 
 ```bash

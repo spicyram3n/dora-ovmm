@@ -462,7 +462,9 @@ def make_graspable(scene, node_id, navigator, obstacles="--costmap", bearings=12
         return NOT_GRASPABLE
     # Keep the object in view so grasp generation can capture it from here.
     if not navigator.look_at(centre):
-        print("Warning: the head cannot aim at the object from this pose.")
+        print("The head could not aim at the object from the parked pose, so the"
+              " camera is not on it and a pick from here cannot capture it.")
+        return NOT_GRASPABLE
     print(
         f"Ready to grasp from ({pose[0]:.2f}, {pose[1]:.2f}, yaw {pose[2]:.2f}),"
         f" parked {offset:.3f} m from it."

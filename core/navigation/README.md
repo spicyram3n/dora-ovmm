@@ -222,7 +222,9 @@ the robot and the goal: a person in the wrong place is enough to abort it.
 | --- | --- |
 | `--top-k 3` | Set how many places DeepSeek suggests |
 | `--grasp false` | Stop once parked; no pick |
-| `--navigate-only true` | Reason and drive to the first place; no SAM3 or GraspGenX |
+| `--navigate-only true` | Reason and drive to the first place; no SAM3 or GraspGenX. Gives an *observation* pose, not a graspable one |
+| `--grasp false` | Everything up to and including **Park** and **Pause Nav2**; stops before the pick. This is the park-then-grasp-separately mode |
+| `HSR_REAL_ROBOT=1` | Required on hardware: selects the robot's clock (no `/clock` exists) and defaults `--graph` to `config/realrobot/scene_graph/$RECORDING.json` |
 | `--graph /path/to/graph.json` | Use another scene graph |
 | `--bearings 12` | Set the horizontal reach-probe directions (30 deg apart) |
 | `--startup-timeout 180` | Wait this long for the stack at startup |
@@ -236,6 +238,7 @@ To see where a query would search without moving, use the [viewpoint preview](#p
 | --- | --- |
 | **Home arm** | Lift, flex, roll, wrist flex, wrist roll → `[0.0, 0.0, -1.57, -1.57, 0.0]` in 3 s. A rejection, failure or 30 s timeout stops the mission. Logs `[HOME]`, then `[READY] arm home pose reached`. |
 | **Ready** | Waits for active Nav2 nodes, nav and head actions, IK, fresh localization, synced RGB-D with TF, and one SAM3 reply (thrown away). Shared 180 s budget; `startup_timeout:=300` for slow machines. |
+| **Home head** | Pan 0, tilt 0 through `Navigator.look_home`. Placed after Ready, which is where the head trajectory action is proven live. |
 | Then | The base moves only after Ready passes. Ready does **not** check that your map registration is accurate. |
 
 - **Logs** are labelled by process: `simulation`, `navigation`, `ik`, `move_group`, `mission_tree`. The mission ends with the tree and each step's status.
@@ -276,6 +279,30 @@ The shapes it checks are `graph.blockers(scene, exclude=...)`: every furniture f
 - **The target is excluded.** A 0.39 m bin grows to a 0.495 m keep-out against `PARK_DISTANCE` 0.45, so left in, its own box rules out every base pose that could reach it.
 - **`person` never blocks.** A person's box spans the 0.19 m scan height, so Nav2's obstacle layer marks them live and clears them when they leave; a person recorded months ago would instead be a keep-out nothing can clear.
 - **Nothing taller than `MAX_BLOCKER_HEIGHT` (1.8 m) blocks.** A box that touches the floor and runs that high is a door leaf, a mirror or a wall-mounted whiteboard caught floor to ceiling, not something standing on the floor. It matters because an object blocks by its *axis-aligned* bounds: a 5 cm panel at 40° to the map axes inflates into a square a metre on a side. On `lab_20260919` one such box — a door recorded open, labelled `mirror` — was the single shape severing the kitchen from the rest of the map. The tallest real floor-standing object measured across both recordings is a 1.17 m computer tower.
+
+### Two grids, not one
+
+`actions.plan(scene, location, robot_xy, grid, sight_grid=None)` asks the costmap two
+different questions, and only one of them wants the robot-radius collar:
+
+| Question | Checked by | Grid |
+| --- | --- | --- |
+| Can the base **stand** here? | `standoff.free` | `grid` — obstacles grown by the robot radius |
+| Can it **see** the piece from here? | `standoff.unobstructed` | `sight_grid` — walls only |
+
+Padding is not opaque: a pose can look straight across floor it could not park on. Running
+the sight test against the padded grid meant a *neighbour's* collar blocked views that were
+geometrically clear, and furniture with at least one usable observation pose went from 27 to
+13 of 37 on `lab_20260919` (14 → 36 of 50 on `lab_20260811`).
+
+`sight_grid` defaults to `grid`, so a caller that does not pass one behaves exactly as
+before. Live it comes from `base_placement.sight_grid(navigator)`, which rebins Nav2's
+costmap at `BLOCKED` (lethal) instead of `INSCRIBED` (the collar). Offline,
+`plan_overlay.sight_grid` blocks on occupied cells and treats unknown as see-through, the
+way `standoff.unobstructed` documents.
+
+Wired in `plan_overlay`, `goto.py`, `mission_tree` and `actions.search`. **Untested on
+hardware** — compare `goto.py --dry-run` pose counts against the offline run before driving.
 
 ### How search decides
 

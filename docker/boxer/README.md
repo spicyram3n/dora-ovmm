@@ -200,7 +200,7 @@ python3 -m core.reasoner.query 'laptop' \
 
 - `--top-k N` sets how many furniture guesses DeepSeek returns. `--near X Y` orders remembered matches nearest first.
 - With `DEEPSEEK_API_KEY` set, it also asks DeepSeek once the remembered locations run out.
-- Mission on the real robot: `python3 -m core.pipeline.mission_tree --target laptop --graph config/realrobot/scene_graph/lab_20260811.json`, on a stack you started by hand ([navigation README](../../core/navigation/README.md#real-robot)). `search.launch.py` and its `graph:=` are simulation-only.
+- Mission on the real robot: `RECORDING=<name> HSR_REAL_ROBOT=1 python3 -m core.pipeline.mission_tree --target laptop` — `HSR_REAL_ROBOT=1` defaults `--graph` to this recording's graph and selects the robot's clock, on a stack you started by hand ([navigation README](../../core/navigation/README.md#real-robot)). `search.launch.py` and its `graph:=` are simulation-only.
 
 ---
 
@@ -289,10 +289,74 @@ Data prep steps 1–2 are in [realrobot_dataprep.md](../../realrobot/dataprep/re
 
 ---
 
+## The vocabulary is a prompt list you control
+
+Boxer detects with **OWLv2**, an open-vocabulary detector. `--labels=scannet200` is not a
+model constraint — it is a filename. `run_boxer.sh` regenerates the list from the three role
+sections of [scannet200.yaml](../../config/scene_graph/scannet200.yaml) on every run and
+mounts it:
+
+```bash
+-v "$PWD/cache/scannet200_classes.csv:/opt/boxer/owl/scannet200_classes.csv:ro"
+```
+
+196 prompts today. OWLv2 scores every box against every prompt and **cannot return a word it
+was not given**, so this file decides the whole map vocabulary.
+
+### Teaching it a new object
+
+Two edits, complementary:
+
+| | Edit | Rebuild needed? |
+| --- | --- | --- |
+| **the map can hold it** | add the name under `object:` in `scannet200.yaml` | **yes** — detection must re-run |
+| **your words find it** | add what you would say under `synonyms:` | no — query-side only |
+
+```yaml
+object: [ pringles can, tomato can, ... ]
+synonyms:
+  pringles can: [pringles, chips can, crisps can]
+```
+
+Keep added names **specific**. OWLv2 picks each box's best prompt, which is why `object`,
+`furniture` and `structure` are excluded from the list — a generic prompt outscores the
+specific class and the box lands on the wrong one.
+
+Rebuilding after a vocabulary change needs no re-recording and no re-SLAM: step 1 is skipped
+because the frames already exist, so `boxer_to_map.json` and the keyframes are untouched.
+
+```bash
+RECORDING=lab_20260919 bash docker/boxer/build_scene_graph.sh --rooms
+grep -ic "<your new word>" outputs/realrobot/lab_20260919/boxer/lab_20260919/owl_2dbbs.csv
+```
+
+A hit in `owl_2dbbs.csv` proves OWLv2 took the prompt; a hit in `boxer_3dbbs.csv` proves
+BoxerNet lifted a class it never trained on.
+
+### What the graph stores
+
+Each box becomes one node carrying **both** names:
+
+| field | value | used for |
+| --- | --- | --- |
+| `name` | the OWLv2 prompt, verbatim | matching the exact words you type |
+| `label` | that prompt's class, via `scannet_class` | the role: furniture / object / structure |
+
+`find_objects` scores both, so a prompt of `dog bowl` (stored `label=bowl`, `name=dog bowl`)
+is found by either word. An unknown label defaults to role `object`, so an unlisted prompt
+still lands in the graph — it just never becomes a navigation destination.
+
+---
+
 ## What changed, 2026-09-19
 
 | Change | Why | Where |
 | --- | --- | --- |
+| Vocabulary documented as a prompt list | `--labels=scannet200` read as a model limit; it is a CSV regenerated from the YAML. Adding `pringles can` was a one-word change, 195 → 196 prompts | [scannet200.yaml](../../config/scene_graph/scannet200.yaml), `run_boxer.sh` |
+| Query names resolve through the dictionary | `scannet_class` knew `sofa` is `couch`; `match_score` did not, so nine everyday words found nothing | [instance.py](../../core/scene_graph/instance.py) |
+| A shared head noun alone is not a match | `pringles can` scored 0.333 against `trash can` — the same score as the asset name the matcher was written for — and sent every snack search to the bins | same |
+| Nothing taller than 1.8 m blocks | A door recorded open, detected as `mirror` (2.36 m), was stamped by its axis-aligned bounds and sealed the kitchen | `MAX_BLOCKER_HEIGHT` in [graph.py](../../core/scene_graph/graph.py) |
+| One folder per recording | `config/realrobot/map/<recording>/` | [recording.py](../../core/utils/recording.py) |
 | One definition of a blocker | The base's keep-out set was built three times from furniture alone, while `plan_overlay` also counted objects standing on the floor. The figures and the robot disagreed | `sg.blockers()` in [graph.py](../../core/scene_graph/graph.py); called by `actions._views`, `actions.make_graspable`, `explore.furniture_footprints`, `plan_overlay.blockers` |
 | Floor-standing objects now block at runtime | Bins, boxes and computer towers are static and the 240° laser has an unsensed rear sector, so the graph is the only thing that knows about them ahead of a plan. 50 → 61 shapes | same |
 | The target is excluded from its own keep-out | A 0.39 m bin grows to a 0.495 m keep-out against `PARK_DISTANCE` 0.45, so it ruled out every base pose that could reach it. Measured: 0 of 24 park poses survived, 8 with it excluded | `exclude=` on `sg.blockers` |

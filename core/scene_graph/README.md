@@ -139,6 +139,7 @@ python3 -m core.reasoner.query 'coffee mug' --graph config/realrobot/scene_graph
 
 - **Footprints:** navigation uses the footprint, not the bounds. Read it with `graph.footprint(scene.nodes[node_id])`.
 - **Keep-out shapes:** `graph.blockers(scene, exclude=...)` is the one definition of what the base can run into — every furniture footprint plus every object standing on the floor, keyed by node ID. Pass the target's ID in `exclude`, or its own box rules out every pose that can reach it. `person` never blocks (`graph.TRANSIENT`): the live laser sees people and clears them, a recording cannot. Nothing taller than `graph.MAX_BLOCKER_HEIGHT` (1.8 m) blocks either: a box that tall touching the floor is a door or a wall panel caught floor to ceiling, and since objects block by their axis-aligned bounds, a thin panel at an angle to the map axes would inflate into a metre-wide keep-out.
+- **Name matching:** `graph.find_objects(scene, wanted, near)` scores every object with `instance.match_score`, keeps only the best-scoring nodes and orders those by distance from `near`. A node carries both a `label` (its class, which decides its role) and a `name` (the exact prompt OWLv2 was given); both are scored, so an OWLv2 prompt of `dog bowl` stored as `label=bowl, name=dog bowl` is found by either word. Synonyms listed in [scannet200.yaml](../../config/scene_graph/scannet200.yaml) resolve to the same class and score 1.0, so `sofa` finds a `couch`. A multi-word query that shares only its head noun with a label that carries its own modifier scores 0: `pringles can` is not a `trash can`. Worked through in [docs/scene_graph_query.tex](../../docs/scene_graph_query.tex).
 - **Relations are guesses:** `on`, `in` and `near` are geometric estimates. They do not prove support, visibility or reach.
 - **IDs:** node IDs survive save/load but can change on rebuild.
 - **Updating an object:** `record_object(..., frame_id="map")` takes a box centre and dimensions. Pass `node_id` to update; leave it out to create. Labels alone never merge objects.
@@ -152,7 +153,7 @@ python3 -m core.reasoner.query 'coffee mug' --graph config/realrobot/scene_graph
 | [graph.py](graph.py) | Build, update, validate, save and load graphs; footprints and keep-out shapes |
 | [rooms.py](rooms.py) | Divide furniture into rooms on a Nav2 map, by distance along the floor |
 | [instance.py](instance.py) | Labelled source-frame points; label lookup |
-| [scannet200.yaml](../../config/scene_graph/scannet200.yaml) | Label dictionary: 198 classes by role, Gazebo and synonym aliases |
+| [scannet200.yaml](../../config/scene_graph/scannet200.yaml) | Label dictionary and OWLv2 prompt list: 199 classes by role, Gazebo and synonym aliases |
 | [gazebo.py](gazebo.py) | Read the world's initial collision geometry |
 | [relations.py](relations.py) | Estimate object–furniture relations |
 | [query.py](../reasoner/query.py) | Choose search locations |

@@ -25,6 +25,10 @@ BASE = "base_footprint"
 # Its tolerances can be tightened temporarily for precise parking.
 CONTROLLER = "/controller_server"
 GOAL_CHECKER = "general_goal_checker"
+# HSRC head joint limits. The pan range is asymmetric: about 100 deg right,
+# 220 deg left. _move_head clamps into these rather than refusing to aim, so a
+# target just outside still gets the closest look the joints allow.
+PAN_LIMITS, TILT_LIMITS = (-3.84, 1.75), (-1.57, 0.52)
 
 
 def _pose(x, y, yaw):
@@ -49,6 +53,10 @@ class Navigator(Node):
         # Create separate clients for checking paths and executing navigation goals.
         self.planner = ActionClient(self, ComputePathToPose, "compute_path_to_pose")
         self.driver = ActionClient(self, NavigateToPose, "navigate_to_pose")
+        # Kept for the life of the node, as pick.py keeps its clients: a fresh client
+        # per aim lost 3 of 8 head goals on the robot, one kept client 0 of 8.
+        self.head = ActionClient(self, FollowJointTrajectory,
+                                 "/head_trajectory_controller/follow_joint_trajectory")
         self.tf_buffer = Buffer()
         self.listener = TransformListener(self.tf_buffer, self)
 
@@ -116,9 +124,13 @@ class Navigator(Node):
             raise RuntimeError("Nav2 resume rejected")
         print("[READY] Nav2 resumed for search", flush=True)
 
-    def _run(self, client, goal, timeout):
+    def _run(self, client, goal, timeout, what="Nav2"):
+        """Send one action goal and wait for its result.
+
+        `what` names the action in the errors: this is shared by the Nav2 goals and
+        the head, and a head aim that failed read as a Nav2 fault twice."""
         if not client.wait_for_server(timeout_sec=10):
-            raise RuntimeError("Nav2 action server is unavailable")
+            raise RuntimeError(f"{what} action server is unavailable")
         # Send the goal and wait for the server to accept or reject it.
         sent = client.send_goal_async(goal)
         rclpy.spin_until_future_complete(self, sent, timeout_sec=10)
@@ -132,10 +144,10 @@ class Navigator(Node):
             # A delayed acceptance must not leave an untracked goal running.
             sent.add_done_callback(cancel_late)
             rclpy.spin_until_future_complete(self, sent, timeout_sec=10)
-            raise RuntimeError("Goal acceptance timed out; stop Nav2 before retrying")
+            raise RuntimeError(f"{what} goal acceptance timed out")
         handle = sent.result()
         if handle is None:
-            raise RuntimeError("Nav2 returned no goal acknowledgement")
+            raise RuntimeError(f"{what} returned no goal acknowledgement")
         if not handle.accepted:
             return None
         # Wait for completion; cancel the motion on timeout or interruption.
@@ -286,8 +298,6 @@ class Navigator(Node):
         distance = math.hypot(point[0] - pivot.x, point[1] - pivot.y)
         # Aim vertically from the camera height toward the target point.
         tilt = math.atan2(point[2] - pivot.z - 0.248, distance)
-        if not (-3.84 <= pan <= 1.75 and -1.57 <= tilt <= 0.52):
-            return False
         return self._move_head(pan, tilt)
 
     def look_home(self):
@@ -296,15 +306,20 @@ class Navigator(Node):
         return self._move_head(0.0, 0.0)
 
     def _move_head(self, pan, tilt):
+        pan = min(max(pan, PAN_LIMITS[0]), PAN_LIMITS[1])
+        tilt = min(max(tilt, TILT_LIMITS[0]), TILT_LIMITS[1])
         goal = FollowJointTrajectory.Goal()
         goal.trajectory.joint_names = ["head_pan_joint", "head_tilt_joint"]
         goal.trajectory.points = [JointTrajectoryPoint(
             positions=[pan, tilt], time_from_start=Duration(sec=5))]
-        client = ActionClient(self, FollowJointTrajectory,
-                              "/head_trajectory_controller/follow_joint_trajectory")
         try:
-            result = self._run(client, goal, 45)
+            result = self._run(self.head, goal, 45, "head trajectory")
             return (result is not None and result.status == GoalStatus.STATUS_SUCCEEDED
                     and result.result.error_code == 0)
-        finally:
-            client.destroy()
+        except RuntimeError as error:
+            # actions.search already handles "could not aim from this pose" and moves
+            # to the next one. The head only looks; nothing it does is unsafe to
+            # abandon, so a failed aim must not end the mission the way a base goal
+            # left running would.
+            print(f"[HEAD] {error}; treating as could not aim", flush=True)
+            return False

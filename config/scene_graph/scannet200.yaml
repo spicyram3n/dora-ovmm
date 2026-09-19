@@ -1,7 +1,13 @@
-# The scene graph's label dictionary: the 198 ScanNet200 classes, grouped by how
-# the graph uses them. Boxer prompts with them (docker/boxer/run_boxer.sh,
-# --labels=scannet200), and every Gazebo model becomes one of them, so a
-# simulated and a scanned room share one vocabulary.
+# The scene graph's label dictionary: 199 classes, grouped by how the graph uses
+# them. Boxer prompts OWLv2 with them (docker/boxer/run_boxer.sh regenerates
+# cache/scannet200_classes.csv from the three role sections on every run), and
+# every Gazebo model becomes one of them, so a simulated and a scanned room share
+# one vocabulary.
+#
+# This file IS the vocabulary. OWLv2 is open-vocabulary but must be prompted: it
+# cannot return a word that is not here. Add a name under `object:` and the map
+# can hold it; add the words you would say for it under `synonyms:` and a query
+# finds it. Synonyms are query-side only and need no rebuild.
 #
 #   furniture  stays put and holds things; search goes to it, objects relate to it
 #   object     anything else worth remembering, graspable or not
@@ -20,7 +26,11 @@ furniture: [
   mattress,
 ]
 
+# Specific objects we query by name. OWLv2 is prompted with this list, so a name
+# added here is a name the map can hold; keep them specific, because a generic
+# prompt outscores a specific one and the box lands on the wrong class.
 object: [
+  pringles can,
   pillow, picture, monitor, book, box, lamp, towel, clothes, tv, cushion, plant,
   keyboard, bag, backpack, toilet paper, printer, whiteboard, blanket, trash can,
   shoe, computer tower, bottle, bin, board, mirror, basket, fan, laptop, paper,
@@ -99,4 +109,6 @@ synonyms:
   stairs: [staircase]
   rail: [railing]
   stair rail: [banister]
+  pringles can: [pringles, chips can, crisps can, potato chips can]
+  water bottle: [drinking bottle, bottle of water]
   structure: [wall, floor, ground, roof, beam]

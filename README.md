@@ -154,9 +154,10 @@ This starts the sim, Nav2, IK and MoveIt, then runs the [behaviour tree](core/pi
 | --- | --- |
 | **Home arm** | Arm to the home pose, whatever pose it is in |
 | **Ready** | Waits for Nav2, head, IK, localization, RGB-D and SAM3 (180 s budget) |
+| **Home head** | Head to pan 0, tilt 0. Nothing else re-centres it, so a mission that aimed at one place would leave the camera there. |
 | **Find target** | Scene graph first, then DeepSeek's top-k. Drives to views; SAM3 looks. Views Nav2's costmap blocks are skipped; two failed drives move on to the next place. |
 | **Park** | Drives to an IK-certified pose within arm reach |
-| **Pause Nav2** | So MoveIt can move the base |
+| **Pause Nav2** | So MoveIt can move the base. Runs after **every** park, not only when the pick follows, so `--grasp false` leaves the base handed over. `map_server` and AMCL stay up. |
 | **Pick** (once) | GraspGenX grasps + MoveIt Task Constructor; checks the hand closed on something |
 | **Stow** (inside Pick) | Backs the palm straight out, then folds to the carry pose through move_group, with the octomap and the held object in the planning scene. Not a separate tree step: a raw joint command here would drag the load through the surface it was picked from. |
 
@@ -339,7 +340,7 @@ Run them from `/home/ws` in a sourced terminal.
 
 | Entry point | Run it to |
 | --- | --- |
-| `python3 -m core.pipeline.mission_tree --target pringles` | Run the mission on an already running stack (`--grasp false`, `--navigate-only true`) |
+| `HSR_REAL_ROBOT=1 python3 -m core.pipeline.mission_tree --target pringles` | Run the mission on an already running stack. `--grasp false` stops after the park; `--navigate-only true` skips SAM3 entirely and drives to an *observation* pose, not a graspable one |
 | `python3 -m core.pipeline.mission_tree --render` | Save a picture of the tree to `outputs/` (no ROS) |
 | `python3 -m core.scene_graph.build --transform ...` | Rebuild the scene graph |
 | `python3 -m core.grasping.pick "pringles can"` | Pick from where the robot stands |

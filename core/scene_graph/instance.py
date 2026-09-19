@@ -69,6 +69,19 @@ def role(label):
     return CLASSES.get(scannet_class(label), "object")
 
 
+def _exact_class(label):
+    """The class an exact name or a listed synonym refers to, or None.
+
+    Deliberately without scannet_class's last-word fallback: that would turn both
+    'water bottle' and 'spray bottle' into 'bottle' and match them to each other,
+    which is the head-noun collision the rule below exists to stop.
+    """
+    name = normalize(label)
+    if name in CLASSES:
+        return name
+    return ALIASES.get(name)
+
+
 def match_score(label, wanted):
     """Word overlap lets 'pringles can' match the asset label 'hsr_pringles'.
 
@@ -80,6 +93,11 @@ def match_score(label, wanted):
     same thing -- the graph stores ScanNet200 classes, so 'bottle' is what a
     'water bottle' is saved as -- and still matches.
     """
+    # The dictionary already knows sofa is couch and television is tv; ask it
+    # before falling back to counting words.
+    same = _exact_class(label)
+    if same is not None and same == _exact_class(wanted):
+        return 1.0
     query = normalize(wanted).split()
     label_words, query_words = set(normalize(label).split()), set(query)
     # Score the fraction of unique words shared by the label and query.
