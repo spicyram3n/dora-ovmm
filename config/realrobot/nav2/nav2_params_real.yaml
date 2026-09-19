@@ -389,7 +389,9 @@ local_costmap:
         enabled: True
         observation_sources: scan
         scan:
-          topic: /scan
+          # launch/realrobot/nav2_real.launch.py's scan_filter: /scan without the
+          # mixed-pixel returns that closed the kitchen doorway. AMCL keeps /scan.
+          topic: /scan_filtered
           max_obstacle_height: 2.0
           clearing: True
           marking: True
@@ -421,7 +423,9 @@ global_costmap:
         enabled: True
         observation_sources: scan
         scan:
-          topic: /scan
+          # launch/realrobot/nav2_real.launch.py's scan_filter: /scan without the
+          # mixed-pixel returns that closed the kitchen doorway. AMCL keeps /scan.
+          topic: /scan_filtered
           max_obstacle_height: 2.0
           clearing: True
           marking: True

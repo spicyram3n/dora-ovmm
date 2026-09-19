@@ -145,9 +145,9 @@ def sight_grid(stamped, resolution, origin):
                           resolution, origin)
 
 
-def stamped_map(image, resolution, origin, scene, destination):
+def stamped_map(image, resolution, origin, scene, destination, exclude=()):
     """`image` with every blocker filled in as occupied, saved as a map Nav2 can serve."""
-    stamped = stamp(image, resolution, origin, scene)
+    stamped = stamp(image, resolution, origin, scene, exclude)
     destination.parent.mkdir(parents=True, exist_ok=True)
     cv2.imwrite(str(destination.with_suffix(".pgm")), np.flipud(stamped))
     destination.with_suffix(".yaml").write_text(yaml.safe_dump({
@@ -157,9 +157,23 @@ def stamped_map(image, resolution, origin, scene, destination):
         "origin": [float(origin[0]), float(origin[1]), 0.0],
         "negate": 0,
         "occupied_thresh": 0.65,
-        "free_thresh": 0.25,
+        "free_thresh": 0.196,  # below 0.1961, where grey 205 sits: 0.25 loads unknown as free
     }, sort_keys=False))
     return destination.with_suffix(".yaml"), stamped
+
+
+def nav_map(image, resolution, origin, scene, destination):
+    """The map the real Nav2 serves: the laser map with the fixed furniture stamped in.
+
+    sg.blockers only filters the goal poses the mission picks. The path between them
+    is Nav2's, and on the laser map a table is four legs, so paths crossed furniture
+    boxes and the hand hit a desk twice (2026-09-19). Left out, because a static map
+    is never cleared by the laser: chairs, which get moved between the scan and the
+    run, and movable things on the floor, which are search targets whose collar would
+    forbid parking beside them (what sg.blockers' exclude= is for)."""
+    moves = [node for node, data in scene.nodes(data=True)
+             if data["movable"] or "chair" in data["label"]]
+    return stamped_map(image, resolution, origin, scene, destination, exclude=moves)[0]
 
 
 def navigable(image, resolution, clearance):
@@ -488,6 +502,8 @@ def main():
     query = parser.add_mutually_exclusive_group()
     query.add_argument("--target", help="object to look for, by label or instance name")
     query.add_argument("--furniture", help="furniture to drive to, by name, label or node ID")
+    parser.add_argument("--nav-map", action="store_true",
+                        help="write map_furniture.yaml beside the map, for the real Nav2 to serve")
     parser.add_argument("--survey", action="store_true",
                         help="draw the whole scene graph on the map and stop: no query, "
                              "no planning, no ROS")
@@ -513,8 +529,8 @@ def main():
     parser.add_argument("--full-map", action="store_true", help="draw all 50 x 28 m")
     parser.add_argument("--domain-id", type=int, default=DOMAIN)
     args = parser.parse_args()
-    if not (args.survey or args.target or args.furniture):
-        parser.error("one of --target, --furniture or --survey is required")
+    if not (args.survey or args.nav_map or args.target or args.furniture):
+        parser.error("one of --target, --furniture, --survey or --nav-map is required")
     # --graph and --map default independently, so overriding one and not the
     # other plans a new graph on an old map: every pose then lands on floor that
     # map never saw, and the run reports the target as unreachable rather than
@@ -533,6 +549,11 @@ def main():
     recording = name_from_map(args.map)
     scratch = ROOT / "outputs" / "realrobot" / recording / "nav"
     output = args.output or scratch / f"{name.replace(' ', '_')}.png"
+
+    if args.nav_map:
+        served = nav_map(image, resolution, origin, scene, args.map.with_name("map_furniture"))
+        print(f"[map] fixed furniture stamped into {served}")
+        return
 
     if args.survey:
         # Nothing is planned, so the stamped map would only be written and

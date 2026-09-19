@@ -38,6 +38,7 @@ MAP_YAML = (
     Path(__file__).resolve().parents[2] / "config" / "map" / "apartment_world_map.yaml"
 )
 COSTMAP_TOPIC = "/global_costmap/costmap"
+MAP_TOPIC = "/map"
 FREE, BLOCKED = (0, 100)
 INSCRIBED, UNKNOWN = (99, -1)
 
@@ -142,6 +143,12 @@ def costmap_grid(node, topic=COSTMAP_TOPIC, blocked_at=INSCRIBED, timeout=10.0):
         timeout,
     )
     cost = np.asarray(grid.data, dtype=np.int16)
+    # The costmap's obstacle layer turns unknown into free wherever a beam passes, so
+    # floor the saved map never saw can read as free: behind the lab's kitchen wall
+    # that was a 1.8 m^2 island no path reaches. What the map never saw stays unknown.
+    saved = latest_message(node, OccupancyGrid, MAP_TOPIC,
+                           f"no map on {MAP_TOPIC} within {timeout:.0f}s -- is nav2 up?", timeout)
+    cost = np.where(np.asarray(saved.data, dtype=np.int16) == UNKNOWN, UNKNOWN, cost)
     # Unknown stays UNKNOWN rather than folding into BLOCKED: it must not become
     # a candidate base position either way (standoff.free accepts only FREE), but
     # standoff.unobstructed needs to tell an unseen cell from a wall.

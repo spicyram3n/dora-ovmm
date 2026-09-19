@@ -32,6 +32,15 @@ MODEL_PATH = "/tmp/robot_description.urdf"
 PASSIVE_SPRING_JOINT_SUFFIX = "_spring_proximal_joint"
 PASSIVE_SPRING_RANGE = (-0.2, 1.2)
 
+# Upstream gives the virtual base joints +-10 m, measured from wherever the robot's
+# odometry started. The lab's kitchen is 16 m from the office it boots in: parked
+# there odom_x read -16.64, outside bounds, and every pick died at "pregrasp:
+# START_STATE_INVALID" (2026-09-19). 100 m is chosen, not measured: further than the
+# odometry frame gets in a building. It does not widen what the planner searches;
+# pick.py pins the base to within 0.1 m of where it is parked.
+BASE_TRAVEL_JOINTS = ("odom_x", "odom_y")
+BASE_TRAVEL_RANGE = (-100.0, 100.0)
+
 
 def ours(name):
     """One of the settings this project owns, named relative to config/.
@@ -107,11 +116,20 @@ def widen_passive_springs(root):
         limit.set("upper", str(PASSIVE_SPRING_RANGE[1]))
 
 
+def widen_base_travel(root):
+    for joint in root.findall("joint"):
+        limit = joint.find("limit")
+        if joint.get("name") in BASE_TRAVEL_JOINTS and limit is not None:
+            limit.set("lower", str(BASE_TRAVEL_RANGE[0]))
+            limit.set("upper", str(BASE_TRAVEL_RANGE[1]))
+
+
 def parse(description_package, description_file):
     """Return the planning URDF as a string, and rewrite MODEL_PATH."""
     root = ET.fromstring(vendor.parse(description_package, description_file))
     freeze_zero_travel_joints(root)
     widen_passive_springs(root)
+    widen_base_travel(root)
     ET.ElementTree(root).write(MODEL_PATH)
     return ET.tostring(root, encoding="unicode", method="xml")
 

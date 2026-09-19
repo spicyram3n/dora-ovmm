@@ -74,6 +74,9 @@ def main():
     rclpy.init()
     navigator = Navigator(use_sim_time=False)  # no /clock on the robot
     try:
+        # A mission ends by pausing Nav2 for the pick. Paused, the planner answers
+        # "no path" to everything and the costmaps stop updating, so a clear does nothing.
+        navigator.resume_navigation_if_paused()
         # Both of these say plainly which piece of the stack is missing.
         start = navigator.robot_xy()
         print(f"[robot] at ({start[0]:.2f}, {start[1]:.2f}), "

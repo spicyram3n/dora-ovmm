@@ -236,6 +236,9 @@ def run(argv=None):
     parser.add_argument("--mode", default="auto", choices=["auto", "pickup", "grasp"])
     parser.add_argument("--active-perception", default="false", choices=["true", "false"],
                         help="fuse the found target from next best views before parking (under test)")
+    parser.add_argument("--natural-language", default="false", choices=["true", "false"],
+                        help="--target is a request such as 'fetch me my spectacles'; DeepSeek "
+                             "names the object, and only that reaches the detector and the graph")
     parser.add_argument("--rerun", default="false", choices=["true", "false"],
                         help="open the Rerun viewer and stream the Explore step live; it is always saved as explore.rrd")
     parser.add_argument("--render", action="store_true", help="save a picture of the tree and exit")
@@ -252,6 +255,11 @@ def run(argv=None):
     # Validate the graph before waiting for any robot or model service.
     scene = sg.load(args.graph)
     sg.require_map(scene)
+    if args.natural_language == "true":
+        # Before anything reads the target: it is SAM3's prompt, the cache key and the
+        # label of the node a detection saves, and none of them should hold a sentence.
+        request, args.target = args.target, query.object_of(args.target)
+        print(f"[REQUEST] {request!r} -> {args.target!r}", flush=True)
     rclpy.init()
     # There is no /clock on the robot: a sim-time node never sees a fresh
     # map->base TF and every step fails on it. realrobot/live/goto.py does the same.

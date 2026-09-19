@@ -39,13 +39,14 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from core.utils.recording import Paths  # noqa: E402
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, GroupAction
+from launch.actions import DeclareLaunchArgument, ExecuteProcess, GroupAction
 from launch.conditions import IfCondition, UnlessCondition
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
 MAP = str(Paths().map)
 PARAMS = "/home/ws/config/realrobot/nav2/nav2_params_real.yaml"
+SCAN_FILTER = "/home/ws/config/realrobot/nav2/scan_filter.yaml"
 
 # The safety limiter's input, not the controller's output. Keeps
 # safety_velocity_limiter (obstacle slowdown, bumpers) and velocity_switcher
@@ -89,6 +90,18 @@ def generate_launch_description():
         condition=no_amcl, output="screen",
         parameters=[{"input_topic": "/initialpose", "output_topic": CORRECT_POSE,
                      "use_sim_time": False}])
+
+    # The robot boots on laser scan-matching odometry, which loses metres along a
+    # corridor; see use_wheel_odom.py. Every launch, because a restart of the robot's
+    # own stack silently puts it back.
+    wheel_odom = ExecuteProcess(
+        cmd=["python3", "/home/ws/realrobot/live/use_wheel_odom.py"], output="screen")
+
+    # Both costmaps read /scan_filtered; see scan_filter.yaml for why.
+    scan_filter = Node(
+        package="laser_filters", executable="scan_to_scan_filter_chain", name="scan_filter",
+        parameters=[SCAN_FILTER, {"use_sim_time": False}], output="screen",
+        remappings=[("scan", "/scan"), ("scan_filtered", "/scan_filtered")])
 
     map_server = Node(
         package="nav2_map_server",
@@ -153,6 +166,8 @@ def generate_launch_description():
     return LaunchDescription(
         args
         + [
+            wheel_odom,
+            scan_filter,
             map_server,
             amcl,
             initial_pose_relay,

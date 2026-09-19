@@ -54,11 +54,19 @@ def stamp_of(header):
 def load_tf(bag, slam_tf_bag, span):
     """A tf2 buffer with the bag's statics and head chain plus SLAM's map->odom.
 
-    `span` must cover the whole bag: the buffer forgets older transforms."""
+    `span` must cover the whole bag: the buffer forgets older transforms.
+
+    SLAM's map->odom corrects whichever odometry SLAM was fed, so the chain below
+    must use that same one. slam_replay.sh notes it beside tf_mapping; a map built
+    before the note existed was built on the bag's own odom->base_footprint."""
+    from tf_filter import wheel_odometry
+    note = Path(slam_tf_bag).parent / "odometry"
+    wheel = note.exists() and note.read_text().strip() == "wheel"
     buffer = tf2_py.BufferCore(rclpy.duration.Duration(seconds=span))
     counts = {"static": 0, "chain": 0, "map->odom": 0}
+    odometry = {}
     for topic, message in messages(bag, ["/tf", "/tf_static"]):
-        for t in message.transforms:
+        for t in (wheel_odometry(message.transforms, odometry) if wheel and topic == "/tf" else message.transforms):
             if topic == "/tf_static":
                 buffer.set_transform_static(t, "bag")
                 counts["static"] += 1

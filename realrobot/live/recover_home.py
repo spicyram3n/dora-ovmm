@@ -39,6 +39,7 @@ from std_srvs.srv import Empty
 from trajectory_msgs.msg import JointTrajectoryPoint
 
 sys.path.insert(0, "/home/ws")
+from core.grasping import pick  # noqa: E402
 from core.grasping.pick import (  # noqa: E402
     FINGERS, HAND, HEAD_LINKS, OPEN_HAND, TARGET, Pick, call, execute,
     joint_positions, move_hand, open_hand, run_action,
@@ -114,6 +115,10 @@ def main():
         "recover_home",
         parameter_overrides=[NodeParameter("use_sim_time", value=USE_SIM_TIME)])
     try:
+        if arguments.direct:
+            # pick's topic exists only while move_group's launch is up, and --direct
+            # is for when it is not. The robot's own topic has the hand and arm joints.
+            pick.JOINT_STATES = "/joint_states"
         if not arguments.keep_hand:
             if joint_positions(node)["hand_motor_joint"] < OPEN_HAND - .05:
                 print("[RECOVER] opening the hand", flush=True)

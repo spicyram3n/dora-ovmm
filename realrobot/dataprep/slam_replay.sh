@@ -20,11 +20,14 @@ MAP=$ROOT/config/realrobot/map/$RECORDING/map
 NODE=$(ros2 pkg prefix slam_toolbox)/lib/slam_toolbox/sync_slam_toolbox_node
 mkdir -p "$OUT" "$(dirname "$MAP")"
 rm -rf "$OUT/tf_mapping"
+# extract_rgbd.py pairs SLAM's map->odom with the bag's odometry; it has to be this one.
+[[ -n ${WHEEL_ODOM:-} ]] && echo wheel > "$OUT/odometry" || echo laser > "$OUT/odometry"
 
 # A node left over from an earlier run would publish a second map->odom.
 pkill -f "[s]lam_toolbox_node" && sleep 2 || true
 # The bag's /tf goes to /tf_bag; tf_filter forwards it minus the old map->odom.
-python3 "$ROOT/realrobot/dataprep/tf_filter.py" &
+# WHEEL_ODOM=1 feeds SLAM the bag's wheel odometry instead; see tf_filter.py.
+python3 "$ROOT/realrobot/dataprep/tf_filter.py" ${WHEEL_ODOM:+--wheel-odom} &
 # The node binary is started directly: killing a `ros2 run` wrapper leaves its child alive.
 "$NODE" --ros-args --params-file "$ROOT/realrobot/dataprep/slam_offline.yaml" > "$OUT/slam.log" 2>&1 &
 ros2 bag record /tf /tf_static -o "$OUT/tf_mapping" > /dev/null 2>&1 &
@@ -38,7 +41,9 @@ ros2 bag play "$BAG" --clock 200 --rate "$RATE" \
 echo "bag played in $(( $(date +%s) - START )) s at rate $RATE"
 
 # slam_toolbox keeps publishing the final map after the bag ends.
-ros2 run nav2_map_server map_saver_cli -f "$MAP" \
+# --free 0.196: the saver writes unknown as grey 205 (occupancy 0.1961), and its
+# default 0.25 makes map_server load every unknown cell back as free.
+ros2 run nav2_map_server map_saver_cli -f "$MAP" --free 0.196 \
   --ros-args -p map_subscribe_transient_local:=true
 ros2 service call /slam_toolbox/serialize_map slam_toolbox/srv/SerializePoseGraph \
   "{filename: '$OUT/posegraph'}"

@@ -91,6 +91,12 @@ gazebo:
   structure: [apartment_wall_collision, full_wall_55_900_2090_with_marker,
               wall_frame_55_55_2090, lawn_garden, room]
 
+# Compounds that are not a kind of their last word: a trash can is a bin, not a
+# can, so asking for a "can" must not find one. These match by their whole name
+# (or a synonym) only. Listed by hand; nothing in the words tells them apart from
+# 'pringles can', which IS a can.
+whole_name_only: [trash can]
+
 # Everyday words for the same classes, so custom prompts and older labels agree.
 synonyms:
   couch: [sofa]

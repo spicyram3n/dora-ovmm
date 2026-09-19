@@ -44,10 +44,13 @@ def _load(path):
             for name in names:
                 if aliases.setdefault(normalize(name), target) != target:
                     raise ValueError(f"{name!r} names two classes in {path}")
-    return classes, aliases
+    for name in data["whole_name_only"]:
+        if name not in classes:
+            raise ValueError(f"{name!r} in {path} is not a ScanNet200 class")
+    return classes, aliases, frozenset(data["whole_name_only"])
 
 
-CLASSES, ALIASES = _load(LABELS)
+CLASSES, ALIASES, WHOLE_NAME_ONLY = _load(LABELS)
 
 
 def scannet_class(label):
@@ -103,6 +106,9 @@ def match_score(label, wanted):
     # Score the fraction of unique words shared by the label and query.
     shared = label_words & query_words
     if not shared:
+        return 0.0
+    # 'trash can' is not a kind of can: it answers to its whole name, not a part.
+    if normalize(label) in WHOLE_NAME_ONLY and not label_words <= query_words:
         return 0.0
     if len(query_words) > 1 and shared == {query[-1]} and not label_words <= query_words:
         return 0.0

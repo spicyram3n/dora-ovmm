@@ -10,10 +10,20 @@
 #   export RECORDING=other_recording                     # ... and every other tool
 #   bash docker/boxer/build_scene_graph.sh --bag bags/lab_newdata lab_newdata
 #                                             # ... from the bag: data prep too
+#   WHEEL_ODOM=1 bash docker/boxer/build_scene_graph.sh \
+#       --bag bags/lab_newdata --rooms --nav-map lab_newdata
+#                                             # bag -> robot-ready map and graph
+#   ... --bag bags/lab_newdata --re-map ...   # rebuild the map, and all that hangs off it
+#   ... --bag bags/lab_newdata --re-extract . # keep the map, redo keyframes and onward
 #
-# Step 2 runs Docker, so this belongs on the GPU host. Steps 1 and 3 are plain
-# Python (numpy, scipy, networkx, yaml); if the host lacks them the script stops
-# before the long run and prints the command to finish in the dev container.
+# Run it on the GPU host: step 2 runs Docker, which the dev container has not got.
+# Everything else needs what only the dev container has (ROS, OpenCV, networkx),
+# so those steps are run inside it with `docker exec`. The repo is one bind mount
+# seen by both, so the files are shared. The container is found by the label VS
+# Code gives it; set DEV_CONTAINER=<name or id> to name it yourself.
+#
+# Nothing here stops or removes a container or an image. Boxer is `docker run
+# --rm`, so its container goes when it exits; its image stays, being a long build.
 #
 # Safe to rerun: step 1 is skipped once the frames are linked, and step 2
 # overwrites its own CSVs. Only --rooms asks DeepSeek anything (it needs
@@ -36,6 +46,9 @@ video=1
 only=
 reprepare=0
 bag=
+nav_map=0
+rate=1          # /scan is 40 Hz; rate 2 feeds slam_toolbox 80 Hz and it drops scans
+redo=()
 
 die() { echo "error: $*" >&2; exit 1; }
 step() { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
@@ -52,7 +65,13 @@ while [[ $# -gt 0 ]]; do
         --fuse-only) only=fuse; shift ;;
         --graph-only) only=graph; shift ;;
         --re-prepare) reprepare=1; shift ;;
-        -h|--help) sed -n '2,20p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        --nav-map) nav_map=1; shift ;;
+        --rate) rate=$2; shift 2 ;;
+        # Keyframe poses come from the map's SLAM run, and Boxer's frames from the
+        # keyframes: redoing one without what hangs off it leaves stale poses behind.
+        --re-map) redo=(--re-map --re-extract); reprepare=1; shift ;;
+        --re-extract) redo=(--re-extract); reprepare=1; shift ;;
+        -h|--help) sed -n '2,29p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
         -*) die "unknown option $1" ;;
         *) recording=$1; shift ;;
     esac
@@ -68,22 +87,58 @@ graph=config/realrobot/scene_graph/$recording.json
 
 # --- preflight, before anything that takes half an hour ----------------------
 
-# Step 3 imports core/, so check its dependencies now rather than after the run.
-graph_deps=$(python3 - <<'PY'
+# The steps around Boxer need ROS (data prep), OpenCV (the nav map) and numpy,
+# scipy, networkx, yaml (the graph). A GPU host usually has none of them.
+missing=$(python3 - <<'PY' 2>/dev/null || echo python3
 import importlib.util
-print(",".join(m for m in ("numpy", "scipy", "networkx", "yaml")
+print(",".join(m for m in ("numpy", "scipy", "networkx", "yaml", "cv2")
                 if not importlib.util.find_spec(m)))
 PY
-) || die "no working python3 on PATH"
+)
+[[ -e /opt/ros ]] || missing=${missing:+$missing,}ros
+
+# Where those steps run: here if this machine can, else in the dev container.
+container=${DEV_CONTAINER:-}
+if [[ -z $container && -n $missing ]]; then
+    command -v docker >/dev/null || die "this machine lacks $missing and has no docker to reach the dev container"
+    container=$(docker ps -q --filter "label=devcontainer.local_folder=$root" | head -n 1)
+    [[ -n $container ]] || die "this machine lacks $missing and no dev container for $root is running; open the repo in VS Code, or set DEV_CONTAINER=<name>"
+fi
+[[ -n $container ]] && echo "ROS and Python steps run in the dev container: $container"
+
+# dev <command...>: one step, run from the repo root with ROS sourced. The workspace
+# overlay too: core/ imports Toyota's tmc_* messages, which live in ros2_ws, and a
+# `docker exec` shell starts with neither.
+ros_setup="source /opt/ros/humble/setup.bash && source ros2_ws/install/setup.bash"
+dev() {
+    local line; line=$(printf '%q ' "$@")
+    if [[ -z $container ]]; then
+        bash -c "$ros_setup && $line"
+    else
+        docker exec -u hsr -w /home/ws -e RECORDING="$recording" -e WHEEL_ODOM="${WHEEL_ODOM:-}" \
+            -e DEEPSEEK_API_KEY="${DEEPSEEK_API_KEY:-}" "$container" \
+            bash -c "$ros_setup && $line"
+    fi
+}
 
 # --- step 0: bag -> map + keyframes, when asked and not already done --------
 
-# Data prep is a separate script because it needs ROS and not the GPU, which is
-# the other way round from step 2. --bag runs it here so one command covers a
-# new recording end to end on a host that has both.
-if [[ -n $bag && $only == "" && ! -d $src/poses ]]; then
+# Data prep needs ROS and not the GPU, the other way round from step 2.
+[[ ${#redo[@]} -gt 0 && -z $bag ]] && die "--re-map and --re-extract read the bag again: add --bag <path>"
+if [[ -n $bag && $only == "" ]] && [[ ${#redo[@]} -gt 0 || ! -d $src/poses ]]; then
     step "Step 0: data prep for $recording from $bag"
-    RECORDING=$recording bash realrobot/dataprep/prepare.sh --bag "$bag" "$recording"
+    dev bash realrobot/dataprep/prepare.sh --bag "$bag" --rate "$rate" "${redo[@]}" "$recording"
+    # The runbook's gate, before any GPU time. It reports; both lab recordings sit
+    # just under its 80% (75% and 78%), so failing on it would refuse every build.
+    step "Gate: keyframe cloud against the map (latest_readme.md section 4 wants >= 80% within 10 cm)"
+    figures=realrobot/dataprep/figures_$recording
+    dev python3 realrobot/dataprep/visualize.py --scene "$src" \
+        --map "config/realrobot/map/$recording/map.yaml" \
+        --slam-tf "outputs/realrobot/$recording/slam/tf_mapping" \
+        --bag "$bag" --figures "$figures" >/dev/null
+    dev python3 -c 'import json, sys
+a = json.load(open(sys.argv[1]))["laser_height_alignment"]
+print("    %.1f%% of the cloud within 10 cm of the map walls, median %.1f cm" % (a["within_10cm"] * 100, a["median_m"] * 100))' "$figures/checks.json"
 fi
 
 if [[ $only != graph ]]; then
@@ -91,13 +146,6 @@ if [[ $only != graph ]]; then
     command -v docker >/dev/null || die "step 2 needs Docker; run this on the GPU host"
     ls docker/boxer/ckpts/*.ckpt >/dev/null 2>&1 \
         || die "no weights in docker/boxer/ckpts (run: bash docker/boxer/run_boxer.sh --download-ckpts)"
-fi
-if [[ $only == graph && -n $graph_deps ]]; then
-    die "step 3 needs $graph_deps; run it in the dev container"
-fi
-# Step 1 writes the registration with numpy; step 3 can wait for the container.
-if [[ $only == "" && $graph_deps == *numpy* && ! -d $seq/frames ]]; then
-    die "step 1 needs numpy; prepare the sequence in the dev container first"
 fi
 
 # --- step 1: keyframes -> Boxer layout ---------------------------------------
@@ -116,7 +164,7 @@ if [[ $only == "" ]]; then
         step "Step 1 already done: $have keyframes linked at $seq"
     else
         step "Step 1: keyframes -> Boxer layout"
-        python3 realrobot/dataprep/make_boxer_scene.py \
+        dev python3 realrobot/dataprep/make_boxer_scene.py \
             --source "$src" --output "$seq" \
             --registration "$registration" --stride "$stride"
     fi
@@ -171,15 +219,14 @@ graph_cmd=(python3 -m docker.boxer.to_scene_graph
 # asked only to name each one.
 [[ $rooms == 1 ]] && graph_cmd+=(--rooms --map "config/realrobot/map/$recording/map.yaml")
 
-if [[ -n $graph_deps ]]; then
-    step "Step 3 needs $graph_deps, which this host has not got"
-    echo "    Boxes are ready. Finish in the dev container, from the repo root:"
-    printf '      %s\n' "${graph_cmd[*]}"
-    exit 0
-fi
-
 step "Step 3: boxes -> scene graph"
-"${graph_cmd[@]}"
+dev "${graph_cmd[@]}"
+
+if [[ $nav_map == 1 ]]; then
+    step "Step 4: the map Nav2 serves, with the fixed furniture stamped in"
+    dev python3 realrobot/offline/plan_overlay.py --nav-map \
+        --graph "$graph" --map "config/realrobot/map/$recording/map.yaml"
+fi
 
 cat <<EOF
 

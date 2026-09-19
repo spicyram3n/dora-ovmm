@@ -1,0 +1,26 @@
+# Removes mixed-pixel ("veiling") returns from /scan before the costmaps see it.
+# A beam that straddles an edge reports a range between the near and the far
+# surface: a point in mid-air. At the lab's kitchen doorway one such beam landed
+# inside the opening on every scan; marked lethal, its collar closed the doorway
+# and no path to the kitchen existed (2026-09-19).
+#
+# laser_filters' own ScanShadowsFilter, with its example's numbers changed on
+# measurements taken on the robot, facing that doorway:
+#   neighbors 1 (example: 20). The filter never deletes the flagged beam, only
+#     farther beams within `neighbors` of it, so 0 removes nothing at all; 20 would
+#     blind the costmap for 5 degrees either side of every chair leg.
+#   5/175 degrees (example: 10/170). Both remove the doorway ghost in 100% of scans;
+#     10/170 also drops 8.9% of all beams (walls seen at a grazing angle), 5/175
+#     drops 4.7%. 3/177 let the ghost through in 3% of scans.
+# The cost: the edge beams of thin objects are mixed pixels too, so a 4 cm leg at
+# 3 m keeps one or two of its three beams. It fills in as the base gets closer.
+scan_filter:
+  ros__parameters:
+    filter1:
+      name: shadows
+      type: laser_filters/ScanShadowsFilter
+      params:
+        min_angle: 5.0
+        max_angle: 175.0
+        neighbors: 1
+        window: 1

@@ -9,6 +9,7 @@ from trajectory_msgs.msg import JointTrajectoryPoint
 from builtin_interfaces.msg import Duration
 from geometry_msgs.msg import PoseStamped
 from nav2_msgs.action import ComputePathToPose, NavigateToPose
+from nav2_msgs.srv import ClearEntireCostmap
 from rcl_interfaces.msg import Parameter as ParameterMsg, ParameterType
 from rcl_interfaces.srv import SetParameters
 from rclpy.action import ActionClient
@@ -219,6 +220,16 @@ class Navigator(Node):
         )
 
     def reachable(self, x, y, yaw):
+        if self._has_path(x, y, yaw):
+            return True
+        # As Nav2's own tree does when planning fails: marks the laser left behind
+        # outlive what made them, and enough of them close a doorway for good.
+        print("[NAV] no path; clearing the global costmap and planning once more", flush=True)
+        self._lifecycle_call(ClearEntireCostmap, "/global_costmap/clear_entirely_global_costmap",
+                             ClearEntireCostmap.Request())
+        return self._has_path(x, y, yaw)
+
+    def _has_path(self, x, y, yaw):
         goal = ComputePathToPose.Goal()
         goal.goal = _pose(x, y, yaw)
         goal.goal.header.stamp = self.get_clock().now().to_msg()
