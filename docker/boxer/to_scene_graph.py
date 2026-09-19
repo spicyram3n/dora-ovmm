@@ -68,6 +68,15 @@ def main():
     parser.add_argument("--transform", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--min-confidence", type=float, default=0.0)
+    parser.add_argument("--rooms", action="store_true",
+                        help="divide the furniture into rooms and name them")
+    parser.add_argument("--map", type=Path,
+                        help="Nav2 map yaml; --rooms then divides the furniture on the"
+                             " floor plan and asks DeepSeek only for the names")
+    parser.add_argument("--room-spacing", type=float, default=None,
+                        help="floor metres at which two pieces stop being one room")
+    parser.add_argument("--room-sweep", action="store_true",
+                        help="print rooms found against --room-spacing, and stop")
     args = parser.parse_args()
     registration = json.loads(args.transform.read_text())
     scene = sg.build(
@@ -75,6 +84,46 @@ def main():
         source_frame=registration["source_frame"],
         map_from_source=registration["map_from_source"],
     )
+    # Divide and name the rooms before saving: query.py hands them to the
+    # reasoner as the coarse location, and objects inherit their furniture's.
+    if args.rooms or args.room_sweep:
+        from core.reasoner import deepseek
+        from core.reasoner.deepseek import get_client
+        from core.scene_graph import rooms
+        from core.utils.occupancy import read_map
+        from core.utils.recording import name_from_map
+
+        if args.room_sweep and not args.map:
+            raise SystemExit("--room-sweep needs --map")
+        if args.map:
+            image, resolution, origin = read_map(args.map)
+            if args.room_sweep:
+                print("rooms found against --room-spacing on"
+                      f" {name_from_map(args.map)},"
+                      " widest run of one count first:")
+                for count, low, high in rooms.sweep(scene, image, resolution, origin)[:8]:
+                    print(f"  {count:3d} rooms   {low:5.1f} .. {high:5.1f} m")
+                return
+            spacing = args.room_spacing or rooms.SPACING
+            clusters = rooms.partition(scene, image, resolution, origin, spacing)
+            print(f"{len(set(clusters.values()))} rooms on"
+                  f" {name_from_map(args.map)}"
+                  f" at --room-spacing {spacing} m")
+            if deepseek.have_key():
+                assignment = deepseek.name(scene, clusters, get_client())
+            else:
+                # Dividing the floor needs no model; only the words do. Number
+                # them so the division is still usable without a key.
+                print("no DEEPSEEK_API_KEY, so the rooms are numbered, not named")
+                assignment = {node: f"room {cluster + 1}"
+                              for node, cluster in clusters.items()}
+                sg.set_rooms(scene, assignment)
+        else:
+            # No map: the reasoner has to guess the walls from labels alone.
+            print("no --map, so the room division is guessed from labels; expect"
+                  " it to split or merge rooms the walls do not")
+            assignment = deepseek.assign(scene, get_client())
+        print(f"rooms: {sorted(set(assignment.values()))}")
     args.output.parent.mkdir(parents=True, exist_ok=True)
     sg.save(scene, args.output)
     print(f"{len(sg.furniture(scene))} furniture, {len(sg.objects(scene))} objects"

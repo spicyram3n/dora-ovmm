@@ -16,7 +16,6 @@ from ament_index_python.packages import get_package_share_directory
 MOVEIT_CONFIG = get_package_share_directory("hsrb_moveit_config")
 REPOSITORY = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CONFIG_DIR = os.path.join(REPOSITORY, "config")
-RVIZ_DIR = os.path.join(REPOSITORY, "config", "rviz")
 
 sys.path.append(os.path.join(MOVEIT_CONFIG, "launch"))
 import robot_description as vendor  # noqa: E402

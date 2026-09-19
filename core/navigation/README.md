@@ -75,10 +75,18 @@ topic is already visible here. Vision transport RX carries only RGB-D; `/scan`,
 ros2 launch /home/ws/launch/realrobot/nav2_real.launch.py
 ```
 
-Starts map_server on `config/realrobot/map/lab_20260811.yaml`, the four Nav2
+If Toyota's `navigation.py` is stopped, add
+`localization:=true cmd_vel_topic:=/omni_base_controller/cmd_vel`: AMCL then
+owns `map->odom`, and Nav2 drives the wheels directly because
+`safety_velocity_limiter` and `velocity_switcher` stopped with that launch and
+left `/base_velocity` with no subscriber. Details and the safety cost:
+[realrobot/realrobot_nav_setup.md](../../realrobot/realrobot_nav_setup.md).
+
+Starts map_server on `config/realrobot/map/lab_20260811/map.yaml`, the four Nav2
 servers with [config/realrobot/nav2/nav2_params_real.yaml](../../config/realrobot/nav2/nav2_params_real.yaml),
-and an `/initialpose` relay. **No AMCL:** the robot's `laser_2d_localizer` and
-`pose_integrator` already publish `map->odom` at 100 Hz, and the saved map is in
+and an `/initialpose` relay. **No AMCL:** the robot already publishes
+`map->odom` at 100 Hz -- from `pose_integrator`, not from `laser_2d_localizer`,
+which only reports a pose and a score -- and the saved map is in
 that same frame -- zero shift against the robot's live `/static_obstacle_ros_map`,
 91% of its walls within 10 cm. A second `map->odom` publisher would fight it.
 Use `localization:=true` only with the robot's own localization stopped.
@@ -187,7 +195,7 @@ the robot and the goal: a person in the wrong place is enough to abort it.
    python3 -m core.pipeline.mission_tree --target laptop --graph config/realrobot/scene_graph/lab_20260811.json
    ```
 
-   The graph was built in `config/realrobot/map/lab_20260811.yaml`, so Nav2 must
+   The graph was built in `config/realrobot/map/lab_20260811/map.yaml`, so Nav2 must
    be localized in that map.
 
 - **Run one Nav2 and no more.** A second stack duplicates every node name, and
@@ -256,12 +264,18 @@ python3 visualization/viewpoints.py 'pringles' --output outputs/viewpoints.png
 | --- | --- |
 | Green numbered arrows | Candidate poses, in visiting order |
 | Title's "views needed" | Only that many are driven to; later numbers are fallbacks |
-| Circles (right panel) | The base radius the furniture filter uses |
-| Red crosses | Poses dropped for hitting furniture |
+| Circles (right panel) | The base radius the keep-out filter uses |
+| Red crosses | Poses dropped for hitting a keep-out shape |
 | Dotted lines | Where each view looks |
 | Purple arrows (left panel) | IK reach probes at the object |
 
 Warning: the filter checks the **base footprint only**. A kept pose can still look through other furniture, which shows up in the shelf case.
+
+The shapes it checks are `graph.blockers(scene, exclude=...)`: every furniture footprint **plus every object standing on the floor** (bins, boxes, computer towers), each grown by `ROBOT_RADIUS`. Three exceptions, all deliberate:
+
+- **The target is excluded.** A 0.39 m bin grows to a 0.495 m keep-out against `PARK_DISTANCE` 0.45, so left in, its own box rules out every base pose that could reach it.
+- **`person` never blocks.** A person's box spans the 0.19 m scan height, so Nav2's obstacle layer marks them live and clears them when they leave; a person recorded months ago would instead be a keep-out nothing can clear.
+- **Nothing taller than `MAX_BLOCKER_HEIGHT` (1.8 m) blocks.** A box that touches the floor and runs that high is a door leaf, a mirror or a wall-mounted whiteboard caught floor to ceiling, not something standing on the floor. It matters because an object blocks by its *axis-aligned* bounds: a 5 cm panel at 40° to the map axes inflates into a square a metre on a side. On `lab_20260919` one such box — a door recorded open, labelled `mirror` — was the single shape severing the kitchen from the rest of the map. The tallest real floor-standing object measured across both recordings is a 1.17 m computer tower.
 
 ### How search decides
 

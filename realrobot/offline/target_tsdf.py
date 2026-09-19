@@ -101,7 +101,8 @@ def render(scene, reference, bbox, origin, length, path):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--keyframes", type=Path, default="outputs/realrobot/lab_20260811/keyframes")
+    from core.utils.recording import Paths
+    parser.add_argument("--keyframes", type=Path, default=Paths().keyframes)
     parser.add_argument("--frames", default="457-468", help="e.g. 457-468 or 457,460,468")
     parser.add_argument("--prompt", default="printer")
     parser.add_argument("--conf", type=float, default=0.3)

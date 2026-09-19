@@ -54,12 +54,10 @@ from rclpy.action import ActionClient
 from rclpy.serialization import serialize_message
 from rclpy.time import Time
 from rclpy.parameter import Parameter as NodeParameter
-from rclpy.wait_for_message import wait_for_message
 from scipy.spatial.transform import Rotation
 from scipy.optimize import least_squares
 from scipy.spatial import ConvexHull, cKDTree
-from scipy.ndimage import distance_transform_edt
-from sensor_msgs.msg import JointState
+from sensor_msgs.msg import JointState, MultiDOFJointState
 from shape_msgs.msg import SolidPrimitive
 from std_msgs.msg import Int8
 from std_srvs.srv import Empty, Trigger
@@ -172,9 +170,11 @@ def cylinder(points):
         return None
     radius = np.sqrt(radius2)
     centre = origin+fit[:2]
+    # Allow depth noise proportional to object size, retaining the small-object
+    # tolerance. Resolved rectangular tops take priority in contact_candidates.
     # Reject poor fits, implausible sizes, or too little visible curvature.
     residual = np.sqrt(np.mean((np.linalg.norm(side-centre, axis=1)-radius)**2))
-    if not .008 <= radius <= .15 or residual > .0015:
+    if not .008 <= radius <= .15 or residual > max(.0015, .10*radius):
         return None
     # Require enough of the cylinder arc to estimate its hidden centre.
     if np.linalg.norm(((side-centre)/radius).mean(0)) > .95:
@@ -313,7 +313,8 @@ def contact_candidates(points, palms, camera_position):
     results, widths = [], []
     envelope = points
     kind = 'observed front section'
-    if cyl is not None:
+    # Two visible box faces can also fit a noisy circle; prefer a resolved top.
+    if cyl is not None and rect is None:
         centre, radius, bottom, top = cyl
         width = 2*radius
         pad = pad_for_width(width)
@@ -825,6 +826,15 @@ def compact(solution):
         # Update the remembered map when a stage supplies new data or replaces the full scene.
         elif scene.world.octomap.octomap.data or not scene.is_diff:
             previous = encoded
+        # Keep the stage's attached objects but drop the joint positions it
+        # captured at planning time. A stage that replaces the whole scene
+        # carries a full robot state, and applying that mid-execution pins the
+        # scene to where the robot was planned to be rather than where it is.
+        # After an interrupted run the arm then starts a motion from a pose it
+        # never reached, which is the jerk on the next attempt (2026-09-18).
+        scene.robot_state.is_diff = True
+        scene.robot_state.joint_state = JointState()
+        scene.robot_state.multi_dof_joint_state = MultiDOFJointState()
     return solution
 
 # Contact closure
@@ -941,20 +951,33 @@ def foreground_occlusion(depth, mask, support_mask=None):
     interior=cv2.erode(mask.astype(np.uint8),np.ones((5,5),np.uint8)).astype(bool)
     if not interior.any():
         interior=mask
-    # Find the nearest interior target depth for pixels around the silhouette.
-    _, nearest=distance_transform_edt(~interior,return_indices=True)
-    target_depth=depth[nearest[0],nearest[1]]
-    valid=outer&np.isfinite(depth)&(depth>0)&np.isfinite(target_depth)&(target_depth>0)
+    inside=depth[interior&np.isfinite(depth)&(depth>0)]
+    if not inside.size:
+        return 0.
+    # Measure against the target's own near surface, not against the nearest
+    # interior pixel of each neighbour. The head looks down, so the top face of
+    # an upright object is nearer than the body just inside the silhouette, and
+    # the per-neighbour comparison read the can's own lid as a blocker: 0.20 on
+    # a table holding nothing but the can (2026-09-17). A real blocker stands in
+    # front of the whole object, which this still catches.
+    near=float(np.percentile(inside,2))
+    valid=outer&np.isfinite(depth)&(depth>0)
     # Exclude the supporting surface from the foreground-blocker test.
     if support_mask is not None:
         valid &= ~support_mask
     if not valid.any():
         return 0.
-    return float(np.mean(depth[valid] < target_depth[valid]-.03))
+    return float(np.mean(depth[valid] < near-.03))
 
 
 def support_pixels(depth,k,transform,target):
     """Identify a broad horizontal supporting surface from measured depth."""
+    return support_plane(depth,k,transform,target)[0]
+
+
+def support_plane(depth,k,transform,target):
+    """Return the pixel mask and odom height of a broad horizontal supporting
+    surface beneath the target, or an empty mask and None when none is seen."""
     v,u=np.indices(depth.shape)
     x=(u-k[0,2])*depth/k[0,0];y=(v-k[1,2])*depth/k[1,1]
     xyz=np.stack([x,y,depth],axis=-1)@transform[:3,:3].T+transform[:3,3]
@@ -965,7 +988,7 @@ def support_pixels(depth,k,transform,target):
     valid &= (sample[:,2]>=bottom-.25)&(sample[:,2]<=bottom+.015)
     sample=sample[valid]
     if len(sample)<100:
-        return np.zeros(depth.shape,bool)
+        return np.zeros(depth.shape,bool), None
     # Group nearby points by height to find a broad support surface.
     bins=np.floor(sample[:,2]/.01).astype(int)
     values=np.unique(bins)
@@ -974,24 +997,64 @@ def support_pixels(depth,k,transform,target):
         plane=sample[bins==value]
         if len(plane)<100 or np.max(np.ptp(plane[:,:2],axis=0))<.30:
             continue
-        height=np.median(plane[:,2])
-        return np.abs(xyz[:,:,2]-height)<.015
-    return np.zeros(depth.shape,bool)
+        height=float(np.median(plane[:,2]))
+        return np.abs(xyz[:,:,2]-height)<.015, height
+    return np.zeros(depth.shape,bool), None
+
+
+_VIEW_COUNT = [0]
+
+
+def save_view(prompt, rgb, depth, k, odom_from_camera, mask, score, **extra):
+    """Keep every camera view of a run under HSR_GRASP_DIAGNOSTICS/views.
+
+    The 01:49 incident bundle held only the fitted envelope, so neither the
+    clipped view nor the rejected scan views could be examined afterwards."""
+    index = _VIEW_COUNT[0]
+    _VIEW_COUNT[0] += 1
+    root = os.environ.get('HSR_GRASP_DIAGNOSTICS')
+    if not root:
+        return index
+    folder = Path(root)/'views'
+    folder.mkdir(parents=True, exist_ok=True)
+    cv2.imwrite(str(folder/f'{index:02d}.jpg'), rgb)
+    np.savez_compressed(folder/f'{index:02d}.npz', depth=np.asarray(depth, np.float32),
+                        mask=np.asarray(mask, bool), k=np.asarray(k, float),
+                        odom_from_camera=np.asarray(odom_from_camera, float),
+                        score=float(score), prompt=str(prompt), **extra)
+    return index
 
 
 def observe(prompt):
     rgb, depth, k, odom_from_camera = grab_rgbd()
-    mask, score = sam3_client.detect(rgb, prompt)
+    try:
+        mask, score = sam3_client.detect(rgb, prompt)
+    except sam3_client.ObjectNotFound:
+        # Keep the frame anyway: an empty detection usually means the head is
+        # not looking at the target, and the image shows where it is looking.
+        index=save_view(prompt,rgb,depth,k,odom_from_camera,np.zeros(depth.shape,bool),0.)
+        print(f'[VIEW {index}] {prompt}: SAM3 found nothing; frame saved', flush=True)
+        raise
+    v,u=np.nonzero(mask)
+    # Report depth coverage and range on the mask before any rejection, so a
+    # view lost to missing depth still says what the camera saw.
+    valid=np.isfinite(depth)&(depth>0)&mask
+    coverage=float(valid.sum()/max(int(mask.sum()),1))
+    median_range=float(np.median(depth[valid])) if valid.any() else float('nan')
+    index=save_view(prompt,rgb,depth,k,odom_from_camera,mask,score,
+                    coverage=coverage,median_range=median_range)
+    print(f'[VIEW {index}] {prompt}: SAM3 {score:.2f}, mask rows {v.min()}-{v.max()} '
+          f'cols {u.min()}-{u.max()}, depth on {coverage:.0%} of mask, '
+          f'median range {median_range:.2f} m', flush=True)
     points = pointcloud.deproject(depth, k, pointcloud.object_depth_mask(depth, mask))
     if len(points) < 100:
         raise RuntimeError(f"only {len(points)} depth points on the {prompt}")
     _, image_point, area = feature(depth, k, mask)
-    v,u=np.nonzero(mask)
     clipped=bool(u.min()<3 or v.min()<3 or u.max()>=mask.shape[1]-3 or v.max()>=mask.shape[0]-3)
     # Put the target points and image feature into odom coordinates.
     world_points=pointcloud.transform_points(odom_from_camera, points)
-    support=support_pixels(depth,k,odom_from_camera,world_points)
-    return dict(points=world_points,
+    support,support_height=support_plane(depth,k,odom_from_camera,world_points)
+    return dict(points=world_points, support=support_height, view=index,
                 camera=odom_from_camera[:3, 3], score=score, area=area,
                 clipped=clipped, occlusion=foreground_occlusion(depth,mask,support),
                 feature=odom_from_camera[:3, :3] @ image_point + odom_from_camera[:3, 3])
@@ -1003,23 +1066,48 @@ def merge_target_views(views):
     for view in views[1:]:
         points = view['points']
         # Require overlap in both directions before merging another target view.
-        forward = cKDTree(merged).query(points)[0]
-        reverse = cKDTree(points).query(merged)[0]
-        if min(np.mean(forward < .012), np.mean(reverse < .012)) < .15:
-            raise RuntimeError('Head views do not overlap on the same static target')
+        forward = float(np.mean(cKDTree(merged).query(points)[0] < .012))
+        reverse = float(np.mean(cKDTree(points).query(merged)[0] < .012))
+        if min(forward, reverse) < .15:
+            raise RuntimeError('Head views do not overlap on the same static target '
+                               f'({forward:.0%} of the new view and {reverse:.0%} of the '
+                               f'merged views lie within 12 mm of the other)')
         merged = np.vstack([merged, points])
     # Equal spatial weighting prevents a close/dense view dominating the fit.
     _, indices = np.unique(np.floor(merged/.002).astype(np.int64), axis=0, return_index=True)
     result = dict(views[0])
     result['points'] = merged[indices]
+    # A clipped view may miss the tabletop; keep the highest support any view found.
+    heights = [view.get('support') for view in views if view.get('support') is not None]
+    result['support'] = max(heights) if heights else None
     return result
 
 
-def observe_geometry(node, prompt):
-    """Recover complementary target surfaces with a bounded head-only scan."""
+def observe_geometry(node, prompt, poses=None):
+    """Recover complementary target surfaces with a bounded head-only scan.
+
+    `poses` is the run's long-lived RobotTransforms. A listener created here
+    would start with an empty buffer, and on this link a fresh endpoint can
+    take longer than its 3 s lookup deadline to discover the transform
+    publishers (README §3)."""
+    initial = observe(prompt)
+    if initial['clipped']:
+        # A level/reset head may see only the top of a tabletop object. Centre
+        # that detection before choosing scan angles, then acquire fresh depth.
+        centre = (initial['points'].min(0)+initial['points'].max(0))/2
+        print('[GEOMETRY] initial target clipped; re-aiming head before scan', flush=True)
+        reframe_target(node, poses if poses is not None else RobotTransforms(node), centre)
+        initial = observe(prompt)
     joints = joint_positions(node)
     pan, tilt = joints['head_pan_joint'], joints['head_tilt_joint']
-    views = [observe(prompt)]
+    def describe(view, label):
+        points = view['points']
+        print(f"[GEOMETRY] {label}: view {view.get('view', '?')}, {len(points)} points, "
+              f"z {points[:, 2].min():.3f}-{points[:, 2].max():.3f} m, "
+              f"extent {np.round(np.ptp(points, axis=0)*1000, 1)} mm, "
+              f"clipped {view.get('clipped')}, support {view.get('support')}", flush=True)
+    describe(initial, f'initial view at pan {pan:.2f} tilt {tilt:.2f}')
+    views = [initial]
     def aim(value):
         aim_head(node,pan,value)
     try:
@@ -1031,13 +1119,17 @@ def observe_geometry(node, prompt):
             aim(angle)
             try:
                 view = observe(prompt)
-            except sam3_client.ObjectNotFound:
+            except (sam3_client.ObjectNotFound, pointcloud.InvalidTargetDepth) as error:
+                print(f'[GEOMETRY] skipping head tilt {angle:.2f}: {error}', flush=True)
                 continue
             # Reject a wrong instance immediately rather than expanding the hull.
             try:
                 merge_target_views(views+[view])
-            except RuntimeError:
+            except RuntimeError as error:
+                describe(view, f'rejected view at tilt {angle:.2f}')
+                print(f'[GEOMETRY] skipping head tilt {angle:.2f}: {error}', flush=True)
                 continue
+            describe(view, f'accepted view at tilt {angle:.2f}')
             views.append(view)
     finally:
         aim(tilt)
@@ -1053,9 +1145,9 @@ def observe_geometry(node, prompt):
     return result
 
 
-def perceive(prompt, node=None):
+def perceive(prompt, node=None, poses=None):
     """Generate candidates, then place calibrated pads using observed geometry."""
-    observation = observe_geometry(node,prompt) if node is not None else observe(prompt)
+    observation = observe_geometry(node,prompt,poses) if node is not None else observe(prompt)
     points = observation['points']
     # Limit and centre the object cloud before asking the grasp model.
     sample = points[np.random.choice(len(points), min(len(points), MAX_CLOUD_POINTS), replace=False)]
@@ -1086,12 +1178,32 @@ def call(node, kind, name, request):
     return wait(node, client.call_async(request), name)
 
 
-def joint_positions(node):
-    received, message = wait_for_message(
-        JointState, node, JOINT_STATES, time_to_wait=5.0
-    )
-    if not received:
-        raise RuntimeError(f"no {JOINT_STATES}")
+# One subscription per node, kept for the life of the run. wait_for_message
+# creates a fresh subscriber for every call and throws it away; on the real
+# robot's link a new subscriber's first message is regularly lost, so each call
+# was a 5 s gamble, and close() makes up to a hundred of them (2026-09-18).
+_JOINT_STATES = {}
+
+
+def joint_positions(node, timeout=5.0):
+    """The robot's current joint positions, from a persistent subscription."""
+    entry = _JOINT_STATES.get(id(node))
+    if entry is None:
+        latest = {}
+        entry = _JOINT_STATES[id(node)] = (
+            node.create_subscription(JointState, JOINT_STATES,
+                                     lambda message: latest.__setitem__('message', message), 10),
+            latest,
+        )
+    _, latest = entry
+    # Require a sample newer than this call: closure reads contact from it.
+    latest.pop('message', None)
+    deadline = time.monotonic() + timeout
+    while 'message' not in latest:
+        if time.monotonic() > deadline:
+            raise RuntimeError(f"no {JOINT_STATES}")
+        rclpy.spin_once(node, timeout_sec=0.1)
+    message = latest['message']
     # Pair each reported joint name with its measured position.
     return dict(zip(message.name, message.position))
 
@@ -1111,10 +1223,27 @@ def fingertip_gap(node):
     return float(np.linalg.norm([gap.x, gap.y, gap.z]))
 
 
-def model_target(node, points):
+def target_box(points, support=None):
+    """Return the axis-aligned collision box (lower, upper) for the observed target.
+
+    An object rests on its support surface, so the box always reaches down to
+    the support plane when one was measured. A view clipped at the frame edge
+    then still yields a full-height box instead of a floating stub; the extra
+    coverage only makes planning more conservative."""
+    lower, upper = points.min(axis=0).astype(float), points.max(axis=0).astype(float)
+    if support is not None and np.isfinite(support) and support < lower[2]:
+        gap = lower[2]-support
+        if gap > .01:
+            print(f'[GEOMETRY] lowest observed target point is {gap*1000:.0f} mm above the '
+                  f'support plane; extending the collision box down to it', flush=True)
+        lower[2] = support
+    return lower, upper
+
+
+def model_target(node, points, support=None):
     """Replace the target box and rebuild the depth map around it, excluding target voxels."""
     # Represent the target by its axis-aligned box in the planning scene.
-    lower, upper = points.min(axis=0), points.max(axis=0)
+    lower, upper = target_box(points, support)
     box = CollisionObject(id=TARGET, operation=CollisionObject.ADD)
     box.header.frame_id = BASE_FRAME
     box.pose.position.x, box.pose.position.y, box.pose.position.z = (
@@ -1186,34 +1315,55 @@ def depth_relay(node, enabled):
     call(node, SetParameters, "/octomap_depth_camera/set_parameters", request)
 
 
+# Action clients are kept for the life of the run, for the same reason as the
+# joint-state subscription above: it is a client's first goal that the link
+# loses, so a fresh client per call made every closure step pay the 5 s resend.
+_ACTION_CLIENTS = {}
+
+
+def action_client(node, kind, name):
+    client = _ACTION_CLIENTS.get((id(node), name))
+    if client is None:
+        client = _ACTION_CLIENTS[(id(node), name)] = ActionClient(node, kind, name)
+    return client
+
+
 def run_action(node, kind, name, goal, seconds):
     """Send goal to the action server name; return its result once finished."""
-    client = ActionClient(node, kind, name)
+    client = action_client(node, kind, name)
+    # Keep waiting rather than giving up on one attempt. Discovery of the
+    # robot's endpoints arrives in part and late over this link: a fresh client
+    # has taken 6.8 s to see a server that another client saw instantly, and a
+    # recovery run failed outright with "gripper_controller unavailable" while
+    # the robot was up and reachable (2026-09-18).
+    for attempt in range(1, 4):
+        if client.wait_for_server(timeout_sec=10.0):
+            break
+        print(f"[ACTION] {name}: no server after 10 s "
+              f"(attempt {attempt}/3), still waiting", flush=True)
+    else:
+        raise RuntimeError(f"{name} unavailable after 30 s")
+    # Retry unanswered goals: the link drops a request now and then, and it is
+    # a client's first goal that goes missing most often.
+    for attempt in range(1, 4):
+        future = client.send_goal_async(goal)
+        rclpy.spin_until_future_complete(node, future, timeout_sec=5.0)
+        if future.done():
+            handle = future.result()
+            break
+        print(f"[ACTION] {name}: no goal response in 5 s (attempt {attempt}/3), resending", flush=True)
+    else:
+        raise RuntimeError(f"{name} goal timed out")
+    # Proceed to result waiting only after the action server accepts a goal.
+    if not handle.accepted:
+        raise RuntimeError(f"{name} rejected the goal")
     try:
-        if not client.wait_for_server(timeout_sec=10.0):
-            raise RuntimeError(f"{name} unavailable")
-        # Retry unanswered goals while the real-robot connection finishes discovery.
-        for attempt in range(1, 4):
-            future = client.send_goal_async(goal)
-            rclpy.spin_until_future_complete(node, future, timeout_sec=5.0)
-            if future.done():
-                handle = future.result()
-                break
-            print(f"[ACTION] {name}: no goal response in 5 s (attempt {attempt}/3), resending", flush=True)
-        else:
-            raise RuntimeError(f"{name} goal timed out")
-        # Proceed to result waiting only after the action server accepts a goal.
-        if not handle.accepted:
-            raise RuntimeError(f"{name} rejected the goal")
-        try:
-            return wait(node, handle.get_result_async(), name, seconds)
-        except BaseException:
-            # On errors or Ctrl+C, request cancellation before releasing the client.
-            cancellation = handle.cancel_goal_async()
-            rclpy.spin_until_future_complete(node, cancellation, timeout_sec=5.0)
-            raise
-    finally:
-        client.destroy()
+        return wait(node, handle.get_result_async(), name, seconds)
+    except BaseException:
+        # On errors or Ctrl+C, stop the motion rather than leaving it running.
+        cancellation = handle.cancel_goal_async()
+        rclpy.spin_until_future_complete(node, cancellation, timeout_sec=5.0)
+        raise
 
 
 def open_hand(node):
@@ -1305,16 +1455,25 @@ def seeded_ik(node, matrix, base, frame=BASE_FRAME):
     request.ik_request.timeout = Duration(sec=1)
     response = call(node, GetPositionIK, "/compute_ik", request)
     if response.error_code.val != MoveItErrorCodes.SUCCESS:
+        print('[IK] no seeded whole-body solution', flush=True)
         return None
     solution = dict(zip(response.solution.joint_state.name, response.solution.joint_state.position))
+    # Say how far the base must go: the base controller, not the arm, is what
+    # fails these reaches (README §10), so this number decides the outcome.
+    travel = np.hypot(solution['odom_x']-base['odom_x'], solution['odom_y']-base['odom_y'])
+    turn = solution['odom_t']-base['odom_t']
     # Keep the solved base position and heading within the allowed parking slack.
     if any(abs(solution[joint] - base[joint]) > slack for joint, slack in BASE_SLACK.items()):
+        print(f'[IK] solution needs {travel*1000:.0f} mm of base travel and a {turn:+.2f} rad turn; '
+              'outside the base window', flush=True)
         return None
     # Reject the IK solution if it collides with the current scene.
     valid = call(node, GetStateValidity, "/check_state_validity",
                  GetStateValidity.Request(robot_state=response.solution, group_name=GROUP))
     if not valid.valid:
+        print(f'[IK] solution with {travel*1000:.0f} mm of base travel is in collision', flush=True)
         return None
+    print(f'[IK] seeded solution moves the base {travel*1000:.0f} mm and turns {turn:+.2f} rad', flush=True)
     goal = RobotState(is_diff=True)
     goal.joint_state.name = list(WHOLE_BODY_JOINTS)
     goal.joint_state.position = [float(solution[joint]) for joint in WHOLE_BODY_JOINTS]
@@ -1449,12 +1608,41 @@ class Pick:
         return task
 
 
+START_TOLERANCE = .05  # rad; refuse to execute a plan starting elsewhere
+
+
+def check_start(node, solution, tolerance=START_TOLERANCE):
+    """Refuse a solution whose first point is not where the robot actually is.
+
+    An interrupted run leaves the arm part way through a motion. Executing a
+    plan built for a different start makes the controller drive straight to
+    that first point, which is the jerk seen when a cut-off run is repeated.
+    """
+    measured = joint_positions(node)
+    for step in solution.sub_trajectory:
+        trajectory = step.trajectory.joint_trajectory
+        if not trajectory.joint_names or not trajectory.points:
+            continue
+        errors = [(abs(measured[name]-position), name)
+                  for name, position in zip(trajectory.joint_names,
+                                            trajectory.points[0].positions)
+                  if name in measured]
+        if errors and max(errors)[0] > tolerance:
+            error, name = max(errors)
+            raise RuntimeError(
+                f"the plan starts {error:.3f} rad away from the robot at {name} "
+                f"(limit {tolerance:.3f}); stow the arm with "
+                f"realrobot/live/recover_home.py and run again")
+        return
+
+
 def execute(node, task):
     """Plan one solution and execute it through the rclpy MTC action client."""
     if not task.plan(max_solutions=1):
         raise RuntimeError(f"MTC found no {task.name} plan")
     solution = task.solutions[0].toMsg()
     compact(solution)
+    check_start(node, solution)
     # Check payload size while preserving the collision scene for later stages.
     size = len(serialize_message(solution))
     print(f'[MTC] execution payload {size/1024/1024:.2f} MiB', flush=True)
@@ -1494,13 +1682,13 @@ def pick(prompt, mode='auto'):
             clear_observation_pose(node,planner)
             reframe_target(node,poses,(previous.min(0)+previous.max(0))/2)
         try:
-            points, grasps, widths, observation = perceive(prompt,node)
+            points, grasps, widths, observation = perceive(prompt,node,poses)
         # Try one camera-clearance motion and a fresh observation when geometry is hidden.
         except GeometryOccluded as blocked:
             print('[GEOMETRY] foreground blocks target; planning one return to observation home',flush=True)
             clear_observation_pose(node,planner)
             reframe_target(node,poses,blocked.centre)
-            points, grasps, widths, observation = perceive(prompt,node)
+            points, grasps, widths, observation = perceive(prompt,node,poses)
         # Auto mode test-lifts cylinders; other shapes stop at a contact hold.
         is_can = observation.get('geometry_kind') == 'cylinder'
         lift_requested = mode == 'pickup' or (mode == 'auto' and is_can)
@@ -1515,11 +1703,21 @@ def pick(prompt, mode='auto'):
         diagnostics = os.environ.get('HSR_GRASP_DIAGNOSTICS')
         if diagnostics:
             Path(diagnostics).mkdir(parents=True, exist_ok=True)
-            np.savez(Path(diagnostics)/'planned_grasps.npz', points=points, grasps=grasps, widths=widths)
+            support_height = observation.get('support')
+            np.savez(Path(diagnostics)/'planned_grasps.npz', points=points, grasps=grasps, widths=widths,
+                     support=np.nan if support_height is None else support_height)
         if joint_positions(node)['hand_motor_joint'] < OPEN_HAND - .05:
             open_hand(node)
+        # State where the robot is parked relative to the target. The base, not
+        # the arm, is what fails these reaches, and how far it must travel is
+        # set by this distance (README section 10).
+        parked = joint_positions(node)
+        print(f"[GRASP] parked at x {parked['odom_x']:+.3f} y {parked['odom_y']:+.3f} "
+              f"t {parked['odom_t']:+.3f}, target centre "
+              f"{np.hypot(points[:, 0].mean()-parked['odom_x'], points[:, 1].mean()-parked['odom_y'])*1000:.0f} mm away",
+              flush=True)
         # Build the collision scene and execute the first complete reachable grasp plan.
-        model_target(node, points)
+        model_target(node, points, observation.get('support'))
         execute(node, planner.reach(grasps, joint_positions(node)))
         reached = poses.transform()
         # Match the measured palm pose to the candidate the planner reached.

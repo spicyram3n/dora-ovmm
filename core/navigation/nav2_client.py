@@ -72,6 +72,18 @@ class Navigator(Node):
         return self._lifecycle_call(
             GetState, f"/{name}/get_state", GetState.Request()).current_state.id
 
+    def _is_running(self, name, timeout=2.0):
+        """Whether the lifecycle node exists at all.
+
+        The launch decides which nodes there are: nav2_real.launch.py starts no
+        waypoint_follower, and a node that is not running cannot be driving the base."""
+        from lifecycle_msgs.srv import GetState
+        client = self.create_client(GetState, f"/{name}/get_state")
+        try:
+            return client.wait_for_service(timeout_sec=timeout)
+        finally:
+            self.destroy_client(client)
+
     def pause_navigation(self):
         """Deactivate Nav2 motion nodes before MoveIt takes control of the base."""
         from lifecycle_msgs.msg import State
@@ -81,8 +93,11 @@ class Navigator(Node):
             ManageLifecycleNodes.Request(command=ManageLifecycleNodes.Request.PAUSE), timeout=30)
         if not response.success:
             raise RuntimeError("Nav2 pause rejected; refusing MoveIt handoff")
-        # Confirm every motion node is inactive before handing the base to MoveIt.
+        # Confirm every motion node that exists is inactive before handing over.
         for name in ("controller_server", "behavior_server", "bt_navigator", "waypoint_follower"):
+            if not self._is_running(name):
+                print(f"[HANDOFF] {name} is not running; nothing to hand over", flush=True)
+                continue
             if self.navigation_state(name) != State.PRIMARY_STATE_INACTIVE:
                 raise RuntimeError(f"{name} is not inactive; refusing MoveIt handoff")
         print("[HANDOFF] Nav2 motion nodes inactive; MoveIt owns base motion", flush=True)
@@ -273,6 +288,14 @@ class Navigator(Node):
         tilt = math.atan2(point[2] - pivot.z - 0.248, distance)
         if not (-3.84 <= pan <= 1.75 and -1.57 <= tilt <= 0.52):
             return False
+        return self._move_head(pan, tilt)
+
+    def look_home(self):
+        """Centre the head. Nothing else resets it, so a mission that aimed at one
+        place leaves the camera there for every later step and for the next run."""
+        return self._move_head(0.0, 0.0)
+
+    def _move_head(self, pan, tilt):
         goal = FollowJointTrajectory.Goal()
         goal.trajectory.joint_names = ["head_pan_joint", "head_tilt_joint"]
         goal.trajectory.points = [JointTrajectoryPoint(

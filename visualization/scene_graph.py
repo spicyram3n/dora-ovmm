@@ -5,6 +5,7 @@ Usage: python3 visualization/scene_graph.py --graph GRAPH.json --output VIEW.rrd
 
 import argparse
 import colorsys
+import re
 import sys
 from pathlib import Path
 
@@ -15,14 +16,25 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from core.scene_graph import graph as sg  # noqa: E402
 
 
+def room_key(room):
+    """A Rerun entity-path segment; room names are free text from the reasoner."""
+    return re.sub("[^A-Za-z0-9]+", "_", room).strip("_") or "unnamed"
+
+
 def write_view(scene, output, scene_path=None):
     rr.init("hrl_scene_graph", strict=True)
     rr.save(str(output))
+    # With rooms assigned, each one becomes a branch of the entity tree that the
+    # viewer can show and hide on its own, and the hue says which room is which.
+    rooms = sorted({data["room"] for _, data in scene.nodes(data=True) if data["room"]})
     rr.log(
         "description",
         rr.TextDocument(
             f"Frame: {scene.graph['frame_id']} (metres). "
-            "Colors identify nodes. Labels include model scores. "
+            + (f"Colors identify rooms ({len(rooms)}: {', '.join(rooms)}); "
+               "each is its own branch of scene/rooms. "
+               if rooms else "Colors identify nodes. ")
+            + "Labels include model scores. "
             "Edges are geometric hypotheses; near does not imply on or inside."
         ),
         static=True,
@@ -42,11 +54,18 @@ def write_view(scene, output, scene_path=None):
     for node, data in scene.nodes(data=True):
         # Furniture turns with its footprint; objects have none and stay axis-aligned.
         centre, dimensions, yaw = sg.footprint(data)
-        color = [
-            int(c * 255) for c in colorsys.hsv_to_rgb((node * 0.618034) % 1, 0.7, 0.95)
-        ]
+        # One hue per room once they are named, otherwise the old hue per node.
+        if data["room"] in rooms:
+            hue = rooms.index(data["room"]) / len(rooms)
+            path = f"scene/rooms/{room_key(data['room'])}/{node}"
+            label = f"{node}: {data['label']} [{data['room']}] ({data['confidence']:.3f})"
+        else:
+            hue = (node * 0.618034) % 1
+            path = f"scene/nodes/{node}"
+            label = f"{node}: {data['label']} ({data['confidence']:.3f})"
+        color = [int(c * 255) for c in colorsys.hsv_to_rgb(hue, 0.7, 0.95)]
         rr.log(
-            f"scene/nodes/{node}",
+            path,
             rr.Boxes3D(
                 centers=[centre],
                 half_sizes=[dimensions / 2],
@@ -54,7 +73,7 @@ def write_view(scene, output, scene_path=None):
                     rr.RotationAxisAngle(axis=[0, 0, 1], radians=yaw)
                 ],
                 colors=color,
-                labels=[f"{node}: {data['label']} ({data['confidence']:.3f})"],
+                labels=[label],
                 show_labels=True,
             ),
             static=True,
@@ -98,8 +117,10 @@ def main():
     scene = sg.load(args.graph)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     write_view(scene, args.output, args.scene)
+    rooms = sorted({data["room"] for _, data in scene.nodes(data=True) if data["room"]})
     print(
         f'{scene.number_of_nodes()} nodes, {scene.number_of_edges()} edges in {scene.graph["frame_id"]}'
+        + (f", {len(rooms)} rooms: {', '.join(rooms)}" if rooms else ", no rooms assigned")
     )
     print(f"Recording: {args.output}")
     if not args.save_only:

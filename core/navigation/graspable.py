@@ -19,6 +19,12 @@ NAV_YAW_TOLERANCE = 0.25
 PRECISE_TOLERANCE = 0.08
 PRECISE_YAW_TOLERANCE = 0.15
 APPROACH_TIMEOUT = 180
+# Park the base this far from the object centre: whole-body IK spends 28 mm of
+# base travel on its best grasp here against 86 mm at 0.66 m
+# (core/grasping/README.md section 15), and the base is what fails these reaches.
+PARK_DISTANCE = 0.45
+# Treat park distances within this band as equally good, so travel decides between them.
+PARK_BAND = 0.05
 
 
 def _palm_pose(point, approach, closing):
@@ -92,8 +98,14 @@ def _cluster(bases):
     return (bases[int(np.argmin(offsets))], float(offsets.max()))
 
 
-def rank(results, robot_xy, map_from_odom):
-    """Return every solver base pose in map coordinates, ordered by travel distance."""
+def _park_cost(option):
+    """Band the park distance, then prefer the shortest drive inside a band."""
+    travel, _, _, _, _, distance = option
+    return (round(abs(distance - PARK_DISTANCE) / PARK_BAND), travel)
+
+
+def rank(results, robot_xy, map_from_odom, centre):
+    """Return every solver base pose in map coordinates, best park distance first."""
     options = []
     for index, (bases, _) in enumerate(results):
         if len(bases) == 0:
@@ -102,9 +114,10 @@ def rank(results, robot_xy, map_from_odom):
         for base in bases:
             x, y, yaw = _planar(map_from_odom, base)
             travel = float(np.hypot(x - robot_xy[0], y - robot_xy[1]))
-            options.append((travel, index, (x, y, yaw), radius, len(bases)))
-    # Try the certified base positions with the shortest travel first.
-    options.sort(key=lambda option: option[0])
+            # How far this base would stand from the object is what decides the reach.
+            distance = float(np.hypot(x - centre[0], y - centre[1]))
+            options.append((travel, index, (x, y, yaw), radius, len(bases), distance))
+    options.sort(key=_park_cost)
     return options
 
 
@@ -156,7 +169,7 @@ def reposition(
         environment=base_placement.collision_world(solid, odom_from_map),
     )
     map_from_odom = navigator.frame_transform("map", "odom")
-    options = rank(results, navigator.robot_xy(), map_from_odom)
+    options = rank(results, navigator.robot_xy(), map_from_odom, centre)
     # Reject bases under furniture tops that the laser costmap may miss.
     clear = []
     for option in options:
@@ -167,10 +180,11 @@ def reposition(
         f" probe directions reachable; {len(options)} returned base poses,"
         f" {len(clear)} clear of furniture"
     )
-    for travel, index, pose, radius, count in clear:
+    for travel, index, pose, radius, count, distance in clear:
         print(
             f"  probe {index}: {count} base poses, cluster radius {radius:.2f} m,"
-            f" {travel:.2f} m away -> ({pose[0]:+.2f}, {pose[1]:+.2f}, yaw {pose[2]:+.2f})"
+            f" {distance:.2f} m from the target, {travel:.2f} m away"
+            f" -> ({pose[0]:+.2f}, {pose[1]:+.2f}, yaw {pose[2]:+.2f})"
         )
         # Skip base poses for which Nav2 cannot find a path.
         if not navigator.reachable(*pose):

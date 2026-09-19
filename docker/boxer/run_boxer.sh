@@ -5,6 +5,7 @@ cd "$(dirname "$0")"
 if [[ $# -eq 0 || "${1:-}" == --help || "${1:-}" == -h ]]; then
     cat <<'USAGE'
 Usage:
+  bash docker/boxer/run_boxer.sh --build
   bash docker/boxer/run_boxer.sh --download-ckpts
   bash docker/boxer/run_boxer.sh --download-data [hohen_gen1 ...]
   bash docker/boxer/run_demo.sh
@@ -35,6 +36,8 @@ if [[ "${BOXER_REBUILD:-0}" == 1 ]] || ! docker image inspect hrl/boxer:latest >
 else
     echo 'Using existing hrl/boxer:latest image'
 fi
+# --build stops here: a way to pick up a Dockerfile change without a real run.
+if [[ "${1:-}" == --build ]]; then exit 0; fi
 
 # --labels=scannet200 prompts with the scene graph's own dictionary, so every box
 # lands on a class the graph knows. The catch-all names are left out: OWLv2 picks
@@ -53,10 +56,14 @@ PY
 gpus=(--gpus all)
 if [[ "${BOXER_CPU:-0}" == 1 ]]; then gpus=(); fi
 
+# TORCH_COMPILE_DISABLE=1 runs OWLv2 eagerly, the way out if Triton cannot build
+# its CUDA shim in the image. Docker forwards a bare -e only when it is set, so
+# both stay absent unless the caller exports them.
 # Fusion breaks label-vote ties by set order (utils/fuse_3d_boxes.py upstream),
 # which follows Python's per-process hash seed; a fixed seed makes reruns agree.
 run() {
     docker run --rm "${gpus[@]}" -e PYTHONHASHSEED=0 \
+        -e TORCH_COMPILE_DISABLE -e TORCHDYNAMO_DISABLE \
         -v "$PWD/ckpts:/opt/boxer/ckpts" \
         -v "$data:/opt/boxer/sample_data" \
         -v "$output:/opt/boxer/output" \

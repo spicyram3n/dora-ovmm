@@ -6,7 +6,7 @@ Boxer's boxes come from RGB-D at head height; the Nav2 map comes from a laser at
 19 cm. Neither knows about the other, so the overlap between them is a free check
 on the boxes, and the disagreement is what the scene graph adds to navigation.
 
-Per furniture piece, and then per object plan_overlay.standing_on_floor picks out:
+Per furniture piece, and then per object graph.standing_on_floor picks out:
   occ / free / unknown   what the laser map says about the cells under the footprint
   edge                   metres from the footprint to the nearest occupied cell; 0
                          means the piece is anchored to something the laser saw
@@ -37,10 +37,11 @@ sys.path.insert(0, str(ROOT))
 
 from core.scene_graph import graph as sg  # noqa: E402
 from core.utils import geometry  # noqa: E402
-from realrobot.offline.plan_overlay import FLOOR, standing_on_floor  # noqa: E402
+from core.scene_graph.graph import FLOOR, standing_on_floor  # noqa: E402
 
-DEFAULT_GRAPH = ROOT / "config/realrobot/scene_graph/lab_20260811.json"
-DEFAULT_MAP = ROOT / "config/realrobot/map/lab_20260811.yaml"
+from core.utils.recording import Paths  # noqa: E402
+
+DEFAULT_GRAPH, DEFAULT_MAP = (Paths().graph, Paths().map)
 FREE, UNKNOWN, OCCUPIED = 254, 205, 0
 # Neighbourhood a wall cell is fitted over, and how straight that fit has to be
 # before its direction counts towards the room angle.

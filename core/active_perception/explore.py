@@ -48,10 +48,11 @@ OUTPUTS = Path("outputs/active_perception")
 GRAPH = Path(__file__).resolve().parents[2] / "config/scene_graph/kitchen_objects.json"
 
 
-def furniture_footprints(scene):
-    """Every piece of furniture as (centre, dimensions, yaw): the base keeps out of them."""
-    # Collect the furniture outlines used to keep the moving base clear.
-    return [sg.footprint(data) for data in sg.furniture(scene).values()]
+def furniture_footprints(scene, exclude=()):
+    """Every shape as (centre, dimensions, yaw): furniture and floor-standing
+    objects both, since the base keeps out of them alike."""
+    # Collect the outlines used to keep the moving base clear.
+    return list(sg.blockers(scene, exclude=exclude).values())
 
 
 def detect_box(prompt, rgb, depth, k, map_from_camera):

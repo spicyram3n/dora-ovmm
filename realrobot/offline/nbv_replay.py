@@ -168,7 +168,8 @@ def render_overview(policy, k, shape, data, grid, out):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--keyframes", type=Path, default="outputs/realrobot/lab_20260811/keyframes")
+    from core.utils.recording import Paths
+    parser.add_argument("--keyframes", type=Path, default=Paths().keyframes)
     parser.add_argument("--summary", type=Path,
                         default="outputs/active_perception/tsdf_test/fit_cube_0.9m/summary.json")
     parser.add_argument("--frames", default=None, help="default: the summary's frames")

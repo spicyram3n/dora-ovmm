@@ -23,9 +23,11 @@ Watch it live, with ROS sourced, once this is running:
 
 import argparse
 import math
+import os
 import sys
 import threading
 import time
+import traceback
 from pathlib import Path
 
 import py_trees
@@ -39,8 +41,16 @@ from core.pipeline import actions
 from core.reasoner import query
 from core.scene_graph import graph as sg
 from core.utils import events
+from core.utils.recording import Paths
 
 ROOT = Path(__file__).resolve().parents[2]
+# Same switch core.perception.camera_ros2 reads: HSR_REAL_ROBOT=1 selects the
+# robot's clock and the recording's own scene graph. launch/realrobot/
+# grasp_real.launch.py and realrobot/live/grasp_preflight.py already set it.
+REAL_ROBOT = os.environ.get("HSR_REAL_ROBOT", "") == "1"
+# On hardware the graph follows $RECORDING like every other real-robot tool.
+DEFAULT_GRAPH = (Paths().graph if REAL_ROBOT
+                 else ROOT / "config/scene_graph/kitchen_objects.json")
 # Map the failed mission step to a process exit code; unexpected failures use 3.
 EXIT_CODES = {"Choose location": 1, "Find target": 1, "Go there": 2, "Park": 2, "Pick": 4}
 
@@ -69,7 +79,9 @@ class Step(py_trees.behaviour.Behaviour):
 def build(steps, grasp=True, navigate_only=False, active_perception=False):
     """The mission tree over `steps`, a dict of name -> action."""
     # Home first: it needs only the arm controller, and every later step assumes it.
-    children = [Step("Home arm", steps["home"]), Step("Ready", steps["ready"])]
+    children = [Step("Home arm", steps["home"]), Step("Ready", steps["ready"]),
+                # After Ready: get_ready is what proves the head controller is live.
+                Step("Home head", steps["home_head"])]
     # Use a shorter sequence when the user only wants to drive to a likely location.
     if navigate_only:
         children.append(Step("Choose location", steps["choose"]))
@@ -81,9 +93,11 @@ def build(steps, grasp=True, navigate_only=False, active_perception=False):
         children.append(Step("Explore views", steps["explore"]))
     # Parking already tries every base pose the IK solver returns; once is enough.
     children.append(Step("Park", steps["park"]))
-    # Hand base control to MoveIt before running the pick step.
+    # Parking is the handoff: once the base is on a certified pose, Nav2 must stop
+    # owning it, whether the pick runs here or from another terminal afterwards.
+    # PAUSE leaves map_server and AMCL up, so the map frame survives for the pick.
+    children.append(Step("Pause Nav2", steps["pause"]))
     if grasp:
-        children.append(Step("Pause Nav2", steps["pause"]))
         children.append(Step("Pick", steps["pick"]))
     return py_trees.composites.Sequence("Mission", memory=True, children=children)
 
@@ -120,6 +134,10 @@ def mission_steps(navigator, scene, target, graph_path, top_k, bearings, timeout
         actions.home_arm(navigator, wait, remaining)
         return True
 
+    def home_head():
+        navigator.look_home()
+        return True
+
     def choose():
         chosen["location"] = next(actions.targets(scene, target, robot_xy=navigator.robot_xy(),
                                                  top_k=top_k), None)
@@ -135,7 +153,8 @@ def mission_steps(navigator, scene, target, graph_path, top_k, bearings, timeout
     def go():
         location = chosen["location"]
         poses, _ = actions.plan(scene, location, navigator.robot_xy(),
-                                base_placement.costmap_grid(navigator))
+                                base_placement.costmap_grid(navigator),
+                                base_placement.sight_grid(navigator))
         failed_drives = 0
         for pose in poses:
             if not navigator.reachable(*pose):
@@ -183,7 +202,7 @@ def mission_steps(navigator, scene, target, graph_path, top_k, bearings, timeout
         print(f"[GRASP RESULT] {status}", flush=True)
         return status in (actions.PICKED, actions.GRASPED)
 
-    return {"ready": ready, "home": home, "choose": choose, "go": go,
+    return {"ready": ready, "home": home, "home_head": home_head, "choose": choose, "go": go,
             "find": find, "explore": explore, "park": park, "pause": pause, "pick": pick}
 
 
@@ -191,7 +210,8 @@ def render(grasp, navigate_only, active_perception=False):
     """Save the tree as a picture under outputs/, without ROS or the robot."""
     # Build named placeholder actions for drawing; rendering never executes them.
     placeholders = {}
-    for name in ("ready", "home", "choose", "go", "find", "explore", "park", "pause", "pick"):
+    for name in ("ready", "home", "home_head", "choose", "go", "find", "explore",
+                 "park", "pause", "pick"):
         placeholders[name] = None  # never run: drawing needs names only
     root = build(placeholders, grasp=grasp, navigate_only=navigate_only, active_perception=active_perception)
     name = "mission_tree_navigate" if navigate_only else "mission_tree"
@@ -206,7 +226,7 @@ def run(argv=None):
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--target")
-    parser.add_argument("--graph", type=Path, default=ROOT / "config/scene_graph/kitchen_objects.json")
+    parser.add_argument("--graph", type=Path, default=DEFAULT_GRAPH)
     parser.add_argument("--top-k", type=int, default=3)
     parser.add_argument("--bearings", type=int, default=12)
     parser.add_argument("--startup-timeout", type=float, default=180)
@@ -233,7 +253,9 @@ def run(argv=None):
     scene = sg.load(args.graph)
     sg.require_map(scene)
     rclpy.init()
-    navigator = Navigator()
+    # There is no /clock on the robot: a sim-time node never sees a fresh
+    # map->base TF and every step fails on it. realrobot/live/goto.py does the same.
+    navigator = Navigator(use_sim_time=not REAL_ROBOT)
     steps = mission_steps(navigator, scene, args.target, args.graph, args.top_k,
                           args.bearings, args.startup_timeout, perception=not navigate_only, mode=args.mode,
                           rerun=args.rerun == "true")
@@ -271,5 +293,9 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         raise SystemExit(130)
     except Exception as error:
+        # The stack is the only thing that says which step and which call failed;
+        # the one-line summary alone cost two runs of guessing. Summary last, so
+        # it stays the visible line at the bottom of a long mission log.
+        traceback.print_exc()
         print(f"[ERROR] {type(error).__name__}: {error}", file=sys.stderr, flush=True)
         raise SystemExit(3)

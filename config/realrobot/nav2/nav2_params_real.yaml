@@ -38,22 +38,33 @@ amcl:
     laser_max_range: -1.0
     laser_min_range: -1.0
     laser_model_type: "likelihood_field"
-    max_beams: 60
+    # 60 of the 317 the URG gives is a coarse fit; more beams separate a good
+     # pose from a near-miss. Costs CPU per update, linearly.
+    max_beams: 180
     max_particles: 2000
     min_particles: 500
     odom_frame_id: "odom"
     pf_err: 0.05
     pf_z: 0.99
-    recovery_alpha_fast: 0.0
-    recovery_alpha_slow: 0.0
+    # Non-zero lets AMCL inject random particles when the fit degrades, so a
+    # bad seed is recoverable instead of permanent. The cost is that it can
+    # jump in a symmetric corridor, where several poses fit equally well.
+    recovery_alpha_fast: 0.1
+    recovery_alpha_slow: 0.001
     resample_interval: 1
     robot_model_type: "nav2_amcl::OmniMotionModel"
     save_pose_rate: 0.5
-    sigma_hit: 0.2
+    # 0.1, not 0.2: localize.py hit exactly this -- at 0.2 the likelihood
+    # saturates in a cluttered room and two poses 3.5 m apart score the same.
+    # See "Three things that were wrong in localize.py" in navigation.readme.
+    sigma_hit: 0.1
     tf_broadcast: true
     transform_tolerance: 1.0
-    update_min_a: 0.2
-    update_min_d: 0.25
+    # The filter is untouched until the base moves this far, so at 0.25 m a
+    # stationary robot never corrects a hand-set pose, and in a corridor it
+    # coasts on odometry between updates.
+    update_min_a: 0.1
+    update_min_d: 0.1
     z_hit: 0.95
     z_max: 0.05
     z_rand: 0.05
@@ -140,7 +151,9 @@ controller_server:
     progress_checker:
       plugin: "nav2_controller::SimpleProgressChecker"
       required_movement_radius: 0.5
-      movement_time_allowance: 10.0
+      # 10 s aborted MPPI mid-corridor while it was still threading a gap
+      # between two obstacles; 30 s let the same drive through, 2026-09-18.
+      movement_time_allowance: 30.0
 
     general_goal_checker:
       stateful: True
@@ -239,6 +252,12 @@ controller_server:
         cost_power: 1
         cost_weight: 1.0
       ObstaclesCritic:
+        # These two must match the inflation layer below (0.35 / 3.5). The
+        # critic inverts a cell's cost back into a distance using its own copy
+        # of them, so on the Nav2 defaults (0.55 / 10.0) it read every corridor
+        # gap as nearly a collision and MPPI commanded zero.
+        inflation_radius: 0.35
+        cost_scaling_factor: 3.5
         enabled: true
         cost_power: 1
         repulsion_weight: 1.0
@@ -326,6 +345,12 @@ controller_server:
         cost_power: 1
         cost_weight: 1.0
       ObstaclesCritic:
+        # These two must match the inflation layer below (0.35 / 3.5). The
+        # critic inverts a cell's cost back into a distance using its own copy
+        # of them, so on the Nav2 defaults (0.55 / 10.0) it read every corridor
+        # gap as nearly a collision and MPPI commanded zero.
+        inflation_radius: 0.35
+        cost_scaling_factor: 3.5
         enabled: true
         cost_power: 1
         repulsion_weight: 1.5
@@ -419,7 +444,7 @@ global_costmap:
 map_server:
   ros__parameters:
     use_sim_time: False
-    yaml_filename: "/home/ws/config/realrobot/map/lab_20260811.yaml"
+    yaml_filename: "/home/ws/config/realrobot/map/lab_20260811/map.yaml"
 
 map_saver:
   ros__parameters:
@@ -439,7 +464,10 @@ planner_server:
       # directions, leaving a staircase a holonomic base cannot use.
       plugin: "nav2_theta_star_planner/ThetaStarPlanner"
       how_many_corners: 8
-      allow_unknown: true
+      # false, as in realrobot/offline/lab_planner.yaml: the lab map is 86%
+      # unknown, and Theta* treats unknown as traversable, so it drove straight
+      # out of the building across unmapped space (2026-09-19).
+      allow_unknown: false
       # Distance dominates; traversal cost keeps it off the inflation halo.
       w_euc_cost: 1.0
       w_traversal_cost: 5.0

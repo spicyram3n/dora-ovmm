@@ -70,17 +70,25 @@ def role(label):
 
 
 def match_score(label, wanted):
-    """Word overlap lets 'pringles can' match the asset label 'hsr_pringles'."""
-    label_words, query_words = (
-        set(normalize(label).split()),
-        set(normalize(wanted).split()),
-    )
+    """Word overlap lets 'pringles can' match the asset label 'hsr_pringles'.
+
+    A label that shares only the query's head noun *and* carries a modifier of
+    its own names a different thing: 'pringles can' overlaps 'trash can' on
+    'can' alone and scored the same 0.333 as the asset name this was written
+    for, so no threshold separates them, and every search walked the bins.
+    A label with no modifier of its own is just a less specific name for the
+    same thing -- the graph stores ScanNet200 classes, so 'bottle' is what a
+    'water bottle' is saved as -- and still matches.
+    """
+    query = normalize(wanted).split()
+    label_words, query_words = set(normalize(label).split()), set(query)
     # Score the fraction of unique words shared by the label and query.
     shared = label_words & query_words
-    if shared:
-        return len(shared) / len(label_words | query_words)
-    else:
+    if not shared:
         return 0.0
+    if len(query_words) > 1 and shared == {query[-1]} and not label_words <= query_words:
+        return 0.0
+    return len(shared) / len(label_words | query_words)
 
 
 def same_object(label, wanted):

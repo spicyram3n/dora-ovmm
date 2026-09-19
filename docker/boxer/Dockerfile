@@ -59,6 +59,16 @@ print('ffmpeg:', find_ffmpeg(os.path.expanduser('~')), get_video_codec())
 print('Boxer build smoke test PASSED')
 PY
 
+# On the GPU, torch.compile lowers OWLv2 through Inductor, and Triton builds a
+# small CUDA shim (driver.c) as a Python extension the first time it runs. The
+# CUDA *runtime* base image has neither a compiler nor Python.h, so that build
+# fails with "Failed to find C compiler" during OwlWrapper._warmup -- on the GPU
+# path only, which is why the CPU runs never hit it. Kept as its own late layer
+# so adding it reuses the cached torch install instead of downloading it again.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc python3.12-dev \
+    && rm -rf /var/lib/apt/lists/*
+
 # Checkpoints, sample sequences and results all resolve relative to the repo
 # root (utils/demo_utils.py), so run_boxer.sh mounts these three paths.
 # ckpts/ must stay writable: OwlWrapper caches text embeddings next to the .pt.

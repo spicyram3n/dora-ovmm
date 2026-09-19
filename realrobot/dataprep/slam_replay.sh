@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# Replay bags/playable_bag through slam_toolbox (one mapping pass) and keep:
-#   config/realrobot/map/lab_20260811.{pgm,yaml}       the Nav2 map
-#   outputs/realrobot/lab_20260811/slam/tf_mapping/    bag of /tf with SLAM's map->odom
-#   outputs/realrobot/lab_20260811/slam/posegraph.*    slam_toolbox's graph, for reuse
-# Usage: bash realrobot/dataprep/slam_replay.sh [rate]          (rate 2 = 6.5 min for the 13 min bag)
+# Replay a bag through slam_toolbox (one mapping pass) and keep, for $RECORDING:
+#   config/realrobot/map/<recording>/map.{pgm,yaml}   the Nav2 map
+#   outputs/realrobot/<recording>/slam/tf_mapping/    bag of /tf with SLAM's map->odom
+#   outputs/realrobot/<recording>/slam/posegraph.*    slam_toolbox's graph, for reuse
+# Usage: bash realrobot/dataprep/slam_replay.sh [rate]     (rate 2 = 6.5 min for a 13 min bag)
+#   RECORDING=<name> names the outputs; BAG=<path> is the bag to replay.
 source /opt/ros/humble/setup.bash
 set -euo pipefail
 # Another ROS 2 system shares this machine; a private domain keeps its /tf out.
@@ -11,9 +12,11 @@ set -euo pipefail
 export ROS_DOMAIN_ID=87
 RATE=${1:-2}
 ROOT=/home/ws
-BAG=$ROOT/bags/playable_bag
-OUT=$ROOT/outputs/realrobot/lab_20260811/slam
-MAP=$ROOT/config/realrobot/map/lab_20260811
+RECORDING=${RECORDING:-lab_20260811}
+BAG=${BAG:-$ROOT/bags/playable_bag}
+OUT=$ROOT/outputs/realrobot/$RECORDING/slam
+MAP=$ROOT/config/realrobot/map/$RECORDING/map
+[[ -e $BAG ]] || { echo "no bag at $BAG" >&2; exit 1; }
 NODE=$(ros2 pkg prefix slam_toolbox)/lib/slam_toolbox/sync_slam_toolbox_node
 mkdir -p "$OUT" "$(dirname "$MAP")"
 rm -rf "$OUT/tf_mapping"

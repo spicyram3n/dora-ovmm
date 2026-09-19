@@ -47,6 +47,12 @@ def generate_launch_description():
             "use_rviz", default_value="false", choices=["true", "false"]
         ),
         DeclareLaunchArgument(
+            "rviz_config",
+            default_value="realrobot/rviz/grasp_real.rviz",
+            description="RViz file under config/. The default adds RX's RGB and "
+            "depth to the MoveIt displays, best-effort so they match RX.",
+        ),
+        DeclareLaunchArgument(
             "sensors_config",
             default_value="realrobot/moveit/sensors_xtion_remote.yaml",
             description="Octomap file under config/moveit/ naming RX's depth output.",
@@ -68,6 +74,7 @@ def generate_launch_description():
             "use_sim_time:=false",
             ["sensors_config:=", Arg("sensors_config")],
             ["use_rviz:=", Arg("use_rviz")],
+            ["rviz_config:=", Arg("rviz_config")],
         ],
         name="move_group",
         output="both",

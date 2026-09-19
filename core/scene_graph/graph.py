@@ -80,6 +80,62 @@ def footprint(data):
     return (centre, dimensions, float(data["footprint"]["yaw"]))
 
 
+# An object's box underside this close to z = 0 means it rests on the floor:
+# map z = 0 is base_footprint, the floor the base drives on.
+FLOOR = 0.15
+# Shorter than this and the base rides over it: a cable, a mat, a threshold.
+MIN_BLOCKER_HEIGHT = 0.05
+# Taller than this and a box touching the floor is not an object standing on it:
+# it is a door leaf, a mirror or a wall-mounted whiteboard whose detection ran
+# floor to ceiling. Those matter more than their height suggests, because an
+# object blocks by its axis-aligned bounds: a 5 cm panel at 40 deg to the map
+# axes inflates into a square about a metre on a side. One such box, a door
+# recorded open, sealed the only way into the kitchen on lab_20260919. The
+# tallest real floor-standing object measured across both recordings is a
+# 1.17 m computer tower; the two artefacts were 2.12 m and 2.36 m.
+MAX_BLOCKER_HEIGHT = 1.8
+# Classes the live laser already handles better than a recording can. Everything
+# else here is static between the recording and the run, so its recorded box is
+# still true; a person is not, and their box spans the 0.19 m scan height, so
+# Nav2's obstacle layer marks them while they stand there and clears them when
+# they leave. Keeping the recorded box would instead hold a keep-out over floor
+# nobody is on, and standoff.blocks is pure geometry: no sensor can clear it.
+TRANSIENT = ("person",)
+
+
+def standing_on_floor(data):
+    """Whether an object's box is something standing on the floor that the base hits.
+
+    The graph's own `on`/`in` edge will not do: a computer tower is edged `in` the
+    desk because it is inside the desk's box, and it is standing under it on the
+    floor. Only furniture gets a fitted yaw, so an object blocks by its bounds.
+
+    The height has to fall between MIN_BLOCKER_HEIGHT and MAX_BLOCKER_HEIGHT:
+    below the band the base rides over it, above it the box is a panel fixed to a
+    wall or a door, which touches the floor without standing on it."""
+    lower, upper = np.asarray(data["bounds"], dtype=float)
+    height = upper[2] - lower[2]
+    return lower[2] <= FLOOR and MIN_BLOCKER_HEIGHT <= height <= MAX_BLOCKER_HEIGHT
+
+
+def blockers(graph, exclude=()):
+    """{node id: (centre, dimensions, yaw)} for every shape the base can run into.
+
+    Furniture by its fitted footprint, plus objects standing on the floor by their
+    axis-aligned bounds. Pass the target's node id in `exclude`: a bin is wider
+    than the parking clearance, so left in it would rule out its own approach."""
+    shapes = {}
+    for node_id, data in graph.nodes(data=True):
+        if node_id in exclude:
+            continue
+        if not data["movable"]:
+            shapes[node_id] = footprint(data)
+        elif data["label"] not in TRANSIENT and standing_on_floor(data):
+            lower, upper = np.asarray(data["bounds"], dtype=float)
+            shapes[node_id] = ((lower + upper) / 2, upper - lower, 0.0)
+    return shapes
+
+
 def build(instances, *, source_frame, map_from_source, drop_structure=True, **kwargs):
     """Transform instances into map and connect objects to furniture."""
     if not isinstance(source_frame, str) or not source_frame.strip():

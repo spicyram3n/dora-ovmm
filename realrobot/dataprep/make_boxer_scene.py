@@ -18,7 +18,7 @@ def main():
     parser.add_argument("--source", type=Path, required=True, help="extract_rgbd.py output")
     parser.add_argument("--output", type=Path, required=True, help="outputs/realrobot/<recording>/boxer/scannet/<recording>")
     parser.add_argument("--registration", type=Path, required=True,
-                        help="config/realrobot/map/<recording>_boxer_to_map.json")
+                        help="config/realrobot/map/<recording>/boxer_to_map.json")
     parser.add_argument("--stride", type=int, default=1, help="keep every Nth keyframe")
     args = parser.parse_args()
     # run_boxer.py picks its ScanNet loader only for a path containing /scannet/.

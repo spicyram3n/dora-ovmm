@@ -142,10 +142,22 @@ def costmap_grid(node, topic=COSTMAP_TOPIC, blocked_at=INSCRIBED, timeout=10.0):
         timeout,
     )
     cost = np.asarray(grid.data, dtype=np.int16)
-    # Unknown cells must not become candidate base positions.
-    blocked = (cost >= blocked_at) | (cost == UNKNOWN)
-    grid.data = np.where(blocked, BLOCKED, FREE).astype(np.int8).tolist()
+    # Unknown stays UNKNOWN rather than folding into BLOCKED: it must not become
+    # a candidate base position either way (standoff.free accepts only FREE), but
+    # standoff.unobstructed needs to tell an unseen cell from a wall.
+    grid.data = np.where(cost == UNKNOWN, UNKNOWN,
+                         np.where(cost >= blocked_at, BLOCKED, FREE)
+                         ).astype(np.int8).tolist()
     return grid
+
+
+def sight_grid(node, topic=COSTMAP_TOPIC, timeout=10.0):
+    """Nav2's costmap with only lethal cells blocked, for standoff.unobstructed.
+
+    costmap_grid blocks at INSCRIBED, the collar one robot radius wide that keeps
+    the base off a wall. Nothing in that collar is opaque, so a view test run
+    against it throws away poses with a clear line to the piece."""
+    return costmap_grid(node, topic, blocked_at=BLOCKED, timeout=timeout)
 
 
 def _grid_in_frame(node, grid, goal_frame, timeout=5.0):

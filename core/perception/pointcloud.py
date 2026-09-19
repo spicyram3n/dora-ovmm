@@ -43,6 +43,10 @@ def largest_cluster(points, gap=0.03, minimum=20):
     return points
 
 
+class InvalidTargetDepth(RuntimeError):
+    """A segmented view has no usable connected target depth."""
+
+
 def object_depth_mask(depth_m, mask, step=0.02):
     """Keep the largest region joined by similar neighbouring depths, preserving pixel locations."""
     from scipy.sparse import coo_matrix
@@ -52,7 +56,7 @@ def object_depth_mask(depth_m, mask, step=0.02):
     valid = mask & np.isfinite(depth_m) & (depth_m > 0)
     count = int(valid.sum())
     if count == 0:
-        raise RuntimeError("no valid depth inside the mask")
+        raise InvalidTargetDepth("no valid depth inside the mask")
     # Give each valid pixel an index for the neighbour graph.
     indices = np.full(mask.shape, -1, dtype=np.int32)
     indices[valid] = np.arange(count)
@@ -70,7 +74,7 @@ def object_depth_mask(depth_m, mask, step=0.02):
     sizes = np.bincount(labels)
     # Reject a fragmented detection if no connected region contains half the pixels.
     if sizes.max() < count / 2:
-        raise RuntimeError("target depth is fragmented; acquire another view")
+        raise InvalidTargetDepth("target depth is fragmented; acquire another view")
     result = np.zeros_like(valid)
     result[valid] = labels == sizes.argmax()
     return result

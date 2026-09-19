@@ -1,18 +1,46 @@
 # Real robot data prep
 
-`bags/playable_bag` (HSR, lab, 2026-08-11, 13 min, 92 GB) → Nav2 map → keyframes and fused cloud → Boxer 3D boxes → scene graph. The scripts live in `realrobot/dataprep/`. The data they generate for this bag lands in `outputs/realrobot/lab_20260811/`. What the robot runs with goes in `config/realrobot/`: the Nav2 map and the transforms in `map/`, the scene graph in `scene_graph/`. Steps 1, 2 and 4 run from `/home/ws` in the container with ROS sourced; the rest run from the repository root. Step-by-step checklist for steps 3 and 5–8, with the full folder layout: [docker/boxer/README.md](../../docker/boxer/README.md).
+`bags/playable_bag` (HSR, lab, 2026-08-11, 13 min, 92 GB) → Nav2 map → keyframes and fused cloud → Boxer 3D boxes → scene graph. The scripts live in `realrobot/dataprep/`. The data they generate for this bag lands in `outputs/realrobot/lab_20260811/`. What the robot runs with goes in `config/realrobot/`: the Nav2 map and its two registrations in `map/<recording>/`, the scene graph in `scene_graph/<recording>.json`. Steps 1, 2 and 4 run from `/home/ws` in the container with ROS sourced; the rest run from the repository root. Step-by-step checklist for steps 3 and 5–8, with the full folder layout: [docker/boxer/README.md](../../docker/boxer/README.md).
+
+## All of it in one command
+
+```bash
+bash realrobot/dataprep/prepare.sh --bag bags/lab_newdata lab_newdata
+```
+
+Steps 1 and 2 for a new bag, skipping whatever is already done: the Nav2 map,
+SLAM's `map→odom` recording, and the posed keyframes. Needs ROS sourced; it
+never touches the GPU. `--rate 1` replays slower, `--re-map` / `--re-extract`
+redo one step, and `RECORDING` / `BAG` set the same two things as the arguments.
+
+Then the scene graph, which does need Docker and the GPU host:
+
+```bash
+RECORDING=lab_newdata bash docker/boxer/build_scene_graph.sh --rooms
+```
+
+On a host with both, one command covers the lot — `--bag` makes
+`build_scene_graph.sh` run the data prep itself first:
+
+```bash
+bash docker/boxer/build_scene_graph.sh --bag bags/lab_newdata --rooms lab_newdata
+```
+
+The table below is the same thing by hand. `lab_20260811` is only the default
+name: `export RECORDING=<name>` moves every path in it, and every other
+real-robot tool with it ([recording.py](../../core/utils/recording.py)).
 
 ## Pipeline
 
 | # | Command | Where | Time | Generates |
 | --- | --- | --- | --- | --- |
-| 1 | `bash realrobot/dataprep/slam_replay.sh` | container | 6.5 min | `config/realrobot/map/lab_20260811.{pgm,yaml}` · `outputs/realrobot/lab_20260811/slam/{tf_mapping/,posegraph.data,posegraph.posegraph}` |
-| 2 | `python3 realrobot/dataprep/extract_rgbd.py --slam-tf outputs/realrobot/lab_20260811/slam/tf_mapping --output outputs/realrobot/lab_20260811/keyframes --registration config/realrobot/map/lab_20260811_scan_to_map.json` | container | 30 s | `outputs/realrobot/lab_20260811/keyframes/{color/,depth/,poses/,scene.ply,scene_mesh.ply,intrinsics.txt,keyframes.csv,stats.json}` · `config/realrobot/map/lab_20260811_scan_to_map.json` |
-| 3 | `python3 realrobot/dataprep/make_boxer_scene.py --source outputs/realrobot/lab_20260811/keyframes --output outputs/realrobot/lab_20260811/boxer/scannet/lab_20260811 --registration config/realrobot/map/lab_20260811_boxer_to_map.json` | anywhere | 1 s | `outputs/realrobot/lab_20260811/boxer/scannet/lab_20260811/frames/{color,depth,pose,intrinsic}/` · `config/realrobot/map/lab_20260811_boxer_to_map.json` |
-| 4 | `cd realrobot/dataprep && python3 visualize.py --scene ../../outputs/realrobot/lab_20260811/keyframes --map ../../config/realrobot/map/lab_20260811.yaml --slam-tf ../../outputs/realrobot/lab_20260811/slam/tf_mapping --bag ../../bags/playable_bag --figures figures` | container | 40 s | `realrobot/dataprep/figures/{map_trajectory,map_keyframes,cloud_on_map,scene_topdown,keyframes}.png` · `checks.json` |
+| 1 | `RECORDING=<name> BAG=<bag> bash realrobot/dataprep/slam_replay.sh` | container | 6.5 min | `config/realrobot/map/lab_20260811/map.{pgm,yaml}` · `outputs/realrobot/lab_20260811/slam/{tf_mapping/,posegraph.data,posegraph.posegraph}` |
+| 2 | `python3 realrobot/dataprep/extract_rgbd.py --slam-tf outputs/realrobot/lab_20260811/slam/tf_mapping --output outputs/realrobot/lab_20260811/keyframes --registration config/realrobot/map/lab_20260811/scan_to_map.json` | container | 30 s | `outputs/realrobot/lab_20260811/keyframes/{color/,depth/,poses/,scene.ply,scene_mesh.ply,intrinsics.txt,keyframes.csv,stats.json}` · `config/realrobot/map/lab_20260811/scan_to_map.json` |
+| 3 | `python3 realrobot/dataprep/make_boxer_scene.py --source outputs/realrobot/lab_20260811/keyframes --output outputs/realrobot/lab_20260811/boxer/scannet/lab_20260811 --registration config/realrobot/map/lab_20260811/boxer_to_map.json` | anywhere | 1 s | `outputs/realrobot/lab_20260811/boxer/scannet/lab_20260811/frames/{color,depth,pose,intrinsic}/` · `config/realrobot/map/lab_20260811/boxer_to_map.json` |
+| 4 | `cd realrobot/dataprep && python3 visualize.py --scene ../../outputs/realrobot/lab_20260811/keyframes --map ../../config/realrobot/map/lab_20260811/map.yaml --slam-tf ../../outputs/realrobot/lab_20260811/slam/tf_mapping --bag ../../bags/playable_bag --figures figures` | container | 40 s | `realrobot/dataprep/figures/{map_trajectory,map_keyframes,cloud_on_map,scene_topdown,keyframes}.png` · `checks.json` |
 | 5 | `bash docker/boxer/run_boxer.sh --download-ckpts` | GPU host | once, 1 min | `docker/boxer/ckpts/` (1.2 GB) |
 | 6 | `BOXER_CPU=1 BOXER_DATA=$PWD/outputs/realrobot/lab_20260811/boxer bash docker/boxer/run_boxer.sh --input /opt/boxer/sample_data/scannet/lab_20260811 --labels=scannet200 --fuse` | GPU host | ~40 min on CPU | `outputs/realrobot/lab_20260811/boxer/lab_20260811/{boxer_3dbbs.csv,boxer_3dbbs_fused.csv,owl_2dbbs.csv,boxer_viz_final.mp4}` |
-| 7 | `python3 -m docker.boxer.to_scene_graph --boxes outputs/realrobot/lab_20260811/boxer/lab_20260811/boxer_3dbbs_fused.csv --transform config/realrobot/map/lab_20260811_boxer_to_map.json --output config/realrobot/scene_graph/lab_20260811.json` | container | 1 s | `config/realrobot/scene_graph/lab_20260811.json` |
+| 7 | `python3 -m docker.boxer.to_scene_graph --boxes outputs/realrobot/lab_20260811/boxer/lab_20260811/boxer_3dbbs_fused.csv --transform config/realrobot/map/lab_20260811/boxer_to_map.json --output config/realrobot/scene_graph/lab_20260811.json` | container | 1 s | `config/realrobot/scene_graph/lab_20260811.json` |
 | 8 | `python3 visualization/scene_graph.py --graph config/realrobot/scene_graph/lab_20260811.json --scene outputs/realrobot/lab_20260811/keyframes/scene.ply --output outputs/realrobot/lab_20260811/scene_graph.rrd` | container | 5 s | Rerun window · `outputs/realrobot/lab_20260811/scene_graph.rrd` |
 
 - Steps 2 and 3 refuse to overwrite: delete or rename the output to rerun. Step 6 overwrites `outputs/realrobot/lab_20260811/boxer/lab_20260811/`.
@@ -22,7 +50,7 @@
 - Step 8: `--save-only` writes the recording without opening a window; `python3 -m rerun outputs/realrobot/lab_20260811/scene_graph.rrd` reopens it.
 - After step 7: `python3 -m core.reasoner.query '<object>' --graph config/realrobot/scene_graph/lab_20260811.json` prints the search order.
 - Replay navigation on the finished map and graph, with no robot: [realrobot/offline/](../README.md#realrobotoffline).
-- Real robot: Nav2 takes `map:=/home/ws/config/realrobot/map/lab_20260811.yaml`; the mission takes `--graph config/realrobot/scene_graph/lab_20260811.json` ([navigation README](../../core/navigation/README.md#real-robot)). `launch/search.launch.py` is simulation-only.
+- Real robot: Nav2 takes `map:=/home/ws/config/realrobot/map/lab_20260811/map.yaml`; the mission takes `--graph config/realrobot/scene_graph/lab_20260811.json` ([navigation README](../../core/navigation/README.md#real-robot)). `launch/search.launch.py` is simulation-only.
 
 ## Files in `realrobot/dataprep/`
 
@@ -69,7 +97,7 @@ The RGB frame is optical (x right, y down, z forward): the bag's registered clou
 
 **Registration (step 2).** `lab_20260811_scan_to_map.json` is the identity with `source_frame: "map"`: every pose above is already in the SLAM map frame, so `scene.ply` is built in map coordinates. No ICP, nothing measured.
 
-**Boxer sequence (step 3).** These keyframes already follow ScanNet's conventions, so they are hardlinked into `frames/{color,depth,pose}/` (ids 0..N-1), with `intrinsics.txt` as `frames/intrinsic/intrinsic_color.txt`. Boxer's ScanNet loader moves the origin to the first camera, map (0.768, 0.162, 1.015). `config/realrobot/map/lab_20260811_boxer_to_map.json` is that translation, with `source_frame: "boxer_lab_20260811"`. Gravity needs nothing: Boxer assumes world −z, and the map is z-up.
+**Boxer sequence (step 3).** These keyframes already follow ScanNet's conventions, so they are hardlinked into `frames/{color,depth,pose}/` (ids 0..N-1), with `intrinsics.txt` as `frames/intrinsic/intrinsic_color.txt`. Boxer's ScanNet loader moves the origin to the first camera, map (0.768, 0.162, 1.015). `config/realrobot/map/lab_20260811/boxer_to_map.json` is that translation, with `source_frame: "boxer_lab_20260811"`. Gravity needs nothing: Boxer assumes world −z, and the map is z-up.
 
 **Boxes and graph (steps 6–7), run of 2026-09-15.** Stopped early by hand, then fused from the saved boxes.
 

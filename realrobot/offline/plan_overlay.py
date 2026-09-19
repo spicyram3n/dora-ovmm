@@ -43,19 +43,15 @@ import matplotlib.pyplot as plt  # noqa: E402
 from matplotlib.patches import Polygon  # noqa: E402
 from matplotlib.patheffects import withStroke  # noqa: E402
 
-DEFAULT_GRAPH = ROOT / "config/realrobot/scene_graph/lab_20260811.json"
-DEFAULT_MAP = ROOT / "config/realrobot/map/lab_20260811.yaml"
+from core.utils.recording import Paths, name_from_map  # noqa: E402
+
+RECORDING = Paths()
+DEFAULT_GRAPH, DEFAULT_MAP = (RECORDING.graph, RECORDING.map)
 LAUNCH = Path(__file__).resolve().parent / "planner.launch.py"
 # Kept off the devcontainer's ROS_DOMAIN_ID=5 so a running sim or mission cannot
 # answer these goals, and so this stack's /map cannot reach theirs.
 DOMAIN = 91
 FREE, UNKNOWN, OCCUPIED = 254, 205, 0  # nav2 trinary PGM values
-# An object's box underside this close to z = 0 means it rests on the floor.
-# In this graph nothing lands near the line: the three floor objects sit at
-# -0.02, -0.02 and 0.02 m, and the next object up starts at 0.50 m.
-FLOOR = 0.15
-# Shorter than this and the base rides over it: a cable, a mat, a threshold.
-MIN_HEIGHT = 0.05
 # Occupied cells this close to the target's footprint are the laser's return off
 # the target itself and do not block the view of it. Wider than this and a pose
 # starts seeing through the thin wall a piece of furniture stands against.
@@ -66,61 +62,92 @@ REACHED = 0.1
 # realrobot/dataprep/visualize.py's palette, so the figures read as one set.
 INK, MUTED, PATH, CAM = "#1f2933", "#7b8794", "#d14d1f", "#2464b0"
 FURNITURE, OBJECT, TARGET = "#2464b0", "#7b8794", "#1f9d55"
+# Rooms land anywhere on the map, so any two can end up side by side: that is the
+# all-pairs case, where only the first three categorical slots clear the
+# colour-vision separation floors. Past three the hue is a hint and the name
+# written across each region is what identifies it. Assigned in this order by
+# sorted room name and never cycled, so a room keeps its colour between runs.
+ROOM_COLOURS = ("#2a78d6", "#eb6834", "#1baf7a", "#eda100",
+                "#e87ba4", "#008300", "#4a3aa7", "#e34948")
 
 
-def read_map(yaml_path):
-    """The PGM, its resolution and its map-frame origin, rows running north."""
-    meta = yaml.safe_load(yaml_path.read_text())
-    if meta.get("mode", "trinary") != "trinary" or meta.get("negate", 0):
-        raise ValueError(f"{yaml_path} is not a plain trinary map")
-    image = cv2.imread(str(yaml_path.parent / meta["image"]), cv2.IMREAD_UNCHANGED)
-    if image is None:
-        raise ValueError(f"cannot read the map image named in {yaml_path}")
-    return np.flipud(image), float(meta["resolution"]), np.array(meta["origin"][:2], float)
+from core.utils.occupancy import read_map, to_cells  # noqa: E402,F401
 
 
-def to_cells(points, resolution, origin):
-    """Map-frame xy to (column, row) in a north-up image."""
-    return (np.asarray(points, float) - origin) / resolution
+def rooms_of(scene):
+    """{room name: colour}, or {} for a graph step 3 built without --rooms."""
+    names = sorted({data["room"] for _, data in scene.nodes(data=True) if data["room"]})
+    return {name: ROOM_COLOURS[index % len(ROOM_COLOURS)]
+            for index, name in enumerate(names)}
 
 
-def standing_on_floor(data):
-    """Whether an object's box rests on the floor instead of on a piece of furniture.
+def room_anchor(scene, room):
+    """Where to write a room's name: the median of its furniture centres.
 
-    The map frame's z = 0 is base_footprint, which is the floor the base drives on,
-    so the test is the height of the box's underside and nothing else. The graph's
-    own `on`/`in` edge will not do: computer tower (36) is edged `in desk (4)`
-    because it is inside the desk's box, and it is standing under it on the floor.
-    Boxer gives axis-aligned bounds for objects (only furniture gets a fitted yaw),
-    so the blocker is that box seen from above."""
-    lower, upper = np.asarray(data["bounds"], float)
-    return lower[2] <= FLOOR and upper[2] - lower[2] >= MIN_HEIGHT
+    No region is drawn around a room. These rooms are not convex -- the office
+    wraps the corridor -- so a hull over its furniture would claim the floor in
+    between and swallow the dining area whole, inventing a nesting that is not
+    in the graph. The colour of each footprint is what says which room it is in.
+    The median, not the mean, so one far-flung piece cannot drag the name off
+    the cluster it belongs to."""
+    from core.scene_graph import graph as sg
+
+    centres = [sg.footprint(data)[0][:2] for data in sg.furniture(scene).values()
+               if data["room"] == room]
+    return np.median(np.asarray(centres, float), axis=0) if centres else None
 
 
-def blockers(scene):
-    """Every scene-graph shape the base can run into: furniture by its fitted
-    footprint, plus objects standing on the floor by their bounds."""
+def blockers(scene, exclude=()):
+    """The map-frame outlines core.scene_graph.graph.blockers keeps the base out
+    of, each with its node attributes so the figures can label and count them."""
     from core.scene_graph import graph as sg
 
     shapes = []
-    for data in sg.furniture(scene).values():
-        centre, dimensions, yaw = sg.footprint(data)
-        shapes.append((centre[:2], dimensions[:2], yaw, data))
-    for data in sg.objects(scene).values():
-        if standing_on_floor(data):
-            lower, upper = np.asarray(data["bounds"], float)
-            shapes.append(((lower[:2] + upper[:2]) / 2, (upper - lower)[:2], 0.0, data))
+    for node_id, (centre, dimensions, yaw) in sg.blockers(scene, exclude=exclude).items():
+        shapes.append((centre[:2], dimensions[:2], yaw, scene.nodes[node_id]))
     return shapes
+
+
+def stamp(image, resolution, origin, scene, exclude=()):
+    """`image` with every blocker filled in as occupied."""
+    from core.utils import geometry
+
+    stamped = image.copy()
+    for centre, size, yaw, _ in blockers(scene, exclude):
+        corners = to_cells(geometry.footprint_corners(centre, size, yaw), resolution, origin)
+        cv2.fillPoly(stamped, [np.round(corners).astype(np.int32)], OCCUPIED)
+    return stamped
+
+
+def pose_grid(image, resolution, origin, scene, clearance, exclude=()):
+    """The costmap core.pipeline.actions.plan filters observation poses against.
+
+    Pass the target in `exclude`, the same way sg.blockers wants it. Left in, its
+    own box grown by `clearance` lies across every ray from the ring to the piece,
+    and standoff.unobstructed forgives only cells within SKIN (0.15 m) of the
+    footprint; at the 0.3 m default that collar drops every pose the piece has."""
+    return occupancy_grid(np.where(navigable(stamp(image, resolution, origin, scene,
+                                                    exclude), resolution, clearance),
+                                   0, 100), resolution, origin)
+
+
+def sight_grid(stamped, resolution, origin):
+    """The costmap standoff.unobstructed reads: walls only, no clearance collar.
+
+    pose_grid grows every blocker by --clearance so the base does not park against
+    one, and counts unknown as blocked the way track_unknown_space does. Neither
+    is opaque -- a pose sees straight across floor it could not stand on, and an
+    unknown cell is floor the laser never reached rather than something standing
+    in it -- so a view test against pose_grid drops poses with a clear line to the
+    piece. Matches base_placement.sight_grid, which is what the robot uses."""
+    return occupancy_grid(np.where(stamped == FREE, 0,
+                                   np.where(stamped == UNKNOWN, -1, 100)),
+                          resolution, origin)
 
 
 def stamped_map(image, resolution, origin, scene, destination):
     """`image` with every blocker filled in as occupied, saved as a map Nav2 can serve."""
-    from core.utils import geometry
-
-    stamped = image.copy()
-    for centre, size, yaw, _ in blockers(scene):
-        corners = to_cells(geometry.footprint_corners(centre, size, yaw), resolution, origin)
-        cv2.fillPoly(stamped, [np.round(corners).astype(np.int32)], OCCUPIED)
+    stamped = stamp(image, resolution, origin, scene)
     destination.parent.mkdir(parents=True, exist_ok=True)
     cv2.imwrite(str(destination.with_suffix(".pgm")), np.flipud(stamped))
     destination.with_suffix(".yaml").write_text(yaml.safe_dump({
@@ -141,18 +168,18 @@ def navigable(image, resolution, clearance):
     return distance_transform_edt(image == FREE) * resolution >= clearance
 
 
-def occupancy_grid(mask, resolution, origin):
-    """`mask` as the OccupancyGrid standoff.free reads, so poses inside walls or
-    against them are dropped before Nav2 is asked about them."""
+def occupancy_grid(values, resolution, origin):
+    """`values` as the OccupancyGrid standoff.free and .unobstructed read, so poses
+    inside walls or against them are dropped before Nav2 is asked about them."""
     from nav_msgs.msg import OccupancyGrid
 
     grid = OccupancyGrid()
     grid.header.frame_id = "map"
     grid.info.resolution = resolution
-    grid.info.height, grid.info.width = mask.shape
+    grid.info.height, grid.info.width = np.shape(values)
     grid.info.origin.position.x, grid.info.origin.position.y = map(float, origin)
     grid.info.origin.orientation.w = 1.0
-    grid.data = np.where(mask, 0, 100).astype(np.int8).ravel().tolist()
+    grid.data = np.asarray(values).astype(np.int8).ravel().tolist()
     return grid
 
 
@@ -253,7 +280,10 @@ class Planner:
 
 def draw(figure_path, image, resolution, origin, scene, location, start, goal, path,
          stamped, full_map):
-    """The map, the scene graph on top of it, and the planned leg from start to goal."""
+    """The map, the scene graph on top of it, and the planned leg from start to goal.
+
+    location/start/goal/path are None in --survey mode, which draws the graph
+    alone: no target is highlighted and there is no leg to show."""
     from core.scene_graph import graph as sg
     from core.utils import geometry
 
@@ -270,20 +300,32 @@ def draw(figure_path, image, resolution, origin, scene, location, start, goal, p
                                facecolor=colour, edgecolor=colour, alpha=alpha,
                                linewidth=width, zorder=3))
 
-    axes.plot(path[:, 0], path[:, 1], color=PATH, linewidth=2.0, zorder=5,
-              label=f"Nav2 Theta* path, {path_length(path):.1f} m")
-    axes.plot(*start, "o", color=INK, markersize=8, zorder=6, label="start")
-    axes.quiver(goal[0], goal[1], 0.5 * math.cos(goal[2]), 0.5 * math.sin(goal[2]),
-                color=CAM, angles="xy", scale_units="xy", scale=1, width=0.004, zorder=6,
-                label="goal: first observation pose")
+    # Only the survey answers "are these the right rooms"; a planned figure needs
+    # its colours for the chosen piece and the path.
+    rooms = rooms_of(scene) if location is None else {}
+    if path is not None:
+        axes.plot(path[:, 0], path[:, 1], color=PATH, linewidth=2.0, zorder=5,
+                  label=f"Nav2 Theta* path, {path_length(path):.1f} m")
+        axes.plot(*start, "o", color=INK, markersize=8, zorder=6, label="start")
+        axes.quiver(goal[0], goal[1], 0.5 * math.cos(goal[2]), 0.5 * math.sin(goal[2]),
+                    color=CAM, angles="xy", scale_units="xy", scale=1, width=0.004,
+                    zorder=6, label="goal: first observation pose")
 
+    chosen_id = location.furniture_id if location else None
     for node, data in sg.furniture(scene).items():
-        chosen = node == location.furniture_id
+        chosen = node == chosen_id
         centre, dimensions, yaw = sg.footprint(data)
-        outline(centre[:2], dimensions[:2], yaw, TARGET if chosen else FURNITURE,
-                0.5 if chosen else 0.3, 1.6 if chosen else 0.8)
-    axes.plot([], [], "s", color=FURNITURE, alpha=0.5,
-              label=f"furniture footprints ({len(sg.furniture(scene))})")
+        colour = rooms.get(data["room"], FURNITURE)
+        outline(centre[:2], dimensions[:2], yaw, TARGET if chosen else colour,
+                0.5 if chosen else 0.45, 1.6 if chosen else 0.8)
+    if rooms:
+        for room, colour in rooms.items():
+            count = sum(data["room"] == room for data in sg.furniture(scene).values())
+            axes.plot([], [], "s", color=colour, alpha=0.6,
+                      label=f"{room} ({count} furniture)")
+    else:
+        axes.plot([], [], "s", color=FURNITURE, alpha=0.5,
+                  label=f"furniture footprints ({len(sg.furniture(scene))})")
     floor_objects = 0
     for centre, size, yaw, data in blockers(scene):
         if data["movable"]:
@@ -292,22 +334,32 @@ def draw(figure_path, image, resolution, origin, scene, location, start, goal, p
     if floor_objects:
         axes.plot([], [], "s", color=OBJECT, alpha=0.6,
                   label=f"objects standing on the floor ({floor_objects})")
-    if location.object_id is not None:
+    if location is not None and location.object_id is not None:
         data = scene.nodes[location.object_id]
         axes.plot(*data["centroid"][:2], "*", color=TARGET, markersize=16, zorder=7,
                   markeredgecolor=INK, markeredgewidth=0.5,
                   label=f"target: {data['name']} ({location.object_id})")
+    # Over the furniture labels, in a box, because the desk row is dense enough
+    # that a stroked name alone disappears into it.
+    for room, colour in rooms.items():
+        anchor = room_anchor(scene, room)
+        if anchor is None:
+            continue
+        axes.annotate(room.upper(), anchor, color=colour, fontsize=11,
+                      fontweight="bold", ha="center", va="center", zorder=9,
+                      bbox=dict(boxstyle="round,pad=0.35", facecolor="white",
+                                edgecolor=colour, alpha=0.9, linewidth=1.2))
     # Labelled last and over everything, so the dense desk row stays readable.
     for node, data in sg.furniture(scene).items():
-        chosen = node == location.furniture_id
+        chosen = node == chosen_id
         axes.annotate(f"{data['name'] or data['label']} ({node})",
                       sg.footprint(data)[0][:2], color=TARGET if chosen else INK,
                       fontsize=6.5, ha="center", va="center", zorder=8,
                       path_effects=[withStroke(linewidth=2.2, foreground="white")])
 
     if not full_map:
-        interest = np.vstack([path, [start], [goal[:2]],
-                              [centre for centre, _, _, _ in blockers(scene)]])
+        interest = np.vstack([[centre for centre, _, _, _ in blockers(scene)]]
+                             + ([path, [start], [goal[:2]]] if path is not None else []))
         axes.set_xlim(interest[:, 0].min() - 1.5, interest[:, 0].max() + 1.5)
         axes.set_ylim(interest[:, 1].min() - 1.5, interest[:, 1].max() + 1.5)
     axes.set_aspect("equal")
@@ -318,18 +370,26 @@ def draw(figure_path, image, resolution, origin, scene, location, start, goal, p
         spine.set_color("#d9dde2")
     axes.legend(loc="upper left", fontsize=8, facecolor="white", framealpha=0.9,
                 edgecolor="#d9dde2")
-    if location.object_id is None:
+    if location is None:
+        query = (f"{len(sg.furniture(scene))} furniture, "
+                 f"{sum(data['movable'] for _, _, _, data in blockers(scene))} "
+                 f"floor objects"
+                 + (f", {len(rooms)} rooms" if rooms else ", no rooms assigned"))
+    elif location.object_id is None:
         query = f"furniture {location.label} ({location.furniture_id})"
     elif location.furniture_id is None:
         query = f"{location.label} ({location.object_id}), on nothing the graph knows"
     else:
         query = (f"{location.label} ({location.object_id}) {location.relation} "
                  f"{scene.nodes[location.furniture_id]['label']} ({location.furniture_id})")
-    axes.set_title(f"{query}   ·   planned on the "
-                   f"{'map with the scene graph stamped in' if stamped else 'laser map alone'}")
+    if location is None:
+        axes.set_title(f"{query}   ·   {figure_path.stem} on the laser map")
+    else:
+        axes.set_title(f"{query}   ·   planned on the "
+                       f"{'map with the scene graph stamped in' if stamped else 'laser map alone'}")
     figure.tight_layout()
     figure_path.parent.mkdir(parents=True, exist_ok=True)
-    figure.savefig(figure_path, dpi=150)
+    figure.savefig(figure_path, dpi=200 if location is None else 150)
     plt.close(figure)
 
 
@@ -425,13 +485,16 @@ def path_length(path):
 def main():
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
-    query = parser.add_mutually_exclusive_group(required=True)
+    query = parser.add_mutually_exclusive_group()
     query.add_argument("--target", help="object to look for, by label or instance name")
     query.add_argument("--furniture", help="furniture to drive to, by name, label or node ID")
+    parser.add_argument("--survey", action="store_true",
+                        help="draw the whole scene graph on the map and stop: no query, "
+                             "no planning, no ROS")
     parser.add_argument("--graph", type=Path, default=DEFAULT_GRAPH)
     parser.add_argument("--map", type=Path, default=DEFAULT_MAP)
     parser.add_argument("--output", type=Path, help="PNG to write "
-                        "(default outputs/realrobot/<map>/nav/<query>.png)")
+                        "(default outputs/realrobot/<recording>/nav/<query>.png)")
     parser.add_argument("--start", type=float, nargs=2, metavar=("X", "Y"),
                         help="start in map metres; random free cell without it")
     parser.add_argument("--seed", type=int, default=0, help="which random start")
@@ -450,23 +513,41 @@ def main():
     parser.add_argument("--full-map", action="store_true", help="draw all 50 x 28 m")
     parser.add_argument("--domain-id", type=int, default=DOMAIN)
     args = parser.parse_args()
+    if not (args.survey or args.target or args.furniture):
+        parser.error("one of --target, --furniture or --survey is required")
+    # --graph and --map default independently, so overriding one and not the
+    # other plans a new graph on an old map: every pose then lands on floor that
+    # map never saw, and the run reports the target as unreachable rather than
+    # as a mismatch. Recordings keep one name across both paths, so compare it.
+    if name_from_map(args.map) != args.graph.stem:
+        parser.error(
+            f"--map is {name_from_map(args.map)} but --graph is {args.graph.stem}; "
+            "export RECORDING=<name> to move both, or pass --map and --graph together")
 
     from core.pipeline import actions
     from core.scene_graph import graph as sg
 
     scene = sg.load(args.graph)
     image, resolution, origin = read_map(args.map)
-    name = args.furniture or args.target
-    scratch = ROOT / "outputs" / "realrobot" / args.map.stem / "nav"
+    name = args.furniture or args.target or "survey"
+    recording = name_from_map(args.map)
+    scratch = ROOT / "outputs" / "realrobot" / recording / "nav"
     output = args.output or scratch / f"{name.replace(' ', '_')}.png"
+
+    if args.survey:
+        # Nothing is planned, so the stamped map would only be written and
+        # thrown away; the picture is drawn on the laser map either way.
+        draw(output, image, resolution, origin, scene, None, None, None, None,
+             False, args.full_map)
+        print(f"[figure] {output}")
+        return
 
     served, drawn = args.map, image
     if args.blockers:
         served, drawn = stamped_map(image, resolution, origin, scene,
-                                    scratch / f"{args.map.stem}_blockers")
+                                    scratch / f"{recording}_blockers")
         print(f"[map] {len(blockers(scene))} scene-graph shapes stamped into {served.name}")
     mask = navigable(drawn, resolution, args.clearance)
-    grid = occupancy_grid(mask, resolution, origin)
 
     rng = np.random.default_rng(args.seed)
     with Planner(served, args.domain_id) as planner:
@@ -477,14 +558,23 @@ def main():
         ):
             location = next(actions.targets(scene, args.target, args.furniture,
                                             robot_xy=tuple(start)))
-            poses, views = actions.plan(scene, location, robot_xy=tuple(start), grid=grid)
+            # Rebuilt per target: --target can resolve to different furniture from
+            # different starts, and the piece being looked at must be left out.
+            spare = () if location.furniture_id is None else (location.furniture_id,)
+            unstamped = stamp(image, resolution, origin, scene, spare) if args.blockers \
+                else image
+            grid = occupancy_grid(
+                np.where(navigable(unstamped, resolution, args.clearance), 0, 100),
+                resolution, origin)
+            poses, views = actions.plan(scene, location, robot_xy=tuple(start), grid=grid,
+                                        sight_grid=sight_grid(unstamped, resolution, origin))
             if args.sight_line:
                 poses, behind = in_sight(scene, location, poses, image, resolution, origin)
                 if behind:
                     print(f"[sight] {len(behind)} of {len(poses) + len(behind)} poses "
                           f"look at the target through a wall; dropped")
             if not poses:
-                why_blocked(scene, location, drawn, resolution, origin,
+                why_blocked(scene, location, unstamped, resolution, origin,
                             args.clearance, args.sight_line)
                 raise SystemExit("nothing to plan to; try another target, a smaller "
                                  "--clearance, or --no-blockers")

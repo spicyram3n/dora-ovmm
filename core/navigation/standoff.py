@@ -26,6 +26,12 @@ MIN_VIEWS = 2
 MAX_VIEWS = 6
 # Search storage from its long faces so the camera looks into the shelves.
 FACE_SHARE = 0.75
+# Cells this close to the target's own footprint are its laser return, not an
+# obstruction. Same value as plan_overlay.SKIN.
+SKIN = 0.15
+# base_placement.costmap_grid's values, repeated rather than imported: that
+# module pulls in rclpy and MoveIt, and this one is plain geometry.
+FREE = 0
 
 
 def blocks(pose, blockers):
@@ -40,15 +46,47 @@ def blocks(pose, blockers):
     return False
 
 
+def cell(grid, xy, outside=None):
+    """The costmap value under `xy`, or `outside` when it is off the map."""
+    info = grid.info
+    column = math.floor((xy[0] - info.origin.position.x) / info.resolution)
+    row = math.floor((xy[1] - info.origin.position.y) / info.resolution)
+    if not (0 <= column < info.width and 0 <= row < info.height):
+        return outside
+    return grid.data[row * info.width + column]
+
+
 def free(grid, pose):
     """Check a map costmap cell; treat blocked and off-map positions as unavailable."""
-    info = grid.info
-    # Convert the base position to a grid cell; reject cells outside the map.
-    column = math.floor((pose[0] - info.origin.position.x) / info.resolution)
-    row = math.floor((pose[1] - info.origin.position.y) / info.resolution)
-    if not (0 <= column < info.width and 0 <= row < info.height):
-        return False
-    return grid.data[row * info.width + column] == 0
+    return cell(grid, pose) == 0
+
+
+def unobstructed(grid, pose, aim, footprint):
+    """False when a costmap cell blocks the line from `pose` to what it looks at.
+
+    candidates() rings a piece geometrically and filters only against other
+    furniture boxes and free cells, and sees() checks bearing and range but not
+    occlusion, so a pose on the far side of a wall survives both and the base
+    would drive there to look at nothing. Cells within SKIN of the target's own
+    footprint are its own laser return and do not count as blocking.
+
+    realrobot/offline/plan_overlay.py has run the same test on the static map
+    since 2026-09-16; this is it against a live costmap."""
+    centre = np.asarray(footprint[0], dtype=float)[:2]
+    limits = np.asarray(footprint[1], dtype=float)[:2] / 2 + SKIN
+    yaw = footprint[2]
+    pose = np.asarray(pose[:2], dtype=float)
+    aim = np.asarray(aim[:2], dtype=float)
+    steps = max(2, int(math.hypot(*(aim - pose)) / (grid.info.resolution / 2)))
+    for point in pose + np.linspace(0, 1, steps)[1:-1, None] * (aim - pose):
+        if np.all(np.abs(to_local(point, centre, yaw)) <= limits):
+            continue
+        # Only a wall stops a view. UNKNOWN (-1) is a cell the laser has not
+        # reached, not a cell with something in it, and on a map that is 86%
+        # unknown treating it as opaque leaves some pieces with no view at all.
+        if cell(grid, point, outside=FREE) > 0:
+            return False
+    return True
 
 
 def aim_point(xy, centre, dimensions, yaw):

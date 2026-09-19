@@ -257,7 +257,7 @@ Summary:
 | GraspGenX `num_grasps` | 200 (client default) |
 | `cloud()` | ≥ 100 points, extent ≤ **0.6 m** |
 | `SHAPE_POLICIES` | cylinder: front; sphere/cube: top_down if top ≤ **0.95 m**; cuboid: front, top_down when wide |
-| cylinder fit | radius **0.008 to 0.15**, residual ≤ 1.5 mm, height ≥ 0.04, middle 60 % band |
+| cylinder fit | radius **0.008 to 0.15**, residual ≤ max(1.5 mm, 0.10 × radius), height ≥ 0.04, middle 60 % band |
 | cylinder contact | 0.03 or 0.25 × height (whichever is smaller) above centre; ≤ 0.10 m from proposal |
 | top rectangle | edges 0.012 to 0.45, fill ≥ 0.9, face band ±3 mm |
 | sphere fit | radius **0.015 to 0.055**, RMS ≤ 2.5 mm |

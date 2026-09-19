@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Nav2 against the real HSR, using the robot's own localization.
 
-The robot already runs Toyota's stack: laser_2d_localizer and pose_integrator
-publish map->odom at 100 Hz, and the saved lab map is in that same map frame.
+The robot already runs Toyota's stack: pose_integrator publishes map->odom at
+100 Hz (laser_2d_localizer only feeds it a pose, and stopping the localizer
+leaves the transform running off the last correction), and the saved lab map is
+in that same map frame.
 So this launch brings up map_server and the four Nav2 servers, and no AMCL --
 a second map->odom publisher would fight the robot's.
 
@@ -21,20 +23,35 @@ both running the TF tree has two publishers for map->odom and the base jumps.
 
 Never send a goal to Toyota's /move_base while this is up: its base_path_follower
 publishes to /base_velocity as well, and the two would fight for the base.
+
+/base_velocity is only the right output while Toyota's navigation.py runs, since
+safety_velocity_limiter and velocity_switcher relay it to the wheels and stop
+with that launch. Without them the topic has no subscriber and the base never
+moves, with no error anywhere. Then:
+    cmd_vel_topic:=/omni_base_controller/cmd_vel
+which reaches the wheels directly, at the cost of the bumper stop, the obstacle
+slowdown and teleop's override (confirmed on hardware 2026-09-19).
 """
 
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from core.utils.recording import Paths  # noqa: E402
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, GroupAction
 from launch.conditions import IfCondition, UnlessCondition
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
-MAP = "/home/ws/config/realrobot/map/lab_20260811.yaml"
+MAP = str(Paths().map)
 PARAMS = "/home/ws/config/realrobot/nav2/nav2_params_real.yaml"
 
 # The safety limiter's input, not the controller's output. Keeps
 # safety_velocity_limiter (obstacle slowdown, bumpers) and velocity_switcher
-# (teleop override) between Nav2 and the wheels.
+# (teleop override) between Nav2 and the wheels -- both of which live in
+# Toyota's navigation.py, so pass cmd_vel_topic:=/omni_base_controller/cmd_vel
+# when that launch is down or nothing subscribes to this.
 CMD_VEL = "/base_velocity"
 
 # Toyota's laser_2d_localizer listens here, not on /initialpose.

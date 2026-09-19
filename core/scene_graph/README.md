@@ -20,7 +20,7 @@ Needs the sim and Nav2 running for `register` ([root README, step 2](../../READM
 | --- | --- |
 | `python3 -m core.scene_graph.build register --world-base 5.0 6.6 0.0` | Measure the Gazebo-world → map transform. Writes `config/map/world_to_map.json` (`--output` to change). |
 | `python3 -m core.scene_graph.build --transform config/map/world_to_map.json` | Build the graph from the world file |
-| Add `--rooms` | Let DeepSeek name the rooms (needs `DEEPSEEK_API_KEY`) |
+| Add `--rooms` | Group furniture into rooms with DeepSeek (needs `DEEPSEEK_API_KEY`). No map is read here, so it guesses where the walls are; the real-robot path divides on the map instead ([rooms.py](rooms.py)) |
 | Add `--output path.json` | Save somewhere else |
 | Add `--world path.world` | Use another Gazebo world |
 | `python3 visualization/viewpoints.py pringles` | Check the result: where would a query search first? |
@@ -51,7 +51,7 @@ Lab bag 2026-08-11. Every step from the bag to the graph: [Boxer README](../../d
 ```bash
 python3 -m docker.boxer.to_scene_graph \
   --boxes outputs/realrobot/lab_20260811/boxer/lab_20260811/boxer_3dbbs_fused.csv \
-  --transform config/realrobot/map/lab_20260811_boxer_to_map.json \
+  --transform config/realrobot/map/lab_20260811/boxer_to_map.json \
   --output config/realrobot/scene_graph/lab_20260811.json
 ```
 
@@ -67,9 +67,9 @@ the `.rrd` without opening Rerun; `python3 -m rerun <file>.rrd` reopens it.
 
 ### Registration
 
-- **Keyframes:** the robot's keyframes are already in `map`: the same robot, in the same SLAM run as `config/realrobot/map/lab_20260811.yaml`.
+- **Keyframes:** the robot's keyframes are already in `map`: the same robot, in the same SLAM run as `config/realrobot/map/lab_20260811/map.yaml`.
 - **Boxer's boxes:** Boxer moves its origin to the first camera, so its boxes are not in `map`.
-- **The fix:** `config/realrobot/map/lab_20260811_boxer_to_map.json` shifts them back (`source_frame: "boxer_lab_20260811"`, no rotation). `realrobot/dataprep/make_boxer_scene.py --registration` writes it.
+- **The fix:** `config/realrobot/map/lab_20260811/boxer_to_map.json` shifts them back (`source_frame: "boxer_lab_20260811"`, no rotation). `realrobot/dataprep/make_boxer_scene.py --registration` writes it.
 
 ---
 
@@ -133,11 +133,12 @@ python3 -m core.reasoner.query 'coffee mug' --graph config/realrobot/scene_graph
 | `label`, `name` | ScanNet200 class; instance or Gazebo model name. Object search matches both |
 | `movable` | `true` = object, `false` = furniture |
 | `centroid`, `dimensions`, `bounds` | Map-frame box; `bounds` are axis-aligned |
-| `room` | Room name (with `--rooms`) |
+| `room` | Room name (with `--rooms`). Furniture gets it from the division; an object inherits its furniture's, so an object with no `on`/`in` edge stays `null` |
 | `footprint` | Furniture only: the smallest turned rectangle seen from above (`centre`, `size`, `yaw`) |
 | Edge `relation` | Object → furniture: `on`, `in` or `near` |
 
 - **Footprints:** navigation uses the footprint, not the bounds. Read it with `graph.footprint(scene.nodes[node_id])`.
+- **Keep-out shapes:** `graph.blockers(scene, exclude=...)` is the one definition of what the base can run into — every furniture footprint plus every object standing on the floor, keyed by node ID. Pass the target's ID in `exclude`, or its own box rules out every pose that can reach it. `person` never blocks (`graph.TRANSIENT`): the live laser sees people and clears them, a recording cannot. Nothing taller than `graph.MAX_BLOCKER_HEIGHT` (1.8 m) blocks either: a box that tall touching the floor is a door or a wall panel caught floor to ceiling, and since objects block by their axis-aligned bounds, a thin panel at an angle to the map axes would inflate into a metre-wide keep-out.
 - **Relations are guesses:** `on`, `in` and `near` are geometric estimates. They do not prove support, visibility or reach.
 - **IDs:** node IDs survive save/load but can change on rebuild.
 - **Updating an object:** `record_object(..., frame_id="map")` takes a box centre and dimensions. Pass `node_id` to update; leave it out to create. Labels alone never merge objects.
@@ -148,7 +149,8 @@ python3 -m core.reasoner.query 'coffee mug' --graph config/realrobot/scene_graph
 | --- | --- |
 | [build.py](build.py) | Simulation CLI: register the transform, build the apartment graph |
 | [to_scene_graph.py](../../docker/boxer/to_scene_graph.py) | Real-robot CLI: build a graph from Boxer's fused boxes |
-| [graph.py](graph.py) | Build, update, validate, save and load graphs |
+| [graph.py](graph.py) | Build, update, validate, save and load graphs; footprints and keep-out shapes |
+| [rooms.py](rooms.py) | Divide furniture into rooms on a Nav2 map, by distance along the floor |
 | [instance.py](instance.py) | Labelled source-frame points; label lookup |
 | [scannet200.yaml](../../config/scene_graph/scannet200.yaml) | Label dictionary: 198 classes by role, Gazebo and synonym aliases |
 | [gazebo.py](gazebo.py) | Read the world's initial collision geometry |

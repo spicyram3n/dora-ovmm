@@ -29,7 +29,7 @@ from launch_ros.actions import Node
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import planning_model  # noqa: E402
-from planning_model import RVIZ_DIR, ours, theirs  # noqa: E402
+from planning_model import CONFIG_DIR, ours, theirs  # noqa: E402
 
 
 def generate_launch_description():
@@ -42,6 +42,13 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             "use_rviz", default_value="false", choices=["true", "false"]
+        ),
+        DeclareLaunchArgument(
+            "rviz_config",
+            default_value="rviz/moveit.rviz",
+            description="RViz file, named relative to config/ like sensors_config. "
+            "The real robot's realrobot/rviz/grasp_real.rviz adds the RX camera "
+            "feed with the best-effort QoS that stream needs.",
         ),
         DeclareLaunchArgument(
             "use_sim_time", default_value="true", choices=["true", "false"]
@@ -203,7 +210,8 @@ def launch_setup(context):
         name="rviz2",
         output="log",
         parameters=model + [{"use_sim_time": sim_time}],
-        arguments=["-d", os.path.join(RVIZ_DIR, "moveit.rviz")],
+        arguments=["-d", os.path.join(
+            CONFIG_DIR, LaunchConfiguration("rviz_config").perform(context))],
         condition=IfCondition(LaunchConfiguration("use_rviz")),
     )
     return [

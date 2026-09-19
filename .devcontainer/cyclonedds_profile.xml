@@ -1,5 +1,18 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- CycloneDDS profile for talking to the real robot at 10.7.3.185 over enp5s0. -->
+<!-- CycloneDDS profile for talking to the real robot at 10.7.3.185 over enp5s0.
+
+     This PC is 131.220.7.198 and the robot 10.7.3.185, so the path is routed and
+     its MTU is 1500 even though enp5s0 itself offers 9000. FragmentSize therefore
+     has to stay under 1500: at the 8000B inherited from the simulation profile
+     every RTPS fragment became six IP fragments, and one lost fragment discards
+     the whole sample. Small topics survived that, large ones did not, which left
+     the robot's endpoint announcements arriving in part (controllers that were
+     never discovered, varying from run to run) and arm trajectory goals silently
+     lost while one-point gripper goals went through (2026-09-17).
+
+     The jumbo tuning belongs to cyclonedds_sim.xml, where everything is loopback
+     at MTU 65536 and Gazebo's 1.2 MB images go over DDS. On the real robot the
+     images come through vision transport over Zenoh, so nothing here needs it. -->
 <CycloneDDS xmlns="https://cdds.io/config">
   <Domain id="any">
 
@@ -11,13 +24,13 @@
       <AllowMulticast>spdp</AllowMulticast>
       <EnableMulticastLoopback>true</EnableMulticastLoopback>
 
-      <FragmentSize>8000B</FragmentSize>
-      <MaxMessageSize>8500B</MaxMessageSize>
+      <FragmentSize>1344B</FragmentSize>
+      <MaxMessageSize>14720B</MaxMessageSize>
     </General>
 
     <Discovery>
       <ParticipantIndex>auto</ParticipantIndex>
-      <MaxAutoParticipantIndex>20</MaxAutoParticipantIndex>
+      <MaxAutoParticipantIndex>100</MaxAutoParticipantIndex>
       <Peers>
         <Peer Address="10.7.3.185"/>
         <Peer Address="131.220.7.198"/>

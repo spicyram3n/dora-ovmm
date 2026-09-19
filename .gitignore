@@ -43,3 +43,7 @@ data_hrl/
 /docs
 #vscode
 .vscode
+CLAUDE.md
+fixes/
+TROUBLESHOOTING.md
+rosgraph.png

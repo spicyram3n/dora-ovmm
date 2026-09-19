@@ -1,7 +1,7 @@
 """Nav2's global planner alone, serving one saved map.
 
     ros2 launch realrobot/offline/planner.launch.py \
-        map:=/home/ws/config/realrobot/map/lab_20260811.pgm's yaml
+        map:=/home/ws/config/realrobot/map/lab_20260811/map.yaml
 
 plan_overlay.py starts this itself; launch it by hand only to keep the planner
 up across several queries, or to look at /global_costmap/costmap in RViz.

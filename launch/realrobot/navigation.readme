@@ -1,6 +1,6 @@
 # Real-robot navigation: bring-up and what was found
 
-Nav2 on this PC against the real HSR, using the map in `config/realrobot/map/`.
+Nav2 on this PC against the real HSR, using the map in `config/realrobot/map/<recording>/`.
 Everything here was measured on the robot on 2026-09-17. The maths behind the
 localiser and the costmap rules are in [docs/realrobot_navigation.tex](../../docs/realrobot_navigation.tex);
 the wider navigation reference is [core/navigation/README.md](../../core/navigation/README.md).
@@ -55,13 +55,26 @@ and odometry come over plain DDS.
 
 | Decision | Why |
 | --- | --- |
-| **No AMCL** | The robot already publishes `map→odom` at 100 Hz from `laser_2d_localizer` + `pose_integrator`, and the saved map is in that same frame. A frame gets one parent; two publishers make the base jump. |
+| **No AMCL** | The robot already publishes `map→odom` at 100 Hz and the saved map is in that same frame. A frame gets one parent; two publishers make the base jump. The broadcaster is **`pose_integrator`** alone (`tmc_pose_integrator`, `CallbackTfBroadcast_`); `laser_2d_localizer` only publishes a pose, the particles and a score. Stopping the localizer does not stop the transform -- `pose_integrator` keeps broadcasting off the last correction it got. |
 | `cmd_vel` → `/base_velocity` | Keeps `safety_velocity_limiter` (obstacle slowdown, bumpers) and `velocity_switcher` between Nav2 and the wheels. Toyota's own `navigation_launch.py` remaps to `/omni_base_controller/cmd_vel`, which skips them. |
 | `odom_topic: /switched_odom` | The robot publishes no `/odom`. |
 | `use_sim_time: False` | No `/clock`. |
 
 The full chain: `controller_server` → `/base_velocity` → `safety_velocity_limiter`
 → `/command_velocity_autonomy` → `velocity_switcher` → `/omni_base_controller/cmd_vel`.
+
+Both relays live in Toyota's `navigation.py`, so stopping that launch leaves
+`/base_velocity` with **no subscriber**: Nav2 plans, MPPI commands its full
+`vx_max`, and the base never moves, with no error on any topic. Check with
+`ros2 topic info /base_velocity`, then skip the relays:
+
+```bash
+ros2 launch /home/ws/launch/realrobot/nav2_real.launch.py \
+  cmd_vel_topic:=/omni_base_controller/cmd_vel
+```
+
+Confirmed on hardware 2026-09-19. No bumper stop, no obstacle slowdown, and
+teleop can no longer override Nav2 -- both would publish to the same topic.
 
 **Never give Toyota's `/move_base` a goal while Nav2 runs.** It is an alternative
 source into the same pipe, not a part of Nav2 — its `base_path_follower`

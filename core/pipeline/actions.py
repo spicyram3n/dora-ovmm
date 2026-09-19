@@ -258,9 +258,8 @@ def view_key(location):
 def _views(scene, location):
     """Every clear pose around a place, facing it, and the surface it has to see."""
     pieces = sg.furniture(scene)
-    blockers = []
-    for data in pieces.values():
-        blockers.append(sg.footprint(data))
+    # Keep the place being observed out of its own keep-out set.
+    blockers = list(sg.blockers(scene, exclude=(location.object_id,)).values())
     if location.furniture_id is None:
         centre, dimensions, yaw = (location.centroid, [0, 0, 0], 0.0)
         storage = False
@@ -283,17 +282,45 @@ def _views(scene, location):
     return (poses, points)
 
 
-def plan(scene, location, robot_xy=None, grid=None):
-    """Order clear observation poses and report the view count; optionally filter by costmap."""
+def _shape(scene, location):
+    """The footprint the observation poses were generated around."""
+    if location.furniture_id is None:
+        return (location.centroid, [0.0, 0.0, 0.0], 0.0)
+    return sg.footprint(sg.furniture(scene)[location.furniture_id])
+
+
+def _aim(scene, location, pose):
+    """What that pose is meant to be looking at; _views re-aims at the object."""
+    if location.object_id is not None:
+        return location.centroid[:2]
+    return standoff.aim_point(pose[:2], *_shape(scene, location))
+
+
+def plan(scene, location, robot_xy=None, grid=None, sight_grid=None):
+    """Order clear observation poses and report the view count; optionally filter by costmap.
+
+    `grid` answers whether the base can stand somewhere, so its obstacles are
+    grown by the robot radius. `sight_grid` answers whether the piece can be seen
+    from there, which the collar has no say in: a pose can look straight across
+    floor it could not park on. Pass the same costmap blocked at LETHAL instead of
+    INSCRIBED (base_placement.sight_grid). It defaults to `grid`, which is how
+    this behaved before and what callers with only one costmap still get."""
     sg.require_map(scene)
     if location.frame_id != "map":
         raise ValueError("Search locations must be in map")
     key = view_key(location)
     if key not in VIEWS:
         poses, points = _views(scene, location)
-        # Remove candidate bases that land on blocked costmap cells.
+        # Remove candidate bases that land on blocked costmap cells, and those
+        # that would look at the place through a wall: candidates() rings the
+        # piece geometrically and cannot see walls at all.
         if grid is not None:
+            seen_through = grid if sight_grid is None else sight_grid
             poses = [pose for pose in poses if standoff.free(grid, pose)]
+            poses = [pose for pose in poses
+                     if standoff.unobstructed(seen_through, pose,
+                                              _aim(scene, location, pose),
+                                              _shape(scene, location))]
         VIEWS[key] = {"poses": poses, "points": points, "outcomes": {}}
     # Ordered afresh each time: the nearest pose depends on where the robot is now.
     poses, views = standoff.order(VIEWS[key]["poses"], VIEWS[key]["points"], robot_xy)
@@ -379,10 +406,11 @@ def make_graspable(scene, node_id, navigator, obstacles="--costmap", bearings=12
     """Park at a reachable base pose, using measured pregrasp geometry when available."""
     centre, dimensions = box(scene.nodes[node_id])
     holder, relation = sg.location_of(scene, node_id)
-    blockers = []
+    # The target is excluded: its own box is wider than graspable.PARK_DISTANCE
+    # leaves, so as a blocker it would reject every base pose that can reach it.
+    blockers = list(sg.blockers(scene, exclude=(node_id,)).values())
     solid = []
     for furniture_id, data in sg.furniture(scene).items():
-        blockers.append(sg.footprint(data))
         # Graph boxes are solid: the piece the object is on or in would swallow the hand.
         if furniture_id != holder or relation == "near":
             solid.append(sg.footprint(data))
@@ -459,7 +487,8 @@ def search(scene, obj, navigator, furniture=None, top_k=3, observe=locate, views
     # Advancing this iterator requests LLM fallback only when needed.
     for location in targets(scene, obj, furniture, navigator.robot_xy(), top_k):
         poses, needed = plan(scene, location, navigator.robot_xy(),
-                             base_placement.costmap_grid(navigator))
+                             base_placement.costmap_grid(navigator),
+                             base_placement.sight_grid(navigator))
         limit = max(views, needed)
         outcomes = VIEWS[view_key(location)]["outcomes"]
         observations = 0

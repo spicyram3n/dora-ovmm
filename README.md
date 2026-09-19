@@ -282,7 +282,7 @@ Open new terminals after editing it, or `source ~/.bashrc`. Check with `echo $CY
 | # | Command | Why |
 | --- | --- | --- |
 | 1 | `python3 realrobot/live/grasp_preflight.py` | Joint states, TF age, camera_info, RX RGB and depth rates, controller actions, SAM3, GraspGenX. Ends with `READY` |
-| 2 | `ros2 launch /home/ws/launch/realrobot/grasp_real.launch.py use_rviz:=true` | move_group, wall clock, octomap from `config/realrobot/moveit/sensors_xtion_remote.yaml` |
+| 2 | `ros2 launch /home/ws/launch/realrobot/grasp_real.launch.py use_rviz:=true` | move_group, wall clock, octomap from `config/realrobot/moveit/sensors_xtion_remote.yaml`. RViz opens on `config/realrobot/rviz/grasp_real.rviz`: the MoveIt displays plus RX's RGB and depth (`rviz_config:=` to change it) |
 | 3 | `python3 realrobot/live/grasp_preflight.py --moveit` | Adds move_group, the MTC capability and the relay's topics |
 | 4 | `HSR_REAL_ROBOT=1 python3 -m core.grasping.pick "pringles can" --mode grasp` | First trial: close on the can, no lift. Drop `--mode grasp` for the test lift |
 

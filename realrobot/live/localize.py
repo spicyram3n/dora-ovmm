@@ -8,6 +8,7 @@ this is the automatic one, so a fresh start does not need a hand-typed pose.
     python3 realrobot/live/localize.py                 # search the whole map
     python3 realrobot/live/localize.py --near 2.0 -3.5 # search 3 m around a guess
     python3 realrobot/live/localize.py --dry-run       # report the pose, publish nothing
+    python3 realrobot/live/localize.py --watch         # measure drift while it drives
 
 It publishes on both /laser_2d_correct_pose (what Toyota's localizer reads) and
 /initialpose (what AMCL reads), so it needs nothing else running and can be used
@@ -27,6 +28,10 @@ import argparse
 import math
 import sys
 import time
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from core.utils.recording import Paths  # noqa: E402
 
 import numpy as np
 import rclpy
@@ -37,7 +42,7 @@ from scipy.ndimage import distance_transform_edt
 from sensor_msgs.msg import LaserScan
 from tf2_ros import Buffer, TransformListener
 
-MAP = "/home/ws/config/realrobot/map/lab_20260811.yaml"
+MAP = str(Paths().map)
 SCAN = "/scan"
 # Both, so this works whichever localizer is up and whether or not Nav2 is
 # running: laser_2d_localizer reads the first, AMCL and RViz the second, and
@@ -176,6 +181,73 @@ class Localizer(Node):
             return found.transform.translation.x, found.transform.translation.y
         raise RuntimeError(f"no TF {BASE} -> {laser_frame}; is the robot up?")
 
+    def map_from_odom(self, timeout=3.0):
+        """The correction the localizer is applying, or None. Constant while the
+        base drives means nothing is correcting: pure odometry from here on."""
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            rclpy.spin_once(self, timeout_sec=0.3)
+            try:
+                found = self.buffer.lookup_transform("map", "odom", rclpy.time.Time())
+            except Exception:
+                continue
+            return found.transform.translation.x, found.transform.translation.y
+        return None
+
+    def believed_pose(self, timeout=3.0):
+        """Where the running localizer currently thinks the base is, or None.
+
+        Absent before anything publishes map->odom, which is the normal state
+        the first time this script runs after a boot."""
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            rclpy.spin_once(self, timeout_sec=0.3)
+            try:
+                found = self.buffer.lookup_transform("map", BASE, rclpy.time.Time())
+            except Exception:
+                continue
+            translation, rotation = found.transform.translation, found.transform.rotation
+            return (translation.x, translation.y,
+                    math.atan2(2 * (rotation.w * rotation.z + rotation.x * rotation.y),
+                               1 - 2 * (rotation.y ** 2 + rotation.z ** 2)))
+        return None
+
+
+def watch(node, options, field, resolution, origin, offset_x, offset_y):
+    """Score the live scan at the pose the stack believes, over and over.
+
+    No search and nothing published: this asks one question, "does /scan fit the
+    map where the localizer says we are", and answers it while the base drives.
+    A median that climbs as the robot moves is the localizer failing to correct,
+    which is what pulls the odom-frame local costmap off the map-frame global
+    one. Watch map->odom beside it: frozen while the base moves is the proof."""
+    print(f"watching every {options.watch:.0f} s; Ctrl-C to stop\n")
+    print(f"{'time':>6}  {'believed x,y':>18}  {'map->odom':>16}  "
+          f"{'median':>7}  {'<10cm':>6}")
+    started = time.time()
+    while True:
+        node.scan = None
+        scan = node.wait("scan", timeout=5.0)
+        believed = node.believed_pose()
+        correction = node.map_from_odom()
+        if scan is None or believed is None:
+            print(f"{time.time() - started:>6.0f}  "
+                  f"{'no scan' if scan is None else 'no map->base TF':>18}")
+            time.sleep(options.watch)
+            continue
+        ranges, angles = beams(scan, options.beams, options.max_range)
+        # quality() wants the laser's pose; believed_pose() gives the base's.
+        base_x, base_y, yaw = believed
+        laser_x = base_x + offset_x * math.cos(yaw) - offset_y * math.sin(yaw)
+        laser_y = base_y + offset_x * math.sin(yaw) + offset_y * math.cos(yaw)
+        median, within = quality(laser_x, laser_y, yaw, ranges, angles,
+                                 field, resolution, origin)
+        drift = ("     --" if correction is None
+                 else f"{correction[0]:>7.3f},{correction[1]:>7.3f}")
+        print(f"{time.time() - started:>6.0f}  {base_x:>8.3f},{base_y:>8.3f}  "
+              f"{drift:>16}  {median * 100:>5.0f} cm  {within * 100:>5.0f}%")
+        time.sleep(options.watch)
+
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
@@ -187,6 +259,10 @@ def main():
                         help="Search 3 m around this map position instead of the whole map.")
     parser.add_argument("--dry-run", action="store_true",
                         help="Print the pose without publishing it.")
+    parser.add_argument("--watch", type=float, nargs="?", const=2.0, metavar="SECONDS",
+                        help="Do not search or publish. Instead score the live scan "
+                             "against the map at the pose the stack believes, every "
+                             "SECONDS (default 2), and print map->odom beside it.")
     parser.add_argument("--accept", type=float, default=ACCEPT_MEDIAN,
                         help="Largest median beam-to-wall distance to accept, in metres.")
     parser.add_argument("--beams", type=int, default=240)
@@ -206,6 +282,13 @@ def main():
 
     ranges, angles = beams(scan, options.beams, options.max_range)
     print(f"{len(ranges)} beams from {scan.header.frame_id}")
+
+    if options.watch:
+        try:
+            watch(node, options, field, resolution, origin, offset_x, offset_y)
+        except KeyboardInterrupt:
+            print("\nstopped.")
+        return 0
 
     rows, cols = np.nonzero(free)
     positions = np.stack([origin[0] + (cols + 0.5) * resolution,
@@ -240,6 +323,21 @@ def main():
           f"({math.degrees(yaw):.1f} deg)")
     print(f"median beam-to-wall {median * 100:.0f} cm, "
           f"{within * 100:.0f}% of beams within 10 cm")
+
+    # The gap between this match and the pose the stack is already acting on. A
+    # large one with a good match means everything downstream -- the costmap,
+    # every plan, every goal -- is being computed at the wrong place in the map.
+    believed = node.believed_pose()
+    if believed is None:
+        print("nothing publishes map->base_footprint yet; nothing to compare against")
+    else:
+        drift = math.hypot(base_x - believed[0], base_y - believed[1])
+        turn = abs(math.atan2(math.sin(yaw - believed[2]), math.cos(yaw - believed[2])))
+        print(f"the stack currently believes ({believed[0]:.3f}, {believed[1]:.3f}), "
+              f"{drift:.2f} m and {math.degrees(turn):.0f} deg from this match")
+        if drift > 0.5 and median <= options.accept:
+            print("  -> the running localizer is wrong; publish this and clear the "
+                  "costmap afterwards, or every plan keeps using the old pose")
 
     if median > options.accept:
         print(f"rejected: worse than {options.accept * 100:.0f} cm. Nothing published. "
