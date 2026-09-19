@@ -205,24 +205,31 @@ Summary:
 | Name / literal | Value | Meaning |
 |---|---|---|
 | `OPEN_HAND` | **1.1** | Open position of `hand_motor_joint`. A wider opening breaks the distal finger limit. |
-| `CLOSE_EFFORT` | **-0.3 Nm** | Effort for the grasp action. Negative closes the hand. |
+| `CLOSE_EFFORT` | **-0.02 Nm** | Torque hold after `close()` has verified bilateral contact, real robot only. Lowest level of the 09-19 effort test on a hand-held Pringles can, judged 'held': springs 0.41 / 0.49 above free air, raw 0.81 / 0.96; -0.05 read the same. **One object.** Was -0.3, never run on hardware. `web/server.py` keeps its own -0.3. |
 | `HSR_GRASP_EFFORT_NM` env | allowed **-0.3 to -0.012** | Overrides the closing effort. |
 | `EMPTY_GAP` | **0.01 m** | A fingertip gap below this means the hand closed on nothing. |
 | open-hand settle check | motor within 0.05 of open, springs < 0.3, 5 s | `open_hand()` |
 | open trajectory time | 1.5 s (goal timeout 15 s) | `open_hand()` |
 | open-before-plan threshold | motor < `OPEN_HAND - 0.05` | `pick()` |
 | MTC "open hand" trigger | abs(motor - OPEN_HAND) > 0.005 | `Pick.reach()` |
+| `PRECLOSE_MARGIN` | **0.03 m** | `preclose()`: one fast move to the calibrated gap of contact width + margin, before `close()`. **Own choice, not calibrated**: 15 mm a side for width and placement error. The 09-19 press test met a ~75 mm can at command 0.58-0.60 (profile gap 74-76 mm), so the profile needs no allowance; perception gave that can as 69-73 mm and it sat off centre in the hand. |
+| `preclose()` move time | max(0.5 s, travel / 0.8 rad/s) | Motor limit is 1.0 rad/s. Skipped when travel < 0.05 rad. |
+| spring contact values | **rise above free air** | On the real robot every spring threshold below applies to `spring_rise()`: the reading minus `free_air_springs.json` at the same **command**. The empty hand's springs read 0.10/0.17 at command 0.76 and 0.53/0.60 at 0.30 (two sweeps, 09-19, agreeing to 0.022); a press on the can added 0.078/0.099 in one 0.02 step. In simulation free air reads 0 and the raw value is used. |
+| `hand_motor_joint` reading | command - mean spring | Holds to 0.002 rad over both sweeps. The **fingers follow the command**; the reading is not the finger angle, so `closing_profile.json` is looked up by command. |
 | `close()` step, before contact | **-0.02 rad** | Each step takes 0.5 s; goal timeout 10 s. |
-| `close()` step, after contact | **-0.005 rad** | Used once min(spring) > 0.06. |
+| `close()` step, after contact | **-0.005 rad** | Used from the first finger's touch (max spring rise > 0.06) **or** once the command is within `FINE_MARGIN` of the planned contact width, whichever comes first. Reacting to touch alone was too late twice on a stiff can: rises 0.076/0.055 to 0.207/0.185 (run `_180259`) and 0.044/0.032 to 0.240/0.242 (run `_182003`) in one 0.02 step, past the 0.20 ceiling. |
+| `FINE_MARGIN` | **0.012 m** | Pad gap beyond the planned width where the small steps begin. **Own choice**: perception gave a ~75 mm can as 68.7-73.0 mm, so contact came up to 6 mm of gap early; 12 mm doubles that. Costs about 20 small steps (12 s) on the can. |
 | `close()` minimum motor | **0.10** | Stop: "Minimum closure reached". |
 | `close()` max iterations | 100 | |
 | contact seen | min(spring) > **0.06** | |
 | contact lost | min(spring) < **0.02** after contact | |
 | contact confirm | 3 samples, 0.2 s apart, threshold 0.06 | |
-| close threshold, lift requested | **0.14** | `close(threshold=...)` |
+| close threshold, lift requested | **0.14** in simulation, **0.10** on the robot | `close(threshold=...)`. On the robot the torque grasp holds, and on a stiff can each 0.005 step adds about 0.08 of rise (run `_182411`), so 0.14 would overshoot the 0.20 ceiling. |
 | close threshold, hold only | **0.10** | |
 | `contact_state` threshold range | **0.06 to 0.18** | Values outside raise ValueError. |
-| spring overload | max(spring) > **0.20** | Stops closure (excessive or asymmetric). |
+| spring overload | max(spring rise) > **0.40** | Stops the stepped closure only. Set at what the torque hold applies anyway (0.41 / 0.49, judged held and undamaged). Was 0.20 from simulation: with contact at 0.10 that window could not be hit by an object that loads one finger first (run `_183338`: left 0.224, right 0.156 one step after 0.159 / 0.084). The hold checks after the torque grasp pass `ceiling=inf`. |
+| spring zero | first reading of every `close()` | Subtracted from both springs when below 0.06; that reading is free air because the pre-close stops 15 mm a side short. The zeros moved -0.05 over one afternoon of torque holds. |
+| free-air curve | `free_air_springs.json` | Regenerate with `realrobot/live/hand_free_air.py --write`. Current file: mean of two sweeps, 2026-09-19 17:47, agreeing to 0.022 rad. |
 | `wait_for_hold` | dwell 5 s, timeout 90 s, poll 0.2 s, threshold 0.06 | |
 | grasp action goal timeout | 30 s | `close_hand()` |
 

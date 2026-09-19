@@ -90,7 +90,21 @@ TEST_LIFT = 0.03  # verify physical motion before accepting a hold
 MAX_CLOUD_POINTS = 8192  # bounds GraspGenX GPU memory
 OPEN_HAND = 1.1  # hand_motor_joint; wider breaks the distal finger limit
 GRASP_LIFT_MAX = 0.65  # reserve travel for approach and the verification lift
-CLOSE_EFFORT = -0.3  # Nm, negative closes
+# Nm, negative closes. The lowest torque tried on a hand-held can (effort_test,
+# 2026-09-19) and judged 'held', springs 0.41 / 0.49 above free air; -0.05 read
+# the same. Was -0.3, never run on hardware.
+CLOSE_EFFORT = -0.02
+# Pad gap left around the object by the fast pre-close: 15 mm a side for the
+# width and placement error of the grasp. Own choice, not calibrated. The press
+# test of 2026-09-19 met a ~75 mm can at command 0.58-0.60 (profile gap 74-76 mm),
+# so the closing profile itself needs no allowance; perception gave that can as
+# 69-73 mm, and it sat visibly off centre in the hand.
+PRECLOSE_MARGIN = 0.03  # m
+# Pad gap around the planned width inside which close() takes its small steps.
+# Own choice. Perception gave a ~75 mm can as 68.7-73.0 mm (09-19), so contact
+# comes up to 6 mm of gap early; and a stiff can took the springs from 0.04 to
+# 0.24 in one 0.02 step (run 20260919_182003), past the whole 0.06-0.20 window.
+FINE_MARGIN = 0.012  # m
 # Use fingertip spacing to detect an empty grasp; motor angle alone is unreliable.
 EMPTY_GAP = 0.01
 # The whole_body group's active joints, for joint-space goals.
@@ -845,7 +859,8 @@ def wait_for_hold(read_contact, clock, seconds=5., timeout=90.):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         left, right = read_contact()
-        if not contact_state(left, right, .06):
+        # No ceiling: the torque hold reads 0.41 / 0.49 on a can (effort_test, 2026-09-19).
+        if not contact_state(left, right, .06, ceiling=math.inf):
             raise RuntimeError('Object slipped: bilateral contact lost after lift')
         # Measure the hold with the supplied robot clock and detect clock resets.
         now = clock()
@@ -859,27 +874,91 @@ def wait_for_hold(read_contact, clock, seconds=5., timeout=90.):
     raise RuntimeError('Timed out waiting for sustained grasp contact')
 
 
-def contact_state(left, right, threshold):
+def spring_rise(q, command=None):
+    """Finger spring deflection above what the empty hand reads at this command.
+
+    The real springs deflect as the hand closes on nothing, to 0.5-0.6 rad at
+    command 0.30 (free_air_springs.json, two sweeps on 2026-09-19 agreeing to
+    0.022 rad); only the rise above that is contact. Simulated springs read 0."""
+    springs = [q[f'hand_{s}_spring_proximal_joint'] for s in 'lr']
+    if USE_SIM_TIME:
+        return tuple(springs)
+    # Under the torque grasp nothing is commanded; the reading is the command
+    # minus the mean spring (to 0.002 rad over both sweeps), so add it back.
+    if command is None:
+        command = q['hand_motor_joint'] + sum(springs)/2
+    rows = json.loads((Path(__file__).parent / 'free_air_springs.json').read_text())[::-1]
+    at = [r['command'] for r in rows]
+    return tuple(spring - np.interp(command, at, [r[name] for r in rows])
+                 for spring, name in zip(springs, ('left', 'right')))
+
+
+def contact_state(left, right, threshold, ceiling=.40):
     if not all(math.isfinite(x) for x in (left, right, threshold)):
         raise ValueError('Non-finite finger feedback')
     if not .06 <= threshold <= .18:
         raise ValueError('Contact threshold outside calibrated range')
     # Stop excessive finger deflection before deciding whether both fingers touched.
-    if max(left, right) > .20:
+    # The ceiling sits at what the torque hold applies anyway (0.41 / 0.49 on a can,
+    # judged held and undamaged, 2026-09-19). The simulation-era 0.20 left a 0.10-0.20
+    # window that an object loading one finger first cannot hit (run 20260919_183338).
+    if max(left, right) > ceiling:
         raise RuntimeError('Excessive or asymmetric finger contact; closure stopped')
     return min(left, right) > threshold
 
 
-def close(node, threshold=.06):
-    motor = joint_positions(node)['hand_motor_joint']
+def command_for_gap(gap):
+    """hand_motor_joint command for a pad gap; the fingers follow the command."""
+    profile = json.loads((GRIPPER_DIR / 'closing_profile.json').read_text())
+    return float(np.interp(gap, [s['gap'][0] for s in profile], [s['motor'] for s in profile]))
+
+
+def preclose(node, width):
+    """Cover the free air in one move; close() then finds contact in small steps.
+
+    Stops PRECLOSE_MARGIN wider than the planned contact width, by the
+    calibrated closing profile."""
+    target = command_for_gap(width + PRECLOSE_MARGIN)
+    travel = joint_positions(node)['hand_motor_joint'] - target
+    # Not worth a move when the object nearly fills the open hand.
+    if travel < .05:
+        return None
+    # hand_motor_joint's velocity limit is 1.0 rad/s; stay under it on long moves.
+    seconds = max(.5, travel/.8)
+    goal = FollowJointTrajectory.Goal()
+    goal.trajectory.joint_names = ['hand_motor_joint']
+    goal.trajectory.points = [JointTrajectoryPoint(
+        positions=[target], time_from_start=Duration(sec=int(seconds), nanosec=int(seconds % 1*1e9)))]
+    result = run_action(node, FollowJointTrajectory,
+                         '/gripper_controller/follow_joint_trajectory', goal, 10.)
+    if result.result.error_code != 0:
+        raise RuntimeError('Finger pre-close failed: '+result.result.error_string)
+    print(f'[CONTACT] pre-closed to motor {target:.3f} for a {width*1000:.1f} mm contact', flush=True)
+    return target
+
+
+def close(node, threshold=.06, motor=None, fine_below=0.):
+    # Step from the last commanded angle when there is one. The joint reads lower
+    # than its command by the mean spring deflection (0.06 rad after a pre-close),
+    # so restarting from the reading turns the first step into a jump.
+    if motor is None:
+        motor = joint_positions(node)['hand_motor_joint']
     seen_contact = False
     samples = []
     diagnostics = os.environ.get('HSR_GRASP_DIAGNOSTICS')
+    zero = None
     for _ in range(100):
         q = joint_positions(node)
-        left, right = (q[f'hand_{s}_spring_proximal_joint'] for s in 'lr')
+        left, right = spring_rise(q, motor)
+        # Zero both springs on the first reading, which is free air (the pre-close
+        # stops 15 mm a side short): their zeros moved 0.05 over one afternoon of
+        # torque holds. A first reading already at touch level is left alone.
+        if zero is None:
+            zero = (left, right) if max(abs(left), abs(right)) < .06 else (0., 0.)
+        left, right = left - zero[0], right - zero[1]
         if diagnostics:
-            samples.append(dict(time=time.time(), motor=q['hand_motor_joint'], left=left, right=right))
+            samples.append(dict(time=time.time(), command=motor, motor=q['hand_motor_joint'], left=left, right=right,
+                                **{f'raw_{s}': q[f'hand_{s}_spring_proximal_joint'] for s in 'lr'}))
             Path(diagnostics).mkdir(parents=True, exist_ok=True)
             (Path(diagnostics)/'closure_feedback.json').write_text(json.dumps(samples, indent=2))
         # Stop if contact disappears after the fingers have already touched the object.
@@ -890,14 +969,15 @@ def close(node, threshold=.06):
             # Confirm contact persists across several feedback samples before holding position.
             for _ in range(3):
                 time.sleep(.2)
-                held = joint_positions(node)
-                l, r = (held[f'hand_{s}_spring_proximal_joint'] for s in 'lr')
+                l, r = (rise - z for rise, z in zip(spring_rise(joint_positions(node), motor), zero))
                 if not contact_state(l, r, .06):
                     raise RuntimeError('Bilateral contact was lost during position hold')
             print(f'[CONTACT] position hold, springs {left:.3f}, {right:.3f}', flush=True)
             return {'left': left, 'right': right, 'motor': q['hand_motor_joint']}
-        # Close in smaller steps once both fingers begin to make contact.
-        motor -= .005 if min(left, right) > .06 else .02
+        # Close in smaller steps near the planned contact (fine_below) or once either
+        # finger touches: one 0.02 step past contact adds 0.13-0.20 rad of spring on a
+        # stiff can (runs 20260919_180259, _182003), more than the window below allows.
+        motor -= .005 if max(left, right) > .06 or motor <= fine_below else .02
         if motor < .10:
             raise RuntimeError('Minimum closure reached without bilateral contact')
         goal = FollowJointTrajectory.Goal()
@@ -1048,7 +1128,11 @@ def observe(prompt):
           f'median range {median_range:.2f} m', flush=True)
     points = pointcloud.deproject(depth, k, pointcloud.object_depth_mask(depth, mask))
     if len(points) < 100:
-        raise RuntimeError(f"only {len(points)} depth points on the {prompt}")
+        # The head camera returns little below about 0.5 m: on 2026-09-19 masks at
+        # 0.53 m and beyond had depth on 78-97% of their pixels, at 0.45-0.48 m on 0-29%.
+        near = (f"; at {median_range:.2f} m it is closer than the depth camera can measure, "
+                f"back the robot off" if median_range < .5 else "")
+        raise RuntimeError(f"only {len(points)} depth points on the {prompt}{near}")
     _, image_point, area = feature(depth, k, mask)
     clipped=bool(u.min()<3 or v.min()<3 or u.max()>=mask.shape[1]-3 or v.max()>=mask.shape[0]-3)
     # Put the target points and image feature into odom coordinates.
@@ -1358,7 +1442,17 @@ def run_action(node, kind, name, goal, seconds):
     if not handle.accepted:
         raise RuntimeError(f"{name} rejected the goal")
     try:
-        return wait(node, handle.get_result_async(), name, seconds)
+        # Ask again every 5 s: the result request is lost like any other (run
+        # 20260919_175927 failed on it), and repeating it commands nothing.
+        deadline = time.monotonic() + seconds
+        while True:
+            future = handle.get_result_async()
+            rclpy.spin_until_future_complete(
+                node, future, timeout_sec=max(0., min(5., deadline - time.monotonic())))
+            if future.done():
+                return future.result()
+            if time.monotonic() >= deadline:
+                raise RuntimeError(f"{name} timed out")
     except BaseException:
         # On errors or Ctrl+C, stop the motion rather than leaving it running.
         cancellation = handle.cancel_goal_async()
@@ -1738,7 +1832,18 @@ def pick(prompt, mode='auto'):
                                f'({distances[index]*1000:.1f} mm, {angles[index]:.3f} rad); refusing closure')
         print(f"[GRASP] reached candidate {index}, contact width {widths[index]*1000:.1f} mm", flush=True)
         # Close until both finger springs show contact, then rule out an empty grasp.
-        close(node, threshold=.14 if lift_requested else .10)
+        width = float(widths[index])
+        # The firmer 0.14 is for simulation, where this position hold is the whole grip.
+        # On the robot the torque grasp below holds, and on a stiff can each small step
+        # adds about 0.08 of rise (0.039, 0.121, run 20260919_182411): 0.14 would
+        # overshoot the 0.20 ceiling.
+        close(node, threshold=.14 if lift_requested and USE_SIM_TIME else .10, motor=preclose(node, width),
+              fine_below=command_for_gap(width + FINE_MARGIN))
+        # close() proves both pads touch but barely squeezes: a can stopped at rises
+        # near 0.2 was loose in the hand (run 20260919_180259). Hold with the robot's
+        # own torque grasp. Real robot only; simulation was validated on the position hold.
+        if not USE_SIM_TIME:
+            close_hand(node)
         gap = fingertip_gap(node)
         if gap < EMPTY_GAP:
             raise RuntimeError("the hand closed on nothing")
@@ -1760,7 +1865,7 @@ def pick(prompt, mode='auto'):
         def read_contact():
             q = joint_positions(node)
             rclpy.spin_once(node, timeout_sec=0.)  # update the /clock subscription
-            return tuple(q[f'hand_{s}_spring_proximal_joint'] for s in 'lr')
+            return spring_rise(q)
         # Require sustained bilateral contact before taking the final verification image.
         wait_for_hold(read_contact, lambda: node.get_clock().now().nanoseconds / 1e9)
         # After the contact dwell, check again that the object remains elevated.
@@ -1770,7 +1875,7 @@ def pick(prompt, mode='auto'):
                      after=held['points'], expected=after_lift[:3,3]-before_lift[:3,3])
         evidence = verify_object_lift(observation['points'], held['points'],
                                       after_lift[:3,3]-before_lift[:3,3])
-        if not contact_state(*read_contact(), .06):
+        if not contact_state(*read_contact(), .06, ceiling=math.inf):
             raise RuntimeError('Object slipped during final camera verification')
         print(f"[VERIFIED] {prompt}: sustained contact and {evidence['rise_m']*1000:.1f} mm lift", flush=True)
         return 'picked'

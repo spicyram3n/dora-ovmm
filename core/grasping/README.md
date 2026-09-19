@@ -482,3 +482,51 @@ whole-body trajectory at 0.15 velocity scaling commands speeds it ignores, is
 not established from the logs available. Settling that needs base-only motion
 tests with `/omni_base_controller/state` recorded during the move, which is a
 hardware experiment and separate from the pick.
+
+## 16. Every `[GRASPED]` was the hand's own springs (2026-09-19)
+
+Three `--mode grasp` runs ended in `[GRASPED] bilateral contact` with the can
+visibly loose in the hand, off centre towards the left finger. Closing the
+**empty** hand then ended the same way: `close()` stopped at L 0.101, R 0.168.
+
+**Cause.** The real finger springs deflect as the hand closes on nothing: two
+free-air sweeps (command 1.08 to 0.30, agreeing to 0.022 rad) read 0.10 / 0.17
+at command 0.76 and 0.53 / 0.60 at 0.30. `close()` compared the raw reading
+with thresholds tuned in simulation, where free air reads 0, so it stopped near
+command 0.75, a pad gap of about 93 mm around a 75 mm can. All five recorded
+closures, the "verified" one of 09-18 included, lie within -0.016 to +0.023 rad
+of the free-air curve: none of them pressed the can.
+
+**What a press looks like.** With the can held between the pads, the springs
+followed free air down to command 0.60 and then rose 0.078 / 0.099 above it in
+one 0.02 step, at 0.58. The calibrated profile puts 74 to 76 mm there, the can's
+diameter. So the **fingers follow the command** and `closing_profile.json` is
+right when read by command. The `hand_motor_joint` *reading* is the command
+minus the mean spring (to 0.002 rad) and is not the finger angle.
+
+**Fix.** `spring_rise()` subtracts `free_air_springs.json` (the mean of the two
+sweeps) at the commanded angle, and `close()`, its confirmation samples and the
+lift-hold checks all judge that rise. The thresholds are unchanged: they were
+tuned on a quantity that is zero in free air, which the rise now is. Simulation
+still uses the raw reading. `close()` also continues from the last *command*
+rather than the reading, which after the new fast `preclose()` had turned its
+first 0.02 step into a 0.081 rad jump onto the can (run 17:31).
+
+Tests replay both cases: the free-air curve plus the largest scatter seen must
+never be contact, and the recorded press must be. **Not yet run on hardware.**
+The free-air curve stops at command 0.30 (39 mm gap); narrower objects need a
+longer sweep first. The raw data is in `outputs/realrobot/grasp_runs/`.
+
+### 16.1 Follow-ups the same evening
+
+| Run / test | What it showed | Change |
+| --- | --- | --- |
+| `20260919_175927` | Reach fine; `follow_joint_trajectory timed out` on the pre-close: goal accepted, the single result request unanswered. | `run_action` asks for the result again every 5 s. |
+| `20260919_180259` | First real two-sided press: rises 0.076 / 0.055 at command 0.591, then 0.207 / 0.185 one 0.02 step later, over the 0.20 ceiling. Can judged loose. | Small steps from the **first** finger's touch (`max`, was `min`). |
+| `effort_test_180859` | Robot's torque grasp on a hand-held can: -0.02 Nm judged 'held', rises 0.41 / 0.49; -0.05 read the same. | `close_hand()` is called after `close()` on the real robot, `CLOSE_EFFORT` -0.3 to **-0.02**; the 0.20 ceiling guards the stepped approach only. |
+
+What is a property of the hand (any object): the free-air curve, reading =
+command - mean spring, the result retry, slowing at first touch. What rests on
+**one Pringles can**: the -0.02 Nm effort, the 30 mm pre-close margin, the 0.13
+rad-per-step steepness. Repeat `outputs/realrobot/grasp_runs/effort_test.py` on
+other objects before claiming more. None of 16.1 has run in a full pick yet.
