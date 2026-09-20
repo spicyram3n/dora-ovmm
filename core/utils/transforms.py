@@ -1,4 +1,7 @@
-"""Conversions between ROS geometry messages and (4, 4) matrices."""
+"""Conversions between ROS geometry messages and (4, 4) matrices.
+
+Used by: core/grasping/pick.py, core/navigation/base_placement.py,
+core/navigation/nav2_client.py, core/perception/camera_ros2.py"""
 
 import numpy as np
 from geometry_msgs.msg import Pose

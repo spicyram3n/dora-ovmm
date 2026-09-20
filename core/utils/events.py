@@ -1,6 +1,9 @@
 """Mission events for the web dashboard (web/server.py), one JSON line each on stdout.
 
-Silent unless MISSION_EVENTS is set, so command-line runs print exactly as before."""
+Silent unless MISSION_EVENTS is set, so command-line runs print exactly as before.
+
+Used by: core/navigation/nav2_client.py, core/pipeline/actions.py,
+core/pipeline/mission_tree.py, core/reasoner/query.py, web/server.py"""
 
 import json
 import os

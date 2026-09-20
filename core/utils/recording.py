@@ -9,6 +9,10 @@ spell out its own path to it. Switching to another bag meant finding all of them
 The `--map`, `--graph` and `--keyframes` flags still win over this, so a one-off
 mix of two recordings needs no export. The layout is the convention the data prep
 and Boxer steps already write to; `docker/boxer/README.md` has the full tree.
+
+Used by: core/pipeline/mission_tree.py, launch/realrobot/nav2_real.launch.py,
+realrobot/live/{goto,localize}.py,
+realrobot/offline/{footprint_check,nbv_replay,plan_overlay,target_tsdf}.py
 """
 
 import os

@@ -1,4 +1,6 @@
-"""Shared Zenoh clients and small, serialized model-server runner."""
+"""Shared Zenoh clients and small, serialized model-server runner.
+
+Used by: core/grasping/graspgenx_client.py, core/perception/sam3_client.py"""
 
 import atexit
 import json

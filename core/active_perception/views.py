@@ -65,6 +65,16 @@ class ViewHalfSphere:
         # Space viewpoints evenly around the target in the horizontal direction.
         self.phis = np.arange(phis) * (2 * np.pi / phis)
 
+    def retarget(self, bbox):
+        """Follow the target box when new views rebuild it.
+
+        Only the centre moves: the sampling radii come from the box height, which
+        is the dimension the detector gets right, and changing them mid-run would
+        silently invalidate the views already refused in `rejected`.
+        """
+        self.bbox = bbox
+        self.center = bbox.center
+
     def get_view(self, theta, phi, r):
         eye = self.center + spherical_to_cartesian(r, theta, phi)
         return look_at(eye, self.center, up=np.r_[0.0, 0.0, 1.0])

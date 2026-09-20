@@ -1,4 +1,6 @@
-"""Read a Nav2 map off disk, for the tools that work without a running stack."""
+"""Read a Nav2 map off disk, for the tools that work without a running stack.
+
+Used by: realrobot/offline/plan_overlay.py"""
 
 import numpy as np
 import yaml

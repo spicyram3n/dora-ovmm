@@ -26,6 +26,7 @@ from scipy.sparse.csgraph import dijkstra
 from scipy.spatial.distance import squareform
 
 from core.scene_graph import graph as sg
+from core.utils.occupancy import to_cells
 
 # Trinary PGM values: Nav2 writes free at 254, unknown at 205 and occupied at 0.
 FREE, OCCUPIED = 250, 100
@@ -92,6 +93,16 @@ def _grid_graph(space, resolution):
     return coo_matrix((weights, (rows, columns)), shape=(size, size)).tocsr(), index
 
 
+def _cell(space, index, nearest, resolution, origin, point):
+    """The walkable graph node for a map point, snapped to the floor beside it."""
+    column, row = np.floor(to_cells(point[:2], resolution, origin)).astype(int)
+    row = int(np.clip(row, 0, space.shape[0] - 1))
+    column = int(np.clip(column, 0, space.shape[1] - 1))
+    if not space[row, column]:
+        row, column = int(nearest[0][row, column]), int(nearest[1][row, column])
+    return index[row, column]
+
+
 def _seeds(graph, space, index, resolution, origin):
     """(node ids, their cell in the walkable graph) for every piece of furniture."""
     # Furniture stands against walls, so its centre often is not walkable; the
@@ -99,15 +110,37 @@ def _seeds(graph, space, index, resolution, origin):
     nearest = distance_transform_edt(~space, return_distances=False, return_indices=True)
     ids, cells = [], []
     for node_id, data in sg.furniture(graph).items():
-        centre = sg.footprint(data)[0][:2]
-        column, row = np.floor((centre - origin) / resolution).astype(int)
-        row = int(np.clip(row, 0, space.shape[0] - 1))
-        column = int(np.clip(column, 0, space.shape[1] - 1))
-        if not space[row, column]:
-            row, column = int(nearest[0][row, column]), int(nearest[1][row, column])
         ids.append(node_id)
-        cells.append(index[row, column])
+        cells.append(_cell(space, index, nearest, resolution, origin, sg.footprint(data)[0][:2]))
     return ids, cells
+
+
+def room_at(graph, image, resolution, origin, point, limit=None):
+    """The room of the furniture nearest `point` along the floor, or None.
+
+    `partition` divides furniture by floor distance because a straight line runs
+    through walls. Which room the robot is standing in has to be asked the same
+    way, or the division and the question disagree in every doorway.
+
+    `limit`, in metres of floor, answers None rather than naming a room the robot
+    is nowhere near. Leave it off to always answer. It is not `SPACING`, which
+    measures furniture against furniture: on lab_20260919_wheel the floor sits a
+    median 4.4 m and at most 21.4 m from the nearest furniture, so a 6 m limit
+    silences 39% of it and a 12 m one 12%.
+    """
+    space = floor(image, resolution)
+    adjacency, index = _grid_graph(space, resolution)
+    ids, cells = _seeds(graph, space, index, resolution, origin)
+    if not ids:
+        return None
+    nearest = distance_transform_edt(~space, return_distances=False, return_indices=True)
+    start = _cell(space, index, nearest, resolution, origin, point)
+    walk = dijkstra(adjacency, indices=[start], directed=False)[0][cells]
+    closest = int(np.argmin(walk))
+    # Further than a room is wide: the robot is between rooms, not inside one.
+    if not np.isfinite(walk[closest]) or (limit is not None and walk[closest] > limit):
+        return None
+    return graph.nodes[ids[closest]]["room"]
 
 
 def distances(graph, image, resolution, origin):

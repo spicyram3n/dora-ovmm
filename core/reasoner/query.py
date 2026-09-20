@@ -112,8 +112,28 @@ def _guessed(scene, furniture_id, relation, reason):
     )
 
 
-def _room_at(scene, near):
-    """The room the robot is standing in: the room of the furniture nearest to it."""
+def _map_path():
+    """The Nav2 map of the current recording, when there is one on disk."""
+    from core.utils.recording import Paths
+
+    # No map -- a simulation run, or no RECORDING -- leaves _room_at on straight lines.
+    path = Paths().map
+    return path if path.exists() else None
+
+
+def _room_at(scene, near, map_yaml=None):
+    """The room the robot is standing in: the room of the furniture nearest to it.
+
+    Given the map, "nearest" is measured along the floor, the same distance
+    `scene_graph.rooms` divides the furniture by. Without one it is a straight
+    line, which cuts through walls and so can name the room next door.
+    """
+    if map_yaml is not None:
+        from core.scene_graph import rooms
+        from core.utils.occupancy import read_map
+
+        image, resolution, origin = read_map(map_yaml)
+        return rooms.room_at(scene, image, resolution, origin, near)
     nearest, best = None, None
     for _, data in sg.furniture(scene).items():
         centre = data["centroid"]
@@ -171,7 +191,7 @@ def predict(scene, obj, client=None, top_k=3, hint="", exclude=(), model=DEFAULT
     # no idea which of them the robot was standing in.
     if near is not None:
         payload["robot_at"] = [float(near[0]), float(near[1])]
-        payload["robot_room"] = _room_at(scene, near)
+        payload["robot_room"] = _room_at(scene, near, _map_path())
     user = json.dumps(payload)
     if not client:
         client = get_client()

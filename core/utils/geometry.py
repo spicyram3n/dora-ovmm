@@ -1,7 +1,10 @@
 """Planar box geometry shared by the scene graph and navigation. No ROS needed.
 
 A turned box is (centre, size, yaw): size runs along the box's own axes and
-yaw turns those axes about the vertical from map +x."""
+yaw turns those axes about the vertical from map +x.
+
+Used by: core/navigation/standoff.py, core/scene_graph/{gazebo,graph,instance}.py,
+realrobot/offline/{footprint_check,plan_overlay}.py, visualization/viewpoints.py"""
 
 import math
 import numpy as np
