@@ -359,6 +359,8 @@ What the launch starts besides Nav2:
 | `scan_filter` → `/scan_filtered` ([scan_filter.yaml](config/realrobot/nav2/scan_filter.yaml)) | one beam straddling a door jamb reads as an obstacle in mid-air; both costmaps read the filtered scan, AMCL the raw one | a doorway stays closed however often the costmap is cleared |
 | `map_furniture.yaml` | on the laser map a table is four legs; `sg.blockers` only filters goal poses, never Nav2's path | paths cross furniture, the hand hits the table |
 
+Regenerate `map_furniture.yaml` after the graph changes (no bag, no GPU): `python3 realrobot/offline/plan_overlay.py --nav-map --graph config/realrobot/scene_graph/$RECORDING.json --map config/realrobot/map/$RECORDING/map.yaml`. Fixed furniture only: chairs and movable things are left out.
+
 **The robot's stack restarting puts it back on laser odometry.** With Nav2 already up:
 `python3 realrobot/live/use_wheel_odom.py` (`… laser_odom` switches back, to compare the two).
 
@@ -432,8 +434,39 @@ Then grasping, independently, with Nav2 already inactive:
 HSR_REAL_ROBOT=1 python3 -m core.grasping.pick "pringles can"
 ```
 
+### Or one launch for terminals 1, 3, 4 and 6
+
+```bash
+export RECORDING=lab_20260919_wheel DEEPSEEK_API_KEY=<key>
+ros2 launch /home/ws/launch/realrobot/search_real.launch.py target:="pringles can"
+# second terminal, only AFTER the launch prints "Please set the initial pose": run before
+# that, nothing is listening and the seed is lost. Ready waits 600 s for it, and the
+# robot drives as soon as it has it.
+python3 realrobot/live/localize.py && python3 realrobot/live/localize.py --dry-run
+```
+
+Stuck at `[WAIT] arm_trajectory_controller active` = the runstop is pressed
+(`ros2 control list_controllers` shows the four motion controllers `inactive`).
+
+[search_real.launch.py](launch/realrobot/search_real.launch.py) is `search.launch.py` without
+the simulator: Nav2 (§9's arguments are its defaults), the IK solver, move_group and the
+mission, with `HSR_REAL_ROBOT=1` set for it. Seeding AMCL, RX, SAM3 and GraspGenX stay
+outside. No `target:=` starts the stack only. Switches, to test one part:
+
+| Arg | Runs |
+| --- | --- |
+| `nav:=false` | Home arm · Ready · **Pick** — object already in view; no Nav2, IK solver, map or graph, head left where it is |
+| `grasp:=false` | ... · Park · **Pause Nav2** |
+| `navigate_only:=true` | ... · Choose location · Go there |
+| `active_perception:=true` | ... · Find target · **Explore views** · Park ... (drives, so not with `nav:=false`) |
+| `furniture:=29` | `Find target` searches that one piece only (id, or a unique name or label): no remembered places, no DeepSeek. For an object that has moved: the graph tries remembered places first, nearest first |
+| `start_navigation` / `start_ik` / `start_move_group` `:=false` | that piece is already running by hand. **Never two move_groups**: both execute every plan (13:08 run, 2026-09-21: gripper `PREEMPTED`, `MoveIt error -4`, and the second one kept moving the arm and base) |
+| `use_nav_rviz:=true` | Nav2's RViz ([hsr_navigation2.rviz](ros2_ws/src/hsrb_rosnav/hsrb_rosnav_config/rviz/hsr_navigation2.rviz)): map, scan, costmaps, plans, 2D Pose Estimate, Nav2 Goal. Ignored with `nav:=false` |
+| `use_rviz:=true` | MoveIt's RViz ([grasp_real.rviz](config/realrobot/rviz/grasp_real.rviz)), opened by move_group |
+
 | Flag | Tree it builds |
 | --- | --- |
+| `--nav false` | Home arm · Ready · **Pick** — no Nav2, map or scene graph |
 | `--grasp false` | Home arm · Ready · Home head · Find target · Park · **Pause Nav2** |
 | `--grasp true` (default) | ... · Pause Nav2 · **Pick** |
 | `--navigate-only true` | Home arm · Ready · Home head · Choose location · Go there — no SAM3, no graspable pose |
@@ -495,9 +528,36 @@ changes — no extra call, and `--target` is used exactly as typed.
 Navigation leg only, no reasoner, no perception:
 
 ```bash
-python3 realrobot/live/goto.py --furniture 30 --dry-run   # poses and paths, no motion
-python3 realrobot/live/goto.py --furniture 30 --look      # kitchen desk; 93 = office table (ids: §7)
+python3 realrobot/live/goto.py --furniture 29 --dry-run   # poses and paths, no motion
+python3 realrobot/live/goto.py --furniture 29 --look      # kitchen desk; 95 = office table
 python3 realrobot/live/localize.py --dry-run              # pose error after the drive
+```
+
+Ids are per recording (the two above are `lab_20260919_wheel`'s; §7 lists them). Kitchen there:
+29 desk · 22, 47 counter · 21 microwave · 23, 25 dishwasher · 24, 26, 32 cabinet.
+
+**This, not `navigate_only`, is how to send it to a room.** The reasoner ranks the robot's
+own room first ([query.py](core/reasoner/query.py) `SYSTEM`) and `navigate_only` drives to
+the first pick only: from the office, `target:=kettle` goes to the office table.
+
+### Nav2 by hand, with RViz goals
+
+Terminals 1 and 2 of §9, then:
+
+```bash
+rviz2 -d /opt/ros/humble/share/nav2_bringup/rviz/nav2_default_view.rviz
+```
+
+**Nav2 Goal** drives on release of the mouse; **2D Pose Estimate** seeds AMCL like
+`localize.py`. The laser scan must lie on the map walls before any goal.
+
+### Watch the behaviour tree live
+
+While a mission runs, ROS sourced, another terminal:
+
+```bash
+py-trees-tree-watcher        # terminal; the tree with each step's status
+py-trees-tree-viewer         # window (needs a display)
 ```
 
 ### What you will see, and what it means
@@ -511,6 +571,9 @@ python3 realrobot/live/localize.py --dry-run              # pose error after the
 | scan sits beside the map walls in RViz, robot stops short / overshoots | pose error: laser odometry, or a map built without `WHEEL_ODOM=1` | `use_wheel_odom.py`, `localize.py`, clear costmaps |
 | `Joint 'odom_x' … outside bounds` → `pregrasp: START_STATE_INVALID` | fixed: base joints widened to ±100 m in [planning_model.py](launch/planning_model.py) | restart terminal 4 |
 | `[RECOVER] failed: no /whole_body_moveit/joint_states` | move_group is down | `recover_home.py --direct` works without it (no collision checking: watch it) |
+| `Failed to make progress` on a trip under 0.5 m | `required_movement_radius: 0.5` in 30 s cannot be met on a shorter trip that is slow to finish | the mission retries once; a second failure is real |
+| `/controller_server/get_state timed out` at `Ready` | fixed: `Ready` now waits for a Nav2 that is still activating (35 s on the robot's odom TF) | — |
+| `start or goal pose is an obstacle` during `Park` | that candidate is inside the 0.35 m inflation around stamped furniture; `Park` moves to the next | nothing unless every candidate fails |
 | `[ODOM] … switch … FAILED` | robot stack not up yet | rerun `use_wheel_odom.py` before driving |
 
 ---

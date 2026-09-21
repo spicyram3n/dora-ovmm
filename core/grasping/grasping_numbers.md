@@ -239,8 +239,9 @@ Summary:
 |---|---|---|
 | `APPROACH` | **0.08 m** | Straight final approach along palm +z (pregrasp back-off). |
 | `TEST_LIFT` | **0.03 m** | Verification lift. |
-| `GRASP_LIFT_MAX` | **0.65 m** | Upper bound on `arm_lift_joint` during reach (constraint centre 0.325 ± 0.325). |
+| `GRASP_LIFT_MAX` | **0.65 m** | Upper bound on `arm_lift_joint` **at the grasp**: the reserve for the approach and the test lift. The route to a grasp may use `lift_limit()` = 0.65 - `APPROACH` x approach_z, capped at `ARM_LIFT_MAX` 0.69: 0.65 for a front grasp, 0.69 for a straight-down one, whose pregrasp sits 80 mm higher (run `20260921_081815` needed 0.658; fixes/40). |
 | `BASE_SLACK` | odom_x 0.1, odom_y 0.1, odom_t 0.2 | Allowed base drift around the parked pose. |
+| `OVERHEAD_BASE_SLACK` | **0.20 m** (odom_x, odom_y) | `base_slack()`: the window for straight-down grasps only. Overhead reach is ~0.49 m from the base centre, the depth camera needs >= 0.53 m, so by hand the usable parking band was 560-580 mm (runs of 2026-09-21: 567 mm planned, 611 mm needed 135-152 mm and was refused). **Own choice.** MoveIt collision-checks the base against the octomap; base moves beyond 110 mm have not been executed yet. |
 | `HSR_GRASP_INSERTION_M` env | 0 to **0.01** (default 0.01 for cylinders, 0 otherwise) | Capped at 0.2 × width. |
 | Cartesian `step_size` | 0.005 | |
 | velocity / accel scaling | **0.15 / 0.15** | Both OMPL and Cartesian. |
@@ -248,6 +249,7 @@ Summary:
 | observation home pose | lift 0, flex 0, roll -1.57, wflex -1.57, wroll 0 | `clear_view()` |
 | endpoint correction window | 4 to 10 mm and ≤ 0.04 rad | |
 | refuse-closure tolerance | > **4 mm** or > **0.04 rad** | |
+| `<octomap>` <-> `FINGERS` during `lift()` | allowed; `reach()` switches it back off | The map is frozen before the hand closes, so an edge voxel can sit inside a closed finger and refuse the lift's start state (13:25, 2026-09-21; fixes/42). **Own choice.** |
 | candidate match score | distance + 0.1 × angle | |
 | IK timeout | 1 s | `seeded_ik` |
 | pregrasp MoveTo timeout | 3 s (15 s with an IK seed; 10 s for the side/overhead route) | |
@@ -276,13 +278,16 @@ Summary:
 | head tilt scan offsets | ±0.20 rad (clipped to -1.57 to 0.52) |
 | occlusion reject | > 0.08; foreground margin 0.03 m |
 | head workspace | pan -3.84 to 1.75, tilt -1.57 to 0.52 |
-| lift verification | expected ≥ 0.015; rise ≥ 0.6 × expected; error ≤ 0.01 to 0.012; coverage ≥ 0.7 |
+| lift verification | expected ≥ 0.015; rise ≥ 0.6 × expected; error ≤ 0.01 to 0.012; coverage ≥ 0.7; sideways shift ≤ `PRECLOSE_MARGIN`/2 = 15 mm, the most the closing pads can push the object (was 8 mm; a good lift measured 9.6, fixes/39) |
 
-### 4.4 Visual servo (currently disabled)
+### 4.4 Visual servo (removed 2026-09-21)
 
-Max approach 0.08 m, approach speed ≤ 0.006 m/s, IBVS speed ≤ 0.012 m/s,
-angular ≤ 0.08 rad/s, IBVS correction ≤ 35 mm / 0.06 rad, base drift ≤ 3 mm /
-0.01 rad, convergence < 2 px × 3 frames, lateral corridor 4 mm / 0.04 rad.
+`VisualServo` (hand-camera IBVS at the pregrasp) and its helpers were never called by `pick()`
+and were deleted; they are in git history before that date. It could not have run on the real
+robot as written: the hand camera's images do not reach this PC, the servo drove the 5-DOF `arm`
+group with the base frozen (arm-only IK solved 0 of 20 pregrasps, README §15), and
+`grasp_real.launch.py` never started it. `launch/move_group.launch.py` still carries
+`enable_grasp_servo` and `config/moveit/servo.yaml`, now without a client.
 
 ---
 

@@ -23,6 +23,7 @@ ros2_ws/src/*
 # Secrets: HF_TOKEN and the cached HF login it produces
 docker/sam3/.env
 docker/sam3/checkpoints/
+/.env
 
 # GraspGenX model weights (multi-GB, not source)
 docker/graspgenx/checkpoints/
@@ -47,3 +48,4 @@ CLAUDE.md
 fixes/
 TROUBLESHOOTING.md
 rosgraph.png
+visual_learning/

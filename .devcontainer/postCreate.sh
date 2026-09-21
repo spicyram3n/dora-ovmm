@@ -20,6 +20,7 @@ bashrc_line 'export PYTHONPATH=$PYTHONPATH:/home/ws'
 bashrc_line 'export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp'
 bashrc_line "export CYCLONEDDS_URI=file://$SCRIPT_DIR/cyclonedds_sim.xml"
 bashrc_line '[ -f /home/ws/.devcontainer/runtime.env ] && { set -a; source /home/ws/.devcontainer/runtime.env; set +a; }'
+bashrc_line '[ -f /home/ws/.env ] && { set -a; source /home/ws/.env; set +a; }'
 
 # Clone HSR repositories
 cd "$WS/src"

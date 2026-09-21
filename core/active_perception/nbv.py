@@ -183,15 +183,19 @@ class NextBestView:
         if self.grasp_fn is not None:
             self.predict_grasps()
 
-    def predict_grasps(self):
-        """Predict grasps on the target surface and record the best scores by voxel."""
+    def target_points(self):
+        """The fused surface inside the target's box, in the base (map) frame."""
         points = (
             np.asarray(self.tsdf.get_scene_cloud().points) + self.base_from_task[:3, 3]
         )
         # Send only target points to the model so it does not grasp the table.
         margin = self.tsdf.voxel_size
         inside = np.all((points > self.bbox.min - margin) & (points < self.bbox.max + margin), axis=1)
-        points = points[inside]
+        return points[inside]
+
+    def predict_grasps(self):
+        """Predict grasps on the target surface and record the best scores by voxel."""
+        points = self.target_points()
         self.best_grasp = None
         # Wait for enough target surface points before asking for grasp predictions.
         if len(points) < 50:

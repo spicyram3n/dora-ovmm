@@ -1,21 +1,7 @@
-"""Pick up an object with MoveIt Task Constructor (MTC).
-
-SAM3 segments the object and GraspGenX proposes grasps. The hand opens on
-the hardware, then one MTC task moves to pregrasp. Calibrated pad placement sets the final grasp.
-The hand closes in bounded position steps until both finger springs register
-contact. Auto mode test-lifts cylinders and holds other geometry without lift.
-
-Needs move_group (launch/move_group.launch.py), SAM3 and GraspGenX running,
-and Nav2 paused so it does not fight the base. Visual servoing is disabled.
-Exit code 0 requires observed object motion during a short test lift;
-exit code 3 reports a contact-only hold. Other failures return 1.
-
-    python3 -m core.grasping.pick "pringles can"
-    HSR_REAL_ROBOT=1 python3 -m core.grasping.pick "pringles can"   # real HSR
-
-HSR_REAL_ROBOT=1 uses the wall clock and reads RGB-D from vision transport RX
-(core/perception/camera_ros2.py); launch/realrobot/grasp_real.launch.py sets it.
-"""
+# Pick up an object with MoveIt Task Constructor (MTC).
+# Needs MoveIt, SAM3 and GraspGenX; pause Nav2 before picking.
+# Run: python3 -m core.grasping.pick "pringles can"
+# Real HSR: HSR_REAL_ROBOT=1 python3 -m core.grasping.pick "pringles can"
 
 import sys
 import tempfile
@@ -112,8 +98,8 @@ WHOLE_BODY_JOINTS = ["odom_x", "odom_y", "odom_t", "arm_lift_joint", "arm_flex_j
                      "arm_roll_joint", "wrist_flex_joint", "wrist_roll_joint"]
 HEAD_LINKS = ["head_rgbd_sensor_link", "head_tilt_link"]
 BASE_SLACK = {
-    "odom_x": 0.1,
-    "odom_y": 0.1,
+    "odom_x": 0.3,
+    "odom_y": 0.3,
     "odom_t": 0.2,
 }  # m, m, rad around parked base
 JOINT_STATES = "/whole_body_moveit/joint_states"  # includes the base's odom joints
@@ -155,9 +141,6 @@ def pad_for_width(width):
 
 
 def calibrated_palm_pose(rotation,contact,width):
-    """Offset a canonical gripper pose so its calibrated pads meet the contact point.
-
-    Convert the result to the robot palm frame once, in the caller."""
     pose=np.eye(4)
     pose[:3,:3]=rotation
     # Rotate the calibrated pad offset and subtract it to locate the palm.
@@ -217,7 +200,6 @@ def top_rectangle(points):
 
 
 def sphere(points):
-    """Resolve a rounded body from a broad curved patch, tolerating a small dimple."""
     points = cloud(points)
     if len(points) < 100:
         return None
@@ -245,7 +227,6 @@ def sphere(points):
 
 
 def rectangular_candidates(rect, bottom, camera_position):
-    """Select a box approach, then return calibrated canonical palm poses."""
     corners, short_axis, short_width, top = rect
     height = top-bottom
     if height < .015:
@@ -315,10 +296,6 @@ def rectangular_candidates(rect, bottom, camera_position):
 
 
 def contact_candidates(points, palms, camera_position):
-    """Return the collision envelope, calibrated palm poses, widths, and measured shape.
-
-    Use fitted cylinders, boxes, or spheres when available; otherwise use
-    observed front contact sections with compatible model orientations."""
     points = cloud(points)
     rotation = np.array(json.loads((GRIPPER_DIR/'config.json').read_text())['base_rotation'])
     # Convert palm poses into the model's gripper frame for contact calibration.
@@ -423,7 +400,6 @@ def contact_candidates(points, palms, camera_position):
 
 
 def verify_object_lift(before, after, expected):
-    """Require actual upward object motion and corresponding surface geometry."""
     before, after = cloud(before), cloud(after)
     expected = np.asarray(expected, dtype=float)
     if expected[2] < .015:
@@ -474,7 +450,6 @@ def verify_object_lift(before, after, expected):
 # Pregrasp routes
 
 def side_waypoint(overhead, base_xy, distance=.12):
-    """Keep overhead height/orientation, offset horizontally toward the robot."""
     # Create a side waypoint only for a nearly vertical downward approach.
     if overhead[2, 2] > -.9:
         return None
@@ -548,7 +523,6 @@ def project_feature(point,k):
 
 
 def hand_image_velocity(uv,depth,desired_uv,k,basis_camera):
-    """Translate the camera so the observed image feature approaches its goal."""
     point=np.array([(uv[0]-k[0,2])/k[0,0],(uv[1]-k[1,2])/k[1,1],1.])*depth
     velocity,error=image_velocity(point,desired_uv,k,basis_camera,min_depth=.05)
     # Reverse the sign because moving the camera moves the image in the opposite direction.
@@ -564,7 +538,6 @@ def orientation_velocity(desired,current):
 
 
 def approach_velocity(start,current,distance):
-    """Bounded Cartesian final approach; never accept a short or skewed reach."""
     axis=start[:3,2]
     delta=current[:3,3]-start[:3,3]
     # Separate forward progress from sideways drift along the planned approach.
@@ -595,7 +568,6 @@ def feature(depth, k, mask):
 
 
 def image_velocity(tool_point_camera, target_uv, k, basis_camera, gain=.6, max_speed=.012, min_depth=.15):
-    """Compute a bounded image-error correction for a fixed camera."""
     x,y,z = np.asarray(tool_point_camera,float)
     if not np.isfinite([x,y,z]).all() or z < min_depth:
         raise RuntimeError('Control feature is behind/too close to the camera')
@@ -756,9 +728,6 @@ class VisualServo:
             self.stop()
 
     def approach(self,prompt,reference_feature,distance=.08,start_pose=None):
-        """Move straight toward the target using pose feedback and camera checks.
-
-    A clipped target outline is used for detection only, not centring."""
         if not 0.<distance<=.08:
             raise ValueError('Final approach must be within 80 mm')
         start=self.transform() if start_pose is None else np.asarray(start_pose,float)
@@ -854,7 +823,6 @@ def compact(solution):
 # Contact closure
 
 def wait_for_hold(read_contact, clock, seconds=5., timeout=90.):
-    """Require continuous contact for a robot-clock dwell; verify elevation separately."""
     started = None
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -875,11 +843,6 @@ def wait_for_hold(read_contact, clock, seconds=5., timeout=90.):
 
 
 def spring_rise(q, command=None):
-    """Finger spring deflection above what the empty hand reads at this command.
-
-    The real springs deflect as the hand closes on nothing, to 0.5-0.6 rad at
-    command 0.30 (free_air_springs.json, two sweeps on 2026-09-19 agreeing to
-    0.022 rad); only the rise above that is contact. Simulated springs read 0."""
     springs = [q[f'hand_{s}_spring_proximal_joint'] for s in 'lr']
     if USE_SIM_TIME:
         return tuple(springs)
@@ -908,16 +871,11 @@ def contact_state(left, right, threshold, ceiling=.40):
 
 
 def command_for_gap(gap):
-    """hand_motor_joint command for a pad gap; the fingers follow the command."""
     profile = json.loads((GRIPPER_DIR / 'closing_profile.json').read_text())
     return float(np.interp(gap, [s['gap'][0] for s in profile], [s['motor'] for s in profile]))
 
 
 def preclose(node, width):
-    """Cover the free air in one move; close() then finds contact in small steps.
-
-    Stops PRECLOSE_MARGIN wider than the planned contact width, by the
-    calibrated closing profile."""
     target = command_for_gap(width + PRECLOSE_MARGIN)
     travel = joint_positions(node)['hand_motor_joint'] - target
     # Not worth a move when the object nearly fills the open hand.
@@ -991,6 +949,10 @@ def close(node, threshold=.06, motor=None, fine_below=0.):
     raise RuntimeError('Closure exhausted without bilateral contact')
 
 
+class DepthTooSparse(RuntimeError):
+    """The mask is there and the depth under it is not: usually closer than ~0.5 m."""
+
+
 class GeometryOccluded(RuntimeError):
     def __init__(self,message,centre):
         super().__init__(message)
@@ -1024,7 +986,6 @@ def reframe_target(node,poses,centre):
 
 
 def foreground_occlusion(depth, mask, support_mask=None):
-    """Fraction of the silhouette adjacent to a distinctly nearer surface."""
     mask=np.asarray(mask,bool)
     outer=cv2.dilate(mask.astype(np.uint8),np.ones((5,5),np.uint8)).astype(bool)&~mask
     # Compare against interior depth to avoid mixed pixels at the object boundary.
@@ -1051,13 +1012,10 @@ def foreground_occlusion(depth, mask, support_mask=None):
 
 
 def support_pixels(depth,k,transform,target):
-    """Identify a broad horizontal supporting surface from measured depth."""
     return support_plane(depth,k,transform,target)[0]
 
 
 def support_plane(depth,k,transform,target):
-    """Return the pixel mask and odom height of a broad horizontal supporting
-    surface beneath the target, or an empty mask and None when none is seen."""
     v,u=np.indices(depth.shape)
     x=(u-k[0,2])*depth/k[0,0];y=(v-k[1,2])*depth/k[1,1]
     xyz=np.stack([x,y,depth],axis=-1)@transform[:3,:3].T+transform[:3,3]
@@ -1086,10 +1044,6 @@ _VIEW_COUNT = [0]
 
 
 def save_view(prompt, rgb, depth, k, odom_from_camera, mask, score, **extra):
-    """Keep every camera view of a run under HSR_GRASP_DIAGNOSTICS/views.
-
-    The 01:49 incident bundle held only the fitted envelope, so neither the
-    clipped view nor the rejected scan views could be examined afterwards."""
     index = _VIEW_COUNT[0]
     _VIEW_COUNT[0] += 1
     root = os.environ.get('HSR_GRASP_DIAGNOSTICS')
@@ -1103,6 +1057,15 @@ def save_view(prompt, rgb, depth, k, odom_from_camera, mask, score, **extra):
                         odom_from_camera=np.asarray(odom_from_camera, float),
                         score=float(score), prompt=str(prompt), **extra)
     return index
+
+
+def observe_lifted(prompt):
+    """observe(), or None when the lifted object is inside the camera's blind range."""
+    try:
+        return observe(prompt)
+    except (DepthTooSparse, pointcloud.InvalidTargetDepth) as error:
+        print(f'[LIFT] no camera check: {error}', flush=True)
+        return None
 
 
 def observe(prompt):
@@ -1132,7 +1095,7 @@ def observe(prompt):
         # 0.53 m and beyond had depth on 78-97% of their pixels, at 0.45-0.48 m on 0-29%.
         near = (f"; at {median_range:.2f} m it is closer than the depth camera can measure, "
                 f"back the robot off" if median_range < .5 else "")
-        raise RuntimeError(f"only {len(points)} depth points on the {prompt}{near}")
+        raise DepthTooSparse(f"only {len(points)} depth points on the {prompt}{near}")
     _, image_point, area = feature(depth, k, mask)
     clipped=bool(u.min()<3 or v.min()<3 or u.max()>=mask.shape[1]-3 or v.max()>=mask.shape[0]-3)
     # Put the target points and image feature into odom coordinates.
@@ -1145,7 +1108,6 @@ def observe(prompt):
 
 
 def merge_target_views(views):
-    """Combine overlapping static-object observations in odom, not image space."""
     merged = views[0]['points'].copy()
     for view in views[1:]:
         points = view['points']
@@ -1168,12 +1130,6 @@ def merge_target_views(views):
 
 
 def observe_geometry(node, prompt, poses=None):
-    """Recover complementary target surfaces with a bounded head-only scan.
-
-    `poses` is the run's long-lived RobotTransforms. A listener created here
-    would start with an empty buffer, and on this link a fresh endpoint can
-    take longer than its 3 s lookup deadline to discover the transform
-    publishers (README §3)."""
     initial = observe(prompt)
     if initial['clipped']:
         # A level/reset head may see only the top of a tabletop object. Centre
@@ -1229,9 +1185,15 @@ def observe_geometry(node, prompt, poses=None):
     return result
 
 
-def perceive(prompt, node=None, poses=None):
-    """Generate candidates, then place calibrated pads using observed geometry."""
-    observation = observe_geometry(node,prompt,poses) if node is not None else observe(prompt)
+def perceive(prompt, node=None, poses=None, cloud=None):
+    if cloud is not None:
+        # Active perception's fused TSDF surface, already in odom, instead of a head scan.
+        saved = np.load(cloud)
+        observation = dict(points=saved['points'], camera=saved['camera'],
+                           score=float(saved['score']), support=None)
+        print(f'[GEOMETRY] using the fused cloud {cloud}', flush=True)
+    else:
+        observation = observe_geometry(node,prompt,poses) if node is not None else observe(prompt)
     points = observation['points']
     # Limit and centre the object cloud before asking the grasp model.
     sample = points[np.random.choice(len(points), min(len(points), MAX_CLOUD_POINTS), replace=False)]
@@ -1270,7 +1232,6 @@ _JOINT_STATES = {}
 
 
 def joint_positions(node, timeout=5.0):
-    """The robot's current joint positions, from a persistent subscription."""
     entry = _JOINT_STATES.get(id(node))
     if entry is None:
         latest = {}
@@ -1308,12 +1269,6 @@ def fingertip_gap(node):
 
 
 def target_box(points, support=None):
-    """Return the axis-aligned collision box (lower, upper) for the observed target.
-
-    An object rests on its support surface, so the box always reaches down to
-    the support plane when one was measured. A view clipped at the frame edge
-    then still yields a full-height box instead of a floating stub; the extra
-    coverage only makes planning more conservative."""
     lower, upper = points.min(axis=0).astype(float), points.max(axis=0).astype(float)
     if support is not None and np.isfinite(support) and support < lower[2]:
         gap = lower[2]-support
@@ -1325,7 +1280,6 @@ def target_box(points, support=None):
 
 
 def model_target(node, points, support=None):
-    """Replace the target box and rebuild the depth map around it, excluding target voxels."""
     # Represent the target by its axis-aligned box in the planning scene.
     lower, upper = target_box(points, support)
     box = CollisionObject(id=TARGET, operation=CollisionObject.ADD)
@@ -1393,7 +1347,6 @@ def model_target(node, points, support=None):
 
 
 def depth_relay(node, enabled):
-    """Start or stop the depth frames feeding move_group's octomap."""
     value = ParameterValue(type=ParameterType.PARAMETER_BOOL, bool_value=enabled)
     request = SetParameters.Request(parameters=[Parameter(name="enabled", value=value)])
     call(node, SetParameters, "/octomap_depth_camera/set_parameters", request)
@@ -1413,7 +1366,6 @@ def action_client(node, kind, name):
 
 
 def run_action(node, kind, name, goal, seconds):
-    """Send goal to the action server name; return its result once finished."""
     client = action_client(node, kind, name)
     # Keep waiting rather than giving up on one attempt. Discovery of the
     # robot's endpoints arrives in part and late over this link: a fresh client
@@ -1461,7 +1413,6 @@ def run_action(node, kind, name, goal, seconds):
 
 
 def open_hand(node):
-    """Open the physical hand before planning so passive finger springs can relax."""
     goal = FollowJointTrajectory.Goal()
     goal.trajectory.joint_names = ['hand_motor_joint']
     goal.trajectory.points = [JointTrajectoryPoint(
@@ -1492,7 +1443,6 @@ def close_hand(node):
 
 
 def mtc_node():
-    """An rclcpp node carrying move_group's robot model and planner settings."""
     # Give the C++ MTC node the same robot model, planner settings, and clock mode.
     with tempfile.NamedTemporaryFile("w", suffix=".yaml") as params:
         yaml.safe_dump(
@@ -1518,7 +1468,6 @@ def stamped(frame, matrix=np.eye(4)):
 
 
 def move_hand(name, planner, direction, frame, min_distance, max_distance):
-    """A straight hand motion along direction, of at least min_distance."""
     stage = stages.MoveRelative(name, planner)
     stage.group = GROUP
     stage.ik_frame = stamped(HAND)
@@ -1533,9 +1482,6 @@ def move_hand(name, planner, direction, frame, min_distance, max_distance):
 
 
 def seeded_ik(node, matrix, base, frame=BASE_FRAME):
-    """Solve whole-body IK from the current state, then check base limits and collisions.
-
-    Return a diff RobotState over WHOLE_BODY_JOINTS, or None."""
     scene = call(node, GetPlanningScene, "/get_planning_scene", GetPlanningScene.Request(
         components=PlanningSceneComponents(components=PlanningSceneComponents.ROBOT_STATE))).scene
     request = GetPositionIK.Request()
@@ -1552,6 +1498,10 @@ def seeded_ik(node, matrix, base, frame=BASE_FRAME):
         print('[IK] no seeded whole-body solution', flush=True)
         return None
     solution = dict(zip(response.solution.joint_state.name, response.solution.joint_state.position))
+    # IK answers a heading within +-pi while odom_t keeps counting turns: parked at
+    # +3.31, the same heading came back as -2.97 and every pregrasp was refused as a
+    # -6.28 rad turn (2026-09-21). Put it on the base's turn, or the goal is that spin.
+    solution['odom_t'] = base['odom_t'] + (solution['odom_t']-base['odom_t']+np.pi) % (2*np.pi) - np.pi
     # Say how far the base must go: the base controller, not the arm, is what
     # fails these reaches (README §10), so this number decides the outcome.
     travel = np.hypot(solution['odom_x']-base['odom_x'], solution['odom_y']-base['odom_y'])
@@ -1576,7 +1526,6 @@ def seeded_ik(node, matrix, base, frame=BASE_FRAME):
 
 class Pick:
     def __init__(self, node, ik=None):
-        """Use the optional ik(matrix, base) callback to supply pregrasp joint goals."""
         self.node = node
         self.ik = ik
         self.ompl = None
@@ -1599,11 +1548,13 @@ class Pick:
         return task
 
     def reach(self, grasps, base):
-        """Plan pregrasp and complete approach together before executing either."""
         task = self.task("reach")
         # Restore target collision checks before opening or moving to pregrasp.
         protect = stages.ModifyPlanningScene("check target during pregrasp")
         protect.allowCollisions(TARGET, FINGERS, False)
+        # The last lift's exemption outlives its task in move_group, as the one above does.
+        protect.allowCollisions("<octomap>", FINGERS, False)
+        protect.allowCollisions("<octomap>", [TARGET], False)
         # Allow head-link overlap with the camera-origin voxel seen in real depth maps.
         protect.allowCollisions("<octomap>", HEAD_LINKS, True)
         task.add(protect)
@@ -1690,9 +1641,15 @@ class Pick:
         return task
 
     def lift(self):
-        """Attach the closed-on object to the hand and raise it."""
         task = self.task("lift")
         attach = stages.ModifyPlanningScene("attach target")
+        # The map was frozen before the hand closed: voxels at the can's edge now sit
+        # inside the closed fingers and would reject the start state.
+        attach.allowCollisions("<octomap>", FINGERS, True)
+        # It also holds the can's own voxels, which count against the can only once it
+        # is attached: "<octomap> colliding with target" with the can held. The lift is
+        # TEST_LIFT straight up, so the can meets nothing else the map knows of.
+        attach.allowCollisions("<octomap>", [TARGET], True)
         # Attach the target to the palm in the planning scene before moving upward.
         attach.attachObject(TARGET, HAND)
         task.add(attach)
@@ -1706,12 +1663,6 @@ START_TOLERANCE = .05  # rad; refuse to execute a plan starting elsewhere
 
 
 def check_start(node, solution, tolerance=START_TOLERANCE):
-    """Refuse a solution whose first point is not where the robot actually is.
-
-    An interrupted run leaves the arm part way through a motion. Executing a
-    plan built for a different start makes the controller drive straight to
-    that first point, which is the jerk seen when a cut-off run is repeated.
-    """
     measured = joint_positions(node)
     for step in solution.sub_trajectory:
         trajectory = step.trajectory.joint_trajectory
@@ -1731,7 +1682,6 @@ def check_start(node, solution, tolerance=START_TOLERANCE):
 
 
 def execute(node, task):
-    """Plan one solution and execute it through the rclpy MTC action client."""
     if not task.plan(max_solutions=1):
         raise RuntimeError(f"MTC found no {task.name} plan")
     solution = task.solutions[0].toMsg()
@@ -1751,7 +1701,6 @@ def execute(node, task):
 
 
 def clear_observation_pose(node, planner):
-    """Use one collision-map snapshot during the camera-clearance motion."""
     # Freeze depth updates during the clearance motion, then restart them afterward.
     depth_relay(node, False)
     try:
@@ -1760,7 +1709,7 @@ def clear_observation_pose(node, planner):
         depth_relay(node, True)
 
 
-def pick(prompt, mode='auto'):
+def pick(prompt, mode='auto', cloud=None):
     if mode not in ('auto', 'pickup', 'grasp'):
         raise ValueError('Unknown grasp mode')
     rclpy.init()
@@ -1776,7 +1725,7 @@ def pick(prompt, mode='auto'):
             clear_observation_pose(node,planner)
             reframe_target(node,poses,(previous.min(0)+previous.max(0))/2)
         try:
-            points, grasps, widths, observation = perceive(prompt,node,poses)
+            points, grasps, widths, observation = perceive(prompt,node,poses,cloud)
         # Try one camera-clearance motion and a fresh observation when geometry is hidden.
         except GeometryOccluded as blocked:
             print('[GEOMETRY] foreground blocks target; planning one return to observation home',flush=True)
@@ -1855,17 +1804,23 @@ def pick(prompt, mode='auto'):
         before_lift = poses.transform()
         execute(node, planner.lift())
         after_lift = poses.transform()
-        measured = observe(prompt)
+        def read_contact():
+            q = joint_positions(node)
+            rclpy.spin_once(node, timeout_sec=0.)  # update the /clock subscription
+            return spring_rise(q)
+        measured = observe_lifted(prompt)
+        if measured is None:
+            # The lift ran and the camera cannot see it. Both fingers still loaded is
+            # what 'grasped' already means; 'picked' stays reserved for a seen rise.
+            wait_for_hold(read_contact, lambda: node.get_clock().now().nanoseconds / 1e9)
+            print('[GRASPED] lifted with sustained bilateral contact; rise not seen', flush=True)
+            return 'grasped'
         if diagnostics:
             np.savez(Path(diagnostics)/'lift_observation.npz', before=observation['points'],
                      after=measured['points'], expected=after_lift[:3,3]-before_lift[:3,3])
         evidence = verify_object_lift(observation['points'], measured['points'],
                                       after_lift[:3,3]-before_lift[:3,3])
         print(f"[LIFT] {prompt}: object rose {evidence['rise_m']*1000:.1f} mm; checking hold", flush=True)
-        def read_contact():
-            q = joint_positions(node)
-            rclpy.spin_once(node, timeout_sec=0.)  # update the /clock subscription
-            return spring_rise(q)
         # Require sustained bilateral contact before taking the final verification image.
         wait_for_hold(read_contact, lambda: node.get_clock().now().nanoseconds / 1e9)
         # After the contact dwell, check again that the object remains elevated.
@@ -1893,10 +1848,11 @@ def pick(prompt, mode='auto'):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description='Pick up an object with MoveIt Task Constructor (MTC).')
     parser.add_argument('target')
     parser.add_argument('--mode', choices=['auto', 'pickup', 'grasp'], default='auto')
+    parser.add_argument('--cloud', help="active perception's target_cloud.npz, used instead of a head scan")
     args = parser.parse_args()
-    outcome = pick(args.target, args.mode)
+    outcome = pick(args.target, args.mode, args.cloud)
     # Distinguish contact-only success from a verified pickup for the mission.
     raise SystemExit(3 if outcome == 'grasped' else 0 if outcome else 1)

@@ -2,6 +2,7 @@
 
     python3 -m core.pipeline.mission_tree --target pringles
     python3 -m core.pipeline.mission_tree --target pringles --navigate-only true
+    python3 -m core.pipeline.mission_tree --target pringles --nav false   # pick only
     python3 -m core.pipeline.mission_tree --render      # picture of the tree, no ROS
 
 The tree decides when each action runs; core.pipeline.actions holds what each does.
@@ -15,6 +16,10 @@ is a strict sequence, and Ctrl+C still cancels a Nav2 goal inside the step.
     ├─ Park            once                   └─ Go there          first reachable view
     ├─ Pause Nav2
     └─ Pick            once; leave the resulting hold in place
+
+--nav false is the pick alone, for an object already in front of the camera:
+Home arm, Ready (move_group and SAM3 only), Pick. No Nav2, map or scene graph,
+and no Home head, which would turn the camera off the object.
 
 Watch it live, with ROS sourced, once this is running:
     py-trees-tree-watcher      # in the terminal
@@ -76,8 +81,13 @@ class Step(py_trees.behaviour.Behaviour):
         return py_trees.common.Status.FAILURE
 
 
-def build(steps, grasp=True, navigate_only=False, active_perception=False):
+def build(steps, grasp=True, navigate_only=False, active_perception=False, nav=True):
     """The mission tree over `steps`, a dict of name -> action."""
+    if not nav:
+        # The pick alone: the operator has put the object in view, so the head stays.
+        children = [Step("Home arm", steps["home"]), Step("Ready", steps["ready"]),
+                    Step("Pick", steps["pick"])]
+        return py_trees.composites.Sequence("Mission", memory=True, children=children)
     # Home first: it needs only the arm controller, and every later step assumes it.
     children = [Step("Home arm", steps["home"]), Step("Ready", steps["ready"]),
                 # After Ready: get_ready is what proves the head controller is live.
@@ -119,13 +129,13 @@ def exit_code(root):
 
 
 def mission_steps(navigator, scene, target, graph_path, top_k, bearings, timeout, perception, mode="auto",
-                  rerun=False):
+                  rerun=False, nav=True, furniture=None):
     """The existing pipeline functions, as the tree's actions."""
     # Share the selected location and detected object between mission steps.
     chosen = {}
 
     def ready():
-        actions.get_ready(navigator, target, timeout, perception=perception)
+        actions.get_ready(navigator, target, timeout, perception=perception, nav=nav)
         return True
 
     def home():
@@ -139,8 +149,8 @@ def mission_steps(navigator, scene, target, graph_path, top_k, bearings, timeout
         return True
 
     def choose():
-        chosen["location"] = next(actions.targets(scene, target, robot_xy=navigator.robot_xy(),
-                                                 top_k=top_k), None)
+        chosen["location"] = next(actions.targets(scene, target, furniture=furniture,
+                                                 robot_xy=navigator.robot_xy(), top_k=top_k), None)
         # DeepSeek's picks are cached in the graph; keep them for the next query.
         sg.save(scene, graph_path)
         if chosen["location"] is None:
@@ -173,7 +183,8 @@ def mission_steps(navigator, scene, target, graph_path, top_k, bearings, timeout
 
     def find():
         navigator.resume_navigation_if_paused()
-        status, chosen["object"] = actions.search(scene, target, navigator, top_k=top_k)
+        status, chosen["object"] = actions.search(scene, target, navigator, furniture=furniture,
+                                                  top_k=top_k)
         if status == actions.NOT_FOUND:
             # Every place failed, DeepSeek's cached picks included: ask afresh next time.
             query.forget(scene, target)
@@ -183,7 +194,10 @@ def mission_steps(navigator, scene, target, graph_path, top_k, bearings, timeout
 
     def explore():
         from core.active_perception.explore import explore as nbv_explore, furniture_footprints
-        log = nbv_explore(navigator, target, rerun=rerun, blockers=furniture_footprints(scene))
+        log = nbv_explore(navigator, target, rerun=rerun, blockers=furniture_footprints(scene),
+                          sim=not REAL_ROBOT)
+        # The pick plans on this fused surface instead of scanning again.
+        chosen["cloud"] = log["target_cloud"]
         print(f"[NBV] {log['views_fused']} views fused, best grasp {log['best_grasp'] and round(log['best_grasp']['quality'], 3)}", flush=True)
         return log["views_fused"] > 0
 
@@ -198,7 +212,7 @@ def mission_steps(navigator, scene, target, graph_path, top_k, bearings, timeout
         return True
 
     def pick():
-        status = actions.pick_up(target, mode=mode)
+        status = actions.pick_up(target, mode=mode, cloud=chosen.get("cloud"))
         print(f"[GRASP RESULT] {status}", flush=True)
         return status in (actions.PICKED, actions.GRASPED)
 
@@ -206,15 +220,16 @@ def mission_steps(navigator, scene, target, graph_path, top_k, bearings, timeout
             "find": find, "explore": explore, "park": park, "pause": pause, "pick": pick}
 
 
-def render(grasp, navigate_only, active_perception=False):
+def render(grasp, navigate_only, active_perception=False, nav=True):
     """Save the tree as a picture under outputs/, without ROS or the robot."""
     # Build named placeholder actions for drawing; rendering never executes them.
     placeholders = {}
     for name in ("ready", "home", "home_head", "choose", "go", "find", "explore",
                  "park", "pause", "pick"):
         placeholders[name] = None  # never run: drawing needs names only
-    root = build(placeholders, grasp=grasp, navigate_only=navigate_only, active_perception=active_perception)
-    name = "mission_tree_navigate" if navigate_only else "mission_tree"
+    root = build(placeholders, grasp=grasp, navigate_only=navigate_only, active_perception=active_perception,
+                 nav=nav)
+    name = "mission_tree_navigate" if navigate_only else "mission_tree" if nav else "mission_tree_pick"
     files = py_trees.display.render_dot_tree(root, name=name, target_directory=str(ROOT / "outputs"))
     print(py_trees.display.unicode_tree(root))
     for path in files.values():
@@ -227,12 +242,18 @@ def run(argv=None):
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--target")
     parser.add_argument("--graph", type=Path, default=DEFAULT_GRAPH)
+    parser.add_argument("--furniture", default="",
+                        help="search this one piece only (node id, or a unique name or label): no "
+                             "remembered places and no DeepSeek, for an object known to have moved")
     parser.add_argument("--top-k", type=int, default=3)
     parser.add_argument("--bearings", type=int, default=12)
     parser.add_argument("--startup-timeout", type=float, default=180)
     parser.add_argument("--grasp", default="true", choices=["true", "false"])
     parser.add_argument("--navigate-only", default="false", choices=["true", "false"],
                         help="reason and drive to the target's place; no SAM3 or GraspGenX")
+    parser.add_argument("--nav", default="true", choices=["true", "false"],
+                        help="false is the pick alone, the object already in view: no Nav2, "
+                             "map or scene graph")
     parser.add_argument("--mode", default="auto", choices=["auto", "pickup", "grasp"])
     parser.add_argument("--active-perception", default="false", choices=["true", "false"],
                         help="fuse the found target from next best views before parking (under test)")
@@ -245,16 +266,22 @@ def run(argv=None):
     args = parser.parse_args(argv)
     grasp, navigate_only = args.grasp == "true", args.navigate_only == "true"
     active_perception = args.active_perception == "true"
+    nav = args.nav == "true"
+    if not nav and (navigate_only or active_perception or not grasp):
+        parser.error("--nav false leaves only the pick: navigate-only and active-perception "
+                     "drive the base, and grasp false leaves nothing to do")
     if args.render:
-        return render(grasp, navigate_only, active_perception)
+        return render(grasp, navigate_only, active_perception, nav)
     if not args.target or not args.target.strip() or args.top_k < 1 or args.bearings < 1:
         parser.error("target must be nonempty; top-k and bearings must be positive")
     if not math.isfinite(args.startup_timeout) or args.startup_timeout <= 0:
         parser.error("startup-timeout must be finite and positive")
 
     # Validate the graph before waiting for any robot or model service.
-    scene = sg.load(args.graph)
-    sg.require_map(scene)
+    scene = None
+    if nav:
+        scene = sg.load(args.graph)
+        sg.require_map(scene)
     if args.natural_language == "true":
         # Before anything reads the target: it is SAM3's prompt, the cache key and the
         # label of the node a detection saves, and none of them should hold a sentence.
@@ -266,9 +293,9 @@ def run(argv=None):
     navigator = Navigator(use_sim_time=not REAL_ROBOT)
     steps = mission_steps(navigator, scene, args.target, args.graph, args.top_k,
                           args.bearings, args.startup_timeout, perception=not navigate_only, mode=args.mode,
-                          rerun=args.rerun == "true")
+                          rerun=args.rerun == "true", nav=nav, furniture=args.furniture or None)
     tree = py_trees_ros.trees.BehaviourTree(build(steps, grasp=grasp, navigate_only=navigate_only,
-                                                  active_perception=active_perception))
+                                                  active_perception=active_perception, nav=nav))
     viewers = SingleThreadedExecutor()
     try:
         tree.setup(node_name="mission_tree", timeout=15.0)

@@ -257,3 +257,32 @@ def shelf_heights(lower, upper, distance):
     for index in range(count):
         heights.append(lower + step * (index + 0.5))
     return heights
+
+
+def sweep_points(xy, centre, dimensions, yaw):
+    """Aims whose views, side by side, take in all of the surface within range of `xy`.
+
+    shelf_heights turned sideways. The first aim is aim_point's; the rest pan outward
+    a view's width at a time, nearest first, and stop at the surface's last sample.
+    Surface beyond MAX_RANGE is left to the other observation poses."""
+    first = aim_point(xy, centre, dimensions, yaw)
+    ahead = math.atan2(first[1] - xy[1], first[0] - xy[0])
+    distance = math.hypot(first[0] - xy[0], first[1] - xy[1])
+    offset = surface_points(centre, dimensions, yaw) - np.asarray(xy, dtype=float)
+    offset = offset[np.hypot(offset[:, 0], offset[:, 1]) <= MAX_RANGE]
+    points = [first]
+    if not len(offset):
+        return points
+    # Pan of every surface sample relative to the first aim, wrapped to [-pi, pi].
+    pan = np.arctan2(offset[:, 1], offset[:, 0]) - ahead
+    pan = np.arctan2(np.sin(pan), np.cos(pan))
+    step = 1
+    while (2 * step - 1) * HALF_FOV < max(pan.max(), -pan.min()):
+        for side, edge in ((1, pan.max()), (-1, -pan.min())):
+            # Pan only to a side that still has surface past the previous view.
+            if (2 * step - 1) * HALF_FOV < edge:
+                angle = ahead + side * min(2 * step * HALF_FOV, edge)
+                points.append(np.array([xy[0] + distance * math.cos(angle),
+                                        xy[1] + distance * math.sin(angle)]))
+        step += 1
+    return points

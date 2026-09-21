@@ -113,6 +113,18 @@ class TargetBox:
         return AABBox(np.maximum(low, self.cube_min), np.minimum(high, self.cube_max))
 
 
+def save_target(out, policy, anchor, map_from_camera, score):
+    """The fused target surface for core.grasping.pick --cloud, which works in odom.
+
+    Every view went through `anchor`, so its inverse puts the cloud back into odom
+    exactly; the camera is the last view's, the side pick's contact fit calls seen."""
+    odom_from_map = np.linalg.inv(anchor)
+    path = out / "target_cloud.npz"
+    np.savez(path, points=transform_points(odom_from_map, policy.target_points()),
+             camera=(odom_from_map @ map_from_camera)[:3, 3], score=score)
+    return str(path)
+
+
 def set_torso(navigator, rise):
     """Lift the head by `rise` metres with the arm otherwise at its home pose."""
     # The head rises by half the arm-lift travel; clamp to the joint limit.
@@ -208,6 +220,7 @@ def explore(navigator, prompt, length=0.3, min_z_dist=0.6, max_steps=8, qual_thr
     origin = policy.base_from_task[:3, 3]
     o3d.io.write_point_cloud(str(out / "scene_cloud.ply"), policy.tsdf.get_scene_cloud().translate(origin))
     np.save(out / "grid.npy", policy.tsdf.get_grid())
+    log["target_cloud"] = save_target(out, policy, anchor, map_from_camera, score)
     if policy.best_grasp is not None:
         log["best_grasp"] = dict(quality=policy.best_grasp[1], palm_pose=policy.best_grasp[0].tolist())
     log["views_fused"] = len(policy.views)

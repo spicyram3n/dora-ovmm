@@ -20,7 +20,7 @@ from tmc_manipulation_msgs.srv import SolveIkWithCollision
 from trajectory_msgs.msg import JointTrajectoryPoint
 from core.navigation import base_placement, graspable, standoff
 from core.perception import pointcloud, sam3_client
-from core.perception.camera_ros2 import grab_rgbd
+from core.perception.camera_ros2 import BASE_FRAME, grab_rgbd
 from core.scene_graph import graph as sg
 from core.scene_graph.instance import Instance, from_box
 from core.scene_graph.relations import classify
@@ -127,25 +127,34 @@ def waiter(navigator, deadline):
     return remaining, wait
 
 
-def get_ready(navigator, target, timeout, perception=True):
-    """Wait for every service the mission uses; skip SAM3 without perception."""
-    remaining, wait = waiter(navigator, time.monotonic() + timeout)
+def _nav_ready(navigator, remaining, wait):
+    """What only the driving steps use: Nav2, the head action and the IK service."""
+    def state(client):
+        """The node's lifecycle state id, or None while it does not answer."""
+        if not client.service_is_ready():
+            return None
+        future = client.call_async(GetState.Request())
+        rclpy.spin_until_future_complete(navigator, future, timeout_sec=min(1., remaining()))
+        if not future.done():
+            client.remove_pending_request(future)
+            return None
+        return future.result().current_state.id
+
+    # Started by the same launch, controller_server answers nothing while its
+    # activation waits for the robot's odom TF (35 s on 2026-09-21), and the
+    # resume check below gives up on it after 15 s.
+    client = navigator.create_client(GetState, '/controller_server/get_state')
+    try:
+        wait('controller_server answering', lambda: state(client) is not None)
+    finally:
+        navigator.destroy_client(client)
     navigator.resume_navigation_if_paused()
     # Wait for active navigation nodes before checking their actions and sensors.
     for name in ('amcl', 'planner_server', 'controller_server', 'behavior_server', 'bt_navigator'):
         client = navigator.create_client(GetState, f'/{name}/get_state')
         try:
-            def active():
-                if not client.service_is_ready():
-                    return False
-                future = client.call_async(GetState.Request())
-                rclpy.spin_until_future_complete(navigator, future, timeout_sec=min(1., remaining()))
-                if not future.done():
-                    client.remove_pending_request(future)
-                    return False
-                # Accept only the active lifecycle state.
-                return future.result().current_state.id == 3  # lifecycle ACTIVE
-            wait(name + ' active', active)
+            # Accept only the active lifecycle state.
+            wait(name + ' active', lambda: state(client) == 3)  # lifecycle ACTIVE
         finally:
             navigator.destroy_client(client)
     wait('Nav2 actions', lambda: navigator.planner.server_is_ready() and navigator.driver.server_is_ready())
@@ -160,6 +169,16 @@ def get_ready(navigator, target, timeout, perception=True):
         wait('IK service', ik.service_is_ready)
     finally:
         navigator.destroy_client(ik)
+
+
+def get_ready(navigator, target, timeout, perception=True, nav=True):
+    """Wait for every service the mission uses; skip SAM3 without perception.
+
+    nav=False is the pick alone: no Nav2 and no map frame, since
+    core.grasping.pick itself works in odom."""
+    remaining, wait = waiter(navigator, time.monotonic() + timeout)
+    if nav:
+        _nav_ready(navigator, remaining, wait)
 
     if perception:
         scene = navigator.create_client(GetPlanningScene, '/get_planning_scene')
@@ -191,12 +210,14 @@ def get_ready(navigator, target, timeout, perception=True):
             return True
         except RuntimeError:
             return False
-    wait('fresh map-to-base localization', localized)
+    if nav:
+        wait('fresh map-to-base localization', localized)
 
     print('[WAIT] synchronized RGB-D and camera TF', flush=True)
     while True:
         try:
-            rgb, _, _, _ = grab_rgbd(target_frame='map', timeout=min(5., remaining()))
+            rgb, _, _, _ = grab_rgbd(target_frame='map' if nav else BASE_FRAME,
+                                     timeout=min(5., remaining()))
             break
         except RuntimeError as error:
             print(f'[WAIT] {error}', flush=True)
@@ -348,21 +369,22 @@ def look_points(scene, location, pose):
         if location.object_id is not None and location.furniture_id is not None:
             data = scene.nodes[location.furniture_id]
             if not is_storage(data):
-                centre, _ = box(data)
-                # Also check the supporting surface in case the object moved.
-                aims.append([centre[0], centre[1], data['bounds'][1][2]+.06])
+                # Also sweep the supporting surface in case the object moved.
+                for x, y in standoff.sweep_points(pose[:2], *sg.footprint(data)):
+                    aims.append([x, y, data['bounds'][1][2]+.06])
         return aims
     data = scene.nodes[location.furniture_id]
-    centre, dimensions, yaw = sg.footprint(data)
-    x, y = standoff.aim_point(pose[:2], centre, dimensions, yaw)
     lower, upper = (data["bounds"][0][2], data["bounds"][1][2])
-    if not is_storage(data):
-        # Objects lie on top; aiming just above it keeps the whole top in view.
-        return [[x, y, upper + 0.1]]
-    distance = np.hypot(x - pose[0], y - pose[1])
     points = []
-    for height in standoff.shelf_heights(lower, upper, distance):
-        points.append([x, y, height])
+    # One aim sees only part of a long piece; pan across what is within range.
+    for x, y in standoff.sweep_points(pose[:2], *sg.footprint(data)):
+        if not is_storage(data):
+            # Objects lie on top; aiming just above it keeps the whole top in view.
+            points.append([x, y, upper + 0.1])
+            continue
+        distance = np.hypot(x - pose[0], y - pose[1])
+        for height in standoff.shelf_heights(lower, upper, distance):
+            points.append([x, y, height])
     return points
 
 
@@ -472,10 +494,10 @@ def make_graspable(scene, node_id, navigator, obstacles="--costmap", bearings=12
     return READY
 
 
-def pick_up(obj, mode='auto'):
+def pick_up(obj, mode='auto', cloud=None):
     """Run the pick in a separate process so MTC's C++ node has its own ROS context."""
     pick = subprocess.run([sys.executable, "-m", "core.grasping.pick", obj,
-                           '--mode', mode], cwd=ROOT)
+                           '--mode', mode] + (['--cloud', str(cloud)] if cloud else []), cwd=ROOT)
     return {0: PICKED, 3: GRASPED}.get(pick.returncode, NOT_PICKED)
 
 
@@ -495,13 +517,24 @@ def search(scene, obj, navigator, furniture=None, top_k=3, observe=locate, views
         outcomes = VIEWS[view_key(location)]["outcomes"]
         observations = 0
         failed_drives = 0
+        # Surface samples some view so far had within range. The view count assumes
+        # every drive succeeds; this is what the views reached really took in.
+        surface = np.asarray(VIEWS[view_key(location)]["points"], dtype=float)
+        seen = np.zeros(len(surface), dtype=bool)
         current = navigator.robot_pose() if obj else None
         # Check the current view before driving to a new observation pose.
         for pose in ([current] if current is not None else []) + list(poses):
             at_current = current is not None and pose is current
+            within = np.hypot(*(surface - pose[:2]).T) <= standoff.MAX_RANGE
+            # Past the view budget, drive only where unseen surface comes within range.
+            if not at_current and observations >= limit and not np.any(within & ~seen):
+                continue
             if not at_current and not navigator.reachable(*pose):
                 outcomes[pose] = "no path"
                 continue
+            if not at_current:
+                # Drive facing forward; the head is still aimed at the last view.
+                navigator.look_home()
             if not at_current and not navigator.drive_to(*pose):
                 outcomes[pose] = "drive failed"
                 failed_drives += 1
@@ -514,7 +547,9 @@ def search(scene, obj, navigator, furniture=None, top_k=3, observe=locate, views
             observations += int(not at_current)
             points = None
             aimed = False
-            for aim in look_points(scene, location, pose):
+            aims = look_points(scene, location, pose)
+            for index, aim in enumerate(aims, 1):
+                print(f"[LOOK] aim {index}/{len(aims)} at {np.round(aim, 2).tolist()}", flush=True)
                 # A shelf height beyond the head's tilt is skipped; the others still count.
                 if not navigator.look_at(aim):
                     continue
@@ -523,6 +558,9 @@ def search(scene, obj, navigator, furniture=None, top_k=3, observe=locate, views
                 points = observe(obj)
                 if points is not None:
                     break
+            if aimed:
+                # look_points sweeps everything within range, so all of it was in a view.
+                seen |= within
             if not aimed:
                 print("The head cannot aim at the target from this pose.")
                 outcomes[pose] = "cannot aim"
@@ -576,11 +614,15 @@ def search(scene, obj, navigator, furniture=None, top_k=3, observe=locate, views
                 )
                 print(f"Found {obj} in map at {points.mean(axis=0).round(3).tolist()}")
                 return (FOUND, object_id)
-            # Move to the next search location once this location's view budget is used.
-            if observations >= limit:
+            # Move to the next search location once its view budget is used and no
+            # surface is left unseen.
+            if observations >= limit and seen.all():
                 break
         if observations == 0:
             print("Location could not be observed: navigation failed; trying the next location.")
         else:
+            if not seen.all():
+                print(f"[LOOK] {np.count_nonzero(~seen)}/{len(seen)} surface samples were never within"
+                      f" {standoff.MAX_RANGE} m of a reached view.", flush=True)
             print("Object not detected in completed views; trying the next location.")
     return (NOT_FOUND, None)

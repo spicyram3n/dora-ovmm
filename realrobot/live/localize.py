@@ -142,6 +142,28 @@ def refine(best, ranges, angles, field, resolution, origin):
     return cost, x, y, yaw
 
 
+def locate(ranges, angles, candidates, yaws, field, resolution, origin, keep=5, apart=1.5):
+    """The best pose after refining the `keep` best places at least `apart` metres apart.
+
+    The likelihood is sharp on purpose (see score), so a true pose that falls between
+    grid points can score below a false match elsewhere: on 2026-09-21 the office read
+    0.55 on the grid and a spot 13 m away 0.59, and refined they read 0.75 and 0.59.
+    Refining only the grid's winner published the wrong one. `keep` and `apart` are
+    own choices: five places 1.5 m apart covered every false match seen that day."""
+    found = []
+    for yaw in yaws:
+        costs = score(candidates, yaw, ranges, angles, field, resolution, origin)
+        for index in np.argsort(costs)[:keep]:
+            found.append((float(costs[index]), candidates[index, 0], candidates[index, 1], yaw))
+    places = []
+    for place in sorted(found):
+        if all(math.hypot(place[1] - other[1], place[2] - other[2]) > apart for other in places):
+            places.append(place)
+        if len(places) == keep:
+            break
+    return min(refine(place, ranges, angles, field, resolution, origin) for place in places)
+
+
 def quality(x, y, yaw, ranges, angles, field, resolution, origin):
     cols = ((x + ranges * np.cos(angles + yaw) - origin[0]) / resolution).astype(int)
     rows = ((y + ranges * np.sin(angles + yaw) - origin[1]) / resolution).astype(int)
@@ -310,10 +332,9 @@ def main():
     print(f"searching {len(positions)} positions x 72 headings")
 
     started = time.time()
-    coarse = search(ranges, angles, positions,
-                    np.arange(-math.pi, math.pi, math.radians(5)),
-                    field, resolution, origin)
-    _, x, y, yaw = refine(coarse, ranges, angles, field, resolution, origin)
+    _, x, y, yaw = locate(ranges, angles, positions,
+                          np.arange(-math.pi, math.pi, math.radians(5)),
+                          field, resolution, origin)
     median, within = quality(x, y, yaw, ranges, angles, field, resolution, origin)
     print(f"searched in {time.time() - started:.0f} s")
 

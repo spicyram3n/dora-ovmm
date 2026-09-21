@@ -30,7 +30,26 @@
         0.0,
         1.0
       ]
-    ]
+    ],
+    "llm_guesses": {
+      "kettle": [
+        {
+          "furniture_id": 95,
+          "relation": "on",
+          "reason": "Table in the office (robot's room); open surface, cheap to check first."
+        },
+        {
+          "furniture_id": 22,
+          "relation": "on",
+          "reason": "Kitchen counter is a typical kettle location, but farther than the office tables."
+        },
+        {
+          "furniture_id": 47,
+          "relation": "on",
+          "reason": "Second kitchen counter; also plausible for a kettle."
+        }
+      ]
+    }
   },
   "nodes": [
     {
@@ -1279,28 +1298,28 @@
       "label": "pringles can",
       "name": "pringles can",
       "movable": true,
-      "confidence": 0.72,
+      "confidence": 1.0,
       "centroid": [
-        -4.828,
-        -15.268,
-        0.746
+        -5.012,
+        -15.164,
+        0.826
       ],
       "dimensions": [
-        0.138,
-        0.139,
-        0.129
+        0.109,
+        0.094,
+        0.246
       ],
       "room": "kitchen",
       "bounds": [
         [
-          -4.897433309858291,
-          -15.3375476321528,
-          0.681637199539791
+          -5.066188866228365,
+          -15.2106413669987,
+          0.7025794293337482
         ],
         [
-          -4.759002590895463,
-          -15.198881401021145,
-          0.8105935472437247
+          -4.957481241666968,
+          -15.116375078853693,
+          0.9486215056636529
         ]
       ],
       "id": 37
@@ -3828,28 +3847,28 @@
       "label": "pringles can",
       "name": "pringles can",
       "movable": true,
-      "confidence": 0.65,
+      "confidence": 1.0,
       "centroid": [
-        -0.52,
-        1.469,
-        0.764
+        -0.679,
+        1.144,
+        0.785
       ],
       "dimensions": [
-        0.168,
-        0.166,
-        0.243
+        0.061,
+        0.037,
+        0.253
       ],
       "room": "office",
       "bounds": [
         [
-          -0.6037412697498197,
-          1.3860037286813345,
-          0.6429732981511458
+          -0.7091729001763878,
+          1.1253888968722867,
+          0.6590750061872659
         ],
         [
-          -0.43582756557424807,
-          1.5518468802498226,
-          0.8855115565844878
+          -0.648200426911969,
+          1.162009684937086,
+          0.9117664011260405
         ]
       ],
       "id": 115
@@ -4959,7 +4978,7 @@
       "target": 27
     },
     {
-      "relation": "on",
+      "relation": "near",
       "source": 37,
       "target": 29
     },
