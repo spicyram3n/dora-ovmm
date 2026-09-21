@@ -390,6 +390,43 @@ TEST(ImageCodec, ResizesCompressedDepthBeforeEncoding)
   EXPECT_EQ(decoded.data.size(), 8U);
 }
 
+TEST(ImageCodec, EncodesYuy2AsBgr8)
+{
+  // The HSR hand camera publishes yuv422_yuy2: Y0 U Y1 V per two pixels.
+  // Row 0 is red (Y 81, U 90, V 240), row 1 mid grey (128, 128, 128).
+  const auto image = make_image(
+    "yuv422_yuy2",
+    2,
+    2,
+    {
+      81, 90, 81, 240,
+      128, 128, 128, 128,
+    });
+
+  const auto encoded = vision_transport::encode_image(image, png_stream(), 1);
+  const auto decoded = vision_transport::decode_image(encoded.metadata, encoded.payload);
+
+  EXPECT_EQ(decoded.encoding, "bgr8");
+  EXPECT_EQ(decoded.width, 2U);
+  EXPECT_EQ(decoded.height, 2U);
+  EXPECT_EQ(decoded.step, 6U);
+  ASSERT_EQ(decoded.data.size(), 12U);
+  EXPECT_LT(decoded.data[0], 40);     // blue of the red pixel
+  EXPECT_LT(decoded.data[1], 40);     // green
+  EXPECT_GT(decoded.data[2], 215);    // red
+  for (std::size_t i = 6; i < 12; ++i) {
+    EXPECT_NEAR(decoded.data[i], 128, 3);
+  }
+}
+
+TEST(ImageCodec, RejectsTruncatedYuy2)
+{
+  const auto image = make_image("yuv422_yuy2", 2, 2, {81, 90, 81, 240});
+  auto broken = image;
+  broken.step = 4;
+  EXPECT_THROW(vision_transport::encode_image(broken, png_stream(), 1), std::runtime_error);
+}
+
 TEST(ImageCodec, RejectsUnsupportedEncoding)
 {
   const auto image = make_image("16UC1", 2, 1, {0, 1, 2, 3});

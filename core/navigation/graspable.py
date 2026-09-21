@@ -48,8 +48,9 @@ def _palm_pose(point, approach, closing):
     return pose
 
 
-def probes(centre, dimensions, bearings=6, top_down=True):
-    """Hand poses that reach the object box from around it and from above."""
+def probes(centre, dimensions, bearings=6, top_down=False):
+    """Hand poses that reach the object box from around it; `top_down` adds one from
+    above, off by default because core.grasping.pick only reaches from the front or side."""
     if bearings < 1:
         raise ValueError("bearings must be positive")
     centre = np.asarray(centre, dtype=float)

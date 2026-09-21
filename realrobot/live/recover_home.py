@@ -13,6 +13,9 @@ This does four steps in the order that keeps the hand clear:
     3. retreat the palm straight back along its own approach axis;
     4. plan the arm to the observation pose, collision-aware through move_group.
 
+Then the head is centred: the failed run left the camera on its last target. And
+Nav2, which the mission paused for the pick, is resumed if it is running.
+
 Step 2 matters more than it looks. Both the target box and the octomap describe
 where things were before the arm disturbed them, and a run that ends with the
 hand against the object leaves the arm inside that box. A start state in
@@ -41,9 +44,10 @@ from trajectory_msgs.msg import JointTrajectoryPoint
 sys.path.insert(0, "/home/ws")
 from core.grasping import pick  # noqa: E402
 from core.grasping.pick import (  # noqa: E402
-    FINGERS, HAND, HEAD_LINKS, OPEN_HAND, TARGET, Pick, call, execute,
+    FINGERS, HAND, HEAD_LINKS, OPEN_HAND, TARGET, Pick, aim_head, call, execute,
     joint_positions, move_hand, open_hand, run_action,
 )
+from core.navigation.nav2_client import Navigator  # noqa: E402
 from core.perception.camera_ros2 import USE_SIM_TIME  # noqa: E402
 from rclpy.parameter import Parameter as NodeParameter  # noqa: E402
 
@@ -96,6 +100,34 @@ def retreat_task(planner, distance):
     return task
 
 
+def centre_head(node):
+    """The failed run left the camera on its last target. The arm is already home by
+    now, so a head that will not move is said, not raised: main() would call that
+    an arm that has not been stowed."""
+    try:
+        aim_head(node, 0.0, 0.0)
+        print("[RECOVER] head centred", flush=True)
+    except RuntimeError as error:
+        print(f"[RECOVER] head not centred ({error}); the arm is home", flush=True)
+
+
+def resume_nav():
+    """The mission paused Nav2 for the pick and nothing resumes it until the next one,
+    so an RViz goal does nothing meanwhile. Like the head: the arm is already home, so
+    a Nav2 that is absent (the grasp stack alone) or refuses is said, not raised."""
+    navigator = Navigator(use_sim_time=USE_SIM_TIME)
+    try:
+        if not navigator._is_running("controller_server"):
+            print("[RECOVER] no Nav2 running; nothing to resume", flush=True)
+            return
+        navigator.resume_navigation_if_paused()
+        print("[RECOVER] Nav2 active", flush=True)
+    except RuntimeError as error:
+        print(f"[RECOVER] Nav2 not resumed ({error}); the arm is home", flush=True)
+    finally:
+        navigator.destroy_node()
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--retreat", type=float, default=0.10,
@@ -131,6 +163,8 @@ def main():
                   f"{arguments.seconds:.0f} s, unplanned", flush=True)
             fold_directly(node, arguments.seconds)
             print("[RECOVER] arm home", flush=True)
+            centre_head(node)
+            resume_nav()
             return 0
 
         from core.grasping.pick import mtc_node
@@ -151,6 +185,8 @@ def main():
         print("[RECOVER] folding the arm to the observation pose", flush=True)
         execute(node, planner.clear_view())
         print("[RECOVER] arm home", flush=True)
+        centre_head(node)
+        resume_nav()
         return 0
     except (RuntimeError, ValueError) as error:
         print(f"[RECOVER] failed: {error}")

@@ -526,6 +526,10 @@ def search(scene, obj, navigator, furniture=None, top_k=3, observe=locate, views
         for pose in ([current] if current is not None else []) + list(poses):
             at_current = current is not None and pose is current
             within = np.hypot(*(surface - pose[:2]).T) <= standoff.MAX_RANGE
+            # Looking from where the robot already stands is only worth the head moves
+            # when the place is within range: not the kitchen desk from the office.
+            if at_current and not within.any():
+                continue
             # Past the view budget, drive only where unseen surface comes within range.
             if not at_current and observations >= limit and not np.any(within & ~seen):
                 continue

@@ -143,6 +143,12 @@ def generate_launch_description():
             description="Open the Rerun viewer and stream the Explore step live (needs a display).",
         ),
         DeclareLaunchArgument(
+            "natural_language",
+            default_value="false",
+            choices=["true", "false"],
+            description="target is a request ('bring me something to drink'); DeepSeek names the object.",
+        ),
+        DeclareLaunchArgument(
             "shutdown_when_done",
             default_value="false",
             choices=["true", "false"],
@@ -235,6 +241,8 @@ def generate_launch_description():
             Arg("active_perception"),
             "--rerun",
             Arg("rerun"),
+            "--natural-language",
+            Arg("natural_language"),
         ],
         name="mission_tree",
         output="both",

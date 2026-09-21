@@ -18,6 +18,8 @@
   <div class="brand">DORA <span>ovmm</span></div>
   <form id="query">
     <input id="target" placeholder="What should I fetch?" autocomplete="off">
+    <input id="furniture" placeholder="at furniture (optional)" autocomplete="off" size="18"
+           title="A furniture node id, or a unique name or label. With an object: search only there. Alone: just drive there.">
     <button id="go">Fetch</button>
   </form>
   <div class="status"><span class="dot" id="status-dot"></span><span id="status">connecting</span></div>
@@ -38,14 +40,17 @@
     <div class="stage">
       <div class="view" id="home">
         <div class="caption" id="home-caption"></div>
-        <div class="corner-group">
-          <button class="corner" id="home-button">Home arm</button>
-          <button class="corner" id="open-button" title="Open the hand fully">Open hand</button>
-          <button class="corner" id="close-button" title="Close the hand with the grasp effort">Close hand</button>
-        </div>
       </div>
       <div class="view" id="navigate"><div class="caption" id="nav-caption"></div></div>
       <div class="reasoner" id="reasoner" hidden></div>
+      <!-- Over every stage, like the reasoner: the operator's controls are always in reach. -->
+      <div class="corner-group">
+        <button class="corner" id="home-button" title="Fold the arm home. No collision check: only with the hand empty and clear.">Home arm</button>
+        <button class="corner" id="open-button" title="Open the hand fully">Open hand</button>
+        <button class="corner" id="close-button" title="Close the hand with the grasp effort">Close hand</button>
+        <button class="corner" id="recover-button" title="After a failed pick: open the hand, back straight out, then plan the arm home. Resumes Nav2.">Recover arm</button>
+        <button class="corner" id="nav2-button" title="The mission pauses Nav2 for the pick and the next mission resumes it. Resume it here to send RViz goals in between; pause it to be sure the base stays put.">Nav2</button>
+      </div>
     </div>
     <footer id="log">&nbsp;</footer>
   </section>

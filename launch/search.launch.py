@@ -65,6 +65,12 @@ def generate_launch_description():
             description="Generate grasps and pick the object up once parked.",
         ),
         DeclareLaunchArgument(
+            "natural_language",
+            default_value="false",
+            choices=["true", "false"],
+            description="target is a request ('bring me something to drink'); DeepSeek names the object.",
+        ),
+        DeclareLaunchArgument(
             "mode",
             default_value="auto",
             choices=["auto", "pickup", "grasp"],
@@ -172,6 +178,8 @@ def generate_launch_description():
             Arg("active_perception"),
             "--rerun",
             Arg("rerun"),
+            "--natural-language",
+            Arg("natural_language"),
         ],
         name="mission_tree",
         output="both",

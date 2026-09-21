@@ -102,7 +102,13 @@ loader.load('/robot.urdf', model => { robot = model; home.world.add(model); });
 const drawn = {};   // joint values on screen, eased toward their target
 let manualHome = 0; // until when the view follows a Home button press live
 
+// An operator's click outranks the mission: the server stops a running one first.
+// Asked once, so a stray click cannot end a good run.
+const takeOver = what => !live?.running ||
+  confirm(`A mission is running. Stop it and ${what}?`);
+
 $('home-button').onclick = async () => {
+  if (!takeOver('fold the arm home (no collision check)')) return;
   const reply = await fetch('/home', { method: 'POST' });
   if (!reply.ok) {
     flash((await reply.json()).error);
@@ -112,12 +118,23 @@ $('home-button').onclick = async () => {
 };
 
 // Fail-safe hand control on the real robot: open to let go, close to hold.
-for (const [id, path] of [['open-button', '/gripper/open'], ['close-button', '/gripper/close']]) {
+for (const [id, path, what] of [['open-button', '/gripper/open', 'open the hand'],
+                                ['close-button', '/gripper/close', 'close the hand'],
+                                ['recover-button', '/recover', 'recover the arm']]) {
   $(id).onclick = async () => {
+    if (!takeOver(what)) return;
     const reply = await fetch(path, { method: 'POST' });
     if (!reply.ok) flash((await reply.json()).error);
   };
 }
+
+// One button for both: it offers the opposite of what Nav2 is doing now.
+$('nav2-button').onclick = async () => {
+  const pause = live?.nav2 === 'active';
+  if (!takeOver(pause ? 'pause Nav2' : 'resume Nav2')) return;
+  const reply = await fetch(pause ? '/nav2/pause' : '/nav2/resume', { method: 'POST' });
+  if (!reply.ok) flash((await reply.json()).error);
+};
 
 function replayFrame(frames, now) {
   // Play a recording once from when its stage was shown, then hold the last frame.
@@ -152,8 +169,15 @@ function tickHome(now) {
 // ---------- the reasoner, floating over every stage like the camera ----------
 function renderReason() {
   const reasons = runEvents().filter(e => e.kind === 'reason');
-  $('reasoner').hidden = !reasons.length;
+  // With --natural-language: how the typed request became the object searched for.
+  const asked = runEvents().find(e => e.kind === 'request');
+  $('reasoner').hidden = !reasons.length && !asked;
   let html = '';
+  if (asked) {
+    const how = { request: 'named in the request', known: 'chosen from the scene graph, as the request names no object',
+                  new: "DeepSeek's suggestion, as nothing in the scene graph serves the request" }[asked.source];
+    html += `<h2>Request</h2><p>"${esc(asked.request)}" &rarr; <b>${esc(asked.target)}</b><span class="why">${how}</span></p>`;
+  }
   if (reasons.length) {
     const all = plans();
     const same = (a, b) => b && a.furniture_id === b.furniture_id && a.object_id === b.object_id;
@@ -168,7 +192,7 @@ function renderReason() {
       return `<li>${where}${location.room ? ` · ${esc(location.room)}` : ''}${tag}${why}</li>`;
     };
     const target = `<b>${esc(reasons[0].target)}</b>`;
-    html = '<h2>Reasoner</h2>';
+    html += '<h2>Reasoner</h2>';
     for (const r of reasons) {
       if (r.source === 'scene_graph' && r.locations.length) {
         html += `<p>${target} is already in the scene graph.</p><ol>${r.locations.map(item).join('')}</ol>`;
@@ -455,7 +479,11 @@ function render() {
   $('go').disabled = offline || resetting;
   $('reset').disabled = offline || resetting;
   $('target').disabled = !!live?.running;
-  for (const id of ['home-button', 'open-button', 'close-button']) $(id).disabled = offline || !!viewing || live.running;
+  // Live controls for the real robot: usable whatever the page shows, mission or saved run.
+  for (const id of ['home-button', 'open-button', 'close-button', 'recover-button']) $(id).disabled = offline;
+  const nav2 = { active: 'Pause Nav2', paused: 'Resume Nav2' }[live?.nav2] ?? 'Nav2 down';
+  if ($('nav2-button').textContent !== nav2) $('nav2-button').textContent = nav2;
+  $('nav2-button').disabled = offline || !(live?.nav2 === 'active' || live?.nav2 === 'paused');
   const topic = live?.camera_topic || ' ';
   if ($('camera-topic').textContent !== topic) $('camera-topic').textContent = topic;
   const log = (viewing ? `<a href="/runs/${viewing}.log" target="_blank">full log</a> · ` : '') + (state?.log ? esc(state.log) : '&nbsp;');
@@ -503,6 +531,15 @@ $('runs').onclick = event => {
   if (node) view(node.dataset.run || null);
 };
 
+// While a mission runs the form's button is Stop, and Enter in a text box presses it,
+// so a stray Enter would end a mission mid-drive. Stopping takes the button itself;
+// the browser reports Enter as a click on it, so the key is caught here instead.
+for (const id of ['target', 'furniture']) {
+  $(id).addEventListener('keydown', event => {
+    if (event.key === 'Enter' && live?.running) event.preventDefault();
+  });
+}
+
 $('query').onsubmit = async event => {
   event.preventDefault();
   if (live?.running) {
@@ -510,9 +547,10 @@ $('query').onsubmit = async event => {
     return;
   }
   const target = $('target').value.trim();
-  if (!target) return;
+  const furniture = $('furniture').value.trim();
+  if (!target && !furniture) return;
   const reply = await fetch('/run', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-                                      body: JSON.stringify({ target }) });
+                                      body: JSON.stringify({ target, furniture }) });
   if (!reply.ok) {
     flash((await reply.json()).error);
     return;

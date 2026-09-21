@@ -29,6 +29,7 @@ Watch it live, with ROS sourced, once this is running:
 import argparse
 import math
 import os
+import re
 import sys
 import threading
 import time
@@ -76,6 +77,9 @@ class Step(py_trees.behaviour.Behaviour):
         if not self.started:
             self.started = True
             return py_trees.common.Status.RUNNING
+        # For core.perception.sam3_client: which step a saved detection belongs to. The
+        # pick runs in its own process and inherits it.
+        os.environ["MISSION_STAGE"] = self.name
         if self.action():
             return py_trees.common.Status.SUCCESS
         return py_trees.common.Status.FAILURE
@@ -285,8 +289,15 @@ def run(argv=None):
     if args.natural_language == "true":
         # Before anything reads the target: it is SAM3's prompt, the cache key and the
         # label of the node a detection saves, and none of them should hold a sentence.
-        request, args.target = args.target, query.object_of(args.target)
+        # The graph's own objects, so 'something to drink' can come back as 'bottle'.
+        known = {data["name"] or data["label"] for data in sg.objects(scene).values()} if scene else set()
+        request, args.target = args.target, query.object_of(args.target, known=known)
         print(f"[REQUEST] {request!r} -> {args.target!r}", flush=True)
+    # One folder of saved detections per run, named after when it ran and what it was
+    # after. The dashboard passes its own run id, so both call the run the same.
+    os.environ["MISSION_RUN_ID"] = (os.environ.get("MISSION_RUN_ID") or time.strftime("%Y%m%d-%H%M%S")) \
+        + "_" + re.sub("[^a-z0-9]+", "-", args.target.lower()).strip("-")
+    print(f"[RUN] detections in outputs/detections/{os.environ['MISSION_RUN_ID']}", flush=True)
     rclpy.init()
     # There is no /clock on the robot: a sim-time node never sees a fresh
     # map->base TF and every step fails on it. realrobot/live/goto.py does the same.

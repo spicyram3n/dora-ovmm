@@ -131,6 +131,22 @@ sensor_msgs::msg::Image image_from_mat(
   return output;
 }
 
+sensor_msgs::msg::Image bgr8_from_yuy2(const sensor_msgs::msg::Image & image)
+{
+  // The HSR hand camera's format: two pixels share one U and V, four bytes a pair.
+  if (image.step < image.width * 2 || image.data.size() < static_cast<std::size_t>(image.step) * image.height) {
+    throw std::runtime_error("yuv422_yuy2 image is smaller than its width and height");
+  }
+  const cv::Mat packed(
+    static_cast<int>(image.height), static_cast<int>(image.width), CV_8UC2,
+    const_cast<std::uint8_t *>(image.data.data()), image.step);
+  cv::Mat bgr;
+  cv::cvtColor(packed, bgr, cv::COLOR_YUV2BGR_YUY2);
+  auto output = image_from_mat(image, bgr);
+  output.encoding = "bgr8";
+  return output;
+}
+
 sensor_msgs::msg::Image maybe_resize_image_raw(
   const sensor_msgs::msg::Image & image,
   const StreamConfig & stream)
@@ -196,6 +212,9 @@ EncodedImage encode_image(
   const StreamConfig & stream,
   std::uint64_t sequence)
 {
+  if (image.encoding == "yuv422_yuy2") {
+    return encode_image(bgr8_from_yuy2(image), stream, sequence);
+  }
   if (!is_mono8(image.encoding) && !is_color8(image.encoding)) {
     throw std::runtime_error("unsupported image encoding '" + image.encoding + "'");
   }

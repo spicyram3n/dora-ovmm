@@ -10,6 +10,14 @@ core.pipeline.mission_tree, which runs once per query in its own process. Its
 [EVENT] lines (core.utils.events) feed the page; the rest of its output goes to
 this terminal as before. Each run is saved to outputs/web_runs/ when it ends, with
 its full log, so any past query can be opened again, even with the sim closed.
+
+On the real robot the same page serves requests in plain language. The stack comes
+up without a mission when no target is given, and this server needs the robot's
+switches in its own environment, since it hands them to every mission it starts:
+
+    export RECORDING=<name> DEEPSEEK_API_KEY=<key>
+    ros2 launch /home/ws/launch/realrobot/search_real.launch.py
+    HSR_REAL_ROBOT=1 python3 -m web.server --natural-language true --top-k 2 --startup-timeout 600
 """
 
 import json
@@ -31,6 +39,9 @@ from builtin_interfaces.msg import Duration
 from control_msgs.action import FollowJointTrajectory
 from cv_bridge import CvBridge
 from flask import Flask, abort, jsonify, request, send_from_directory
+from lifecycle_msgs.msg import State
+from lifecycle_msgs.srv import GetState
+from nav2_msgs.srv import ManageLifecycleNodes
 from nav_msgs.msg import Path as NavPath
 from rclpy.action import ActionClient
 from rclpy.executors import SingleThreadedExecutor
@@ -86,6 +97,10 @@ follower = None     # the thread that saves the current run when it ends
 arm = None
 gripper = None      # hand_motor_joint trajectory: opens the hand
 grasp = None        # Toyota's effort grasp: closes it
+nav_manage = None   # Nav2's lifecycle manager: pauses and resumes the motion nodes
+nav_state = None    # controller_server's lifecycle state, shown on the Nav2 button
+nav2 = "down"       # "active", "paused" or "down", refreshed every NAV2_PERIOD seconds
+NAV2_PERIOD = 2.0
 # As core/grasping/pick.py: wider breaks the distal finger limit; negative closes.
 OPEN_HAND = 1.1
 CLOSE_EFFORT = -0.3
@@ -194,36 +209,82 @@ def index():
 @app.get("/state")
 def state():
     with lock:
-        return jsonify(dict(run, boot=BOOT, camera_topic=RGB_TOPIC))
+        return jsonify(dict(run, boot=BOOT, camera_topic=RGB_TOPIC, nav2=nav2))
 
 
-@app.post("/run")
-def start():
+def take_over():
+    """The operator's click outranks the mission: stop a running one and wait for it,
+    so the two never command the arm together. None, or the JSON error to return when
+    it will not stop, in which case the click is not carried out either."""
+    with lock:
+        running = run["running"]
+        if running:
+            try:
+                # The mission cancels its Nav2 goal and its pick on SIGINT, as for Stop.
+                os.killpg(process.pid, signal.SIGINT)
+            except ProcessLookupError:
+                pass  # already exiting; the follower has yet to notice
+    if running:
+        follower.join(timeout=STOP_TIMEOUT)
+        if follower.is_alive():
+            return jsonify(error="The mission has not stopped yet; try again"), 504
+    return None
+
+
+def begin(title, command):
+    """Run `command` as the page's current run, or return the JSON error if one is going."""
     global process, run, follower
-    target = str(request.get_json(force=True).get("target", "")).strip()
-    if not target:
-        return jsonify(error="Type an object to fetch"), 400
     with lock:
         if run["running"]:
             return jsonify(error="A mission is already running"), 409
-        run = fresh(target)
+        run = fresh(title)
         run["running"] = True
         run["id"] = time.strftime("%Y%m%d-%H%M%S")
         RUNS.mkdir(parents=True, exist_ok=True)
-        # The full mission by default: search, park and pick, so SAM3 and GraspGenX
-        # must be up. The server's own arguments come later and win, so
-        # `python3 -m web.server --navigate-only true` still gets drive-only runs,
-        # as does any other mission_tree flag passed to the server.
         # Its own session, so Stop reaches anything the mission starts, as Ctrl+C would.
         process = subprocess.Popen(
-            [sys.executable, "-u", "-m", "core.pipeline.mission_tree", "--target", target,
-             "--navigate-only", "false", *mission_args],
+            command,
             cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace",
-            env=dict(os.environ, MISSION_EVENTS="1"), start_new_session=True,
+            # The run id names the mission's folder of saved detections as well.
+            env=dict(os.environ, MISSION_EVENTS="1", MISSION_RUN_ID=run["id"]), start_new_session=True,
         )
         follower = threading.Thread(target=follow, args=(process, run), daemon=True)
         follower.start()
     return jsonify(ok=True)
+
+
+@app.post("/run")
+def start():
+    query = request.get_json(force=True)
+    target = str(query.get("target", "")).strip()
+    furniture = str(query.get("furniture", "")).strip()
+    if not target and not furniture:
+        return jsonify(error="Type an object to fetch, a piece of furniture to drive to, or both"), 400
+    # The full mission by default: search, park and pick, so SAM3 and GraspGenX
+    # must be up. The server's own arguments come later and win, so
+    # `python3 -m web.server --navigate-only true` still gets drive-only runs,
+    # as does any other mission_tree flag passed to the server.
+    command = [sys.executable, "-u", "-m", "core.pipeline.mission_tree", "--target", target or furniture,
+               "--navigate-only", "false", *mission_args]
+    if furniture:
+        # That one piece only: no remembered places and no DeepSeek (mission_tree --furniture).
+        command += ["--furniture", furniture]
+    if not target:
+        # Furniture alone tests the drive there. These come last, so they win over the
+        # server's own flags: nothing to detect or pick, and no request to understand.
+        command += ["--navigate-only", "true", "--natural-language", "false"]
+    return begin(target or f"drive to {furniture}", command)
+
+
+@app.post("/recover")
+def recover():
+    """Free the arm after a pick that stopped part-way, as realrobot/live/recover_home.py
+    does it: open the hand, forget the stale scene, back straight out, then plan home.
+    The Home button folds the arm with no collision check, which drags a hand that is
+    still around the object through it. Runs like a mission: logged, saved, stoppable."""
+    if (stuck := take_over()) is not None:
+        return stuck
+    return begin("recover arm", [sys.executable, "-u", str(ROOT / "realrobot/live/recover_home.py")])
 
 
 @app.post("/stop")
@@ -281,9 +342,8 @@ def saved_run(name):
 @app.post("/home")
 def home():
     """Send the arm to the pose the mission's Home step uses; the page shows it live."""
-    with lock:
-        if run["running"]:
-            return jsonify(error="The mission is using the arm"), 409
+    if (stuck := take_over()) is not None:
+        return stuck
     if not arm.server_is_ready():
         return jsonify(error="Arm controller is not ready"), 503
     arm.send_goal_async(home_goal())
@@ -292,10 +352,7 @@ def home():
 
 def hand_free():
     """None when the hand may be moved by hand, else the JSON error to return."""
-    with lock:
-        if run["running"]:
-            return jsonify(error="The mission is using the hand"), 409
-    return None
+    return take_over()
 
 
 @app.post("/gripper/open")
@@ -321,6 +378,59 @@ def gripper_close():
         return jsonify(error="Gripper grasp action is not ready"), 503
     grasp.send_goal_async(GripperApplyEffort.Goal(effort=CLOSE_EFFORT))
     return jsonify(ok=True)
+
+
+def ask(client, message, timeout=10.0):
+    """One service call from a Flask thread; the executor thread completes it. None when
+    the service is absent or silent."""
+    if not client.service_is_ready():
+        return None
+    done = threading.Event()
+    future = client.call_async(message)
+    future.add_done_callback(lambda _: done.set())
+    if not done.wait(timeout):
+        client.remove_pending_request(future)
+        return None
+    return future.result()
+
+
+def on_nav2_tick():
+    """Keep `nav2` current for the page's button, without blocking the executor."""
+    global nav2
+    if not nav_state.service_is_ready():
+        nav2 = "down"
+        return
+
+    def answered(future):
+        global nav2
+        state = future.result().current_state.id
+        nav2 = {State.PRIMARY_STATE_ACTIVE: "active", State.PRIMARY_STATE_INACTIVE: "paused"}.get(state, "down")
+    nav_state.call_async(GetState.Request()).add_done_callback(answered)
+
+
+def switch_nav2(command):
+    # As the hand and arm buttons: the mission is stopped first. Resumed during a
+    # pick, Nav2 would fight MoveIt for the base; paused mid-drive, the mission would
+    # only see its goal fail.
+    if (stuck := take_over()) is not None:
+        return stuck
+    reply = ask(nav_manage, ManageLifecycleNodes.Request(command=command), timeout=30.0)
+    if reply is None:
+        return jsonify(error="Nav2's lifecycle manager is not answering; is the stack up?"), 503
+    if not reply.success:
+        return jsonify(error="Nav2 refused"), 502
+    return jsonify(ok=True)
+
+
+@app.post("/nav2/pause")
+def nav2_pause():
+    """Deactivate Nav2's motion nodes; the map and localization stay up."""
+    return switch_nav2(ManageLifecycleNodes.Request.PAUSE)
+
+
+@app.post("/nav2/resume")
+def nav2_resume():
+    return switch_nav2(ManageLifecycleNodes.Request.RESUME)
 
 
 @app.get("/camera.jpg")
@@ -351,7 +461,7 @@ def package_file(package, rest):
 
 
 def main():
-    global urdf, arm, gripper, grasp, tf_listener
+    global urdf, arm, gripper, grasp, tf_listener, nav_manage, nav_state
     # The description the simulation spawns (launch/search.launch.py).
     share = get_package_share_directory("hsrc_description")
     urdf = xacro.process_file(os.path.join(share, "robots/hsrc1s.urdf.xacro")).toxml()
@@ -368,6 +478,9 @@ def main():
     node.create_subscription(Image, RGB_TOPIC, on_image, qos_profile_sensor_data)
     tf_listener = TransformListener(tf_buffer, node)
     node.create_timer(TRACK_PERIOD, on_tick)
+    nav_manage = node.create_client(ManageLifecycleNodes, "/lifecycle_manager_navigation/manage_nodes")
+    nav_state = node.create_client(GetState, "/controller_server/get_state")
+    node.create_timer(NAV2_PERIOD, on_nav2_tick)
     executor = SingleThreadedExecutor()
     executor.add_node(node)
     spinner = threading.Thread(target=executor.spin, daemon=True)

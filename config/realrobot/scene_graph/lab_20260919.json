@@ -30,26 +30,7 @@
         0.0,
         1.0
       ]
-    ],
-    "llm_guesses": {
-      "tomato can": [
-        {
-          "furniture_id": 100,
-          "relation": "on",
-          "reason": "Robot is already in the office; a tomato can is most plausibly placed on an office table among nearby options, avoiding costly room crossing."
-        },
-        {
-          "furniture_id": 118,
-          "relation": "in",
-          "reason": "An office cabinet is a likely storage spot for a can; it is in the robot's current room, so searching it is cheap."
-        },
-        {
-          "furniture_id": 127,
-          "relation": "on",
-          "reason": "A shelf in the office is a plausible place for a canned good and is in the same room, minimizing travel cost."
-        }
-      ]
-    }
+    ]
   },
   "nodes": [
     {

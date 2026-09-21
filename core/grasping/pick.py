@@ -111,12 +111,15 @@ GRIPPER_DIR = Path(__file__).resolve().parents[2] / 'docker/graspgenx/x_grippers
 
 # Choose approaches from measured shape and floor height in odom metres.
 # MoveIt still checks reachability and collisions.
+# Front and side only. Overhead reaches are hard to plan for this arm over furniture,
+# so objects are set out with a graspable side towards the robot; one too wide from
+# there is refused, not taken from above. 'top_down' (with 'wide_approach' and
+# 'top_down_max_z') is still understood below, should a shape need it again.
 SHAPE_POLICIES = {
     'cylinder': {'approach': 'front'},
-    'sphere': {'approach': 'top_down', 'top_down_max_z': .95},
-    'cube': {'approach': 'top_down', 'top_down_max_z': .95},
-    'cuboid': {'approach': 'front', 'wide_approach': 'top_down',
-               'top_down_max_z': .95},
+    'sphere': {'approach': 'front'},
+    'cube': {'approach': 'front'},
+    'cuboid': {'approach': 'front'},
 }
 
 
@@ -248,8 +251,8 @@ def rectangular_candidates(rect, bottom, camera_position):
     mode = policy['approach']
     # Use an overhead approach if the front is too wide, unless the object is too high.
     if horizontal_width > max_width:
-        mode = policy.get('wide_approach', 'top_down')
-    if top > policy['top_down_max_z']:
+        mode = policy.get('wide_approach', mode)
+    if top > policy.get('top_down_max_z', -np.inf):
         mode = 'front'
 
     poses, widths = [], []
@@ -351,7 +354,8 @@ def contact_candidates(points, palms, camera_position):
         heading = np.arctan2(toward[1], toward[0])
         kind = 'sphere'
         # Offer top-down sphere grasps only when the object is low enough.
-        if centre[2]+radius <= SHAPE_POLICIES['sphere']['top_down_max_z']:
+        if (SHAPE_POLICIES['sphere']['approach'] == 'top_down'
+                and centre[2]+radius <= SHAPE_POLICIES['sphere']['top_down_max_z']):
             for angle in heading+np.array([0., np.pi/2, np.pi, 3*np.pi/2]):
                 closing = np.array([np.cos(angle), np.sin(angle), 0.])
                 approach = np.array([0., 0., -1.])
@@ -1709,6 +1713,25 @@ def clear_observation_pose(node, planner):
         depth_relay(node, True)
 
 
+def hold_nav2():
+    """Pause Nav2 when it is up and able to drive, as the mission does before its pick.
+
+    The reach moves the base through MoveIt, and only a paused Nav2 is certain not to
+    move it as well: a leftover goal, a recovery or an RViz click would. Run from the
+    mission it is paused already, and a second PAUSE is refused, so only an active one
+    is touched. With the grasp stack alone there is no Nav2, and nothing to do."""
+    from lifecycle_msgs.msg import State
+    from core.navigation import nav2_client
+    navigator = nav2_client.Navigator(use_sim_time=USE_SIM_TIME)
+    try:
+        if not navigator._is_running("controller_server"):
+            return
+        if navigator.navigation_state("controller_server") == State.PRIMARY_STATE_ACTIVE:
+            navigator.pause_navigation()
+    finally:
+        navigator.destroy_node()
+
+
 def pick(prompt, mode='auto', cloud=None):
     if mode not in ('auto', 'pickup', 'grasp'):
         raise ValueError('Unknown grasp mode')
@@ -1716,6 +1739,8 @@ def pick(prompt, mode='auto', cloud=None):
     rclcpp.init()
     node = rclpy.create_node("pick", parameter_overrides=[NodeParameter("use_sim_time", value=USE_SIM_TIME)])
     try:
+        # Before anything moves. Refused, it raises, and the pick ends here.
+        hold_nav2()
         poses = RobotTransforms(node)
         planner = Pick(mtc_node(), ik=lambda matrix, base: seeded_ik(node, matrix, base))
         # Restore lift travel before observing if the torso is already too high.
@@ -1732,6 +1757,9 @@ def pick(prompt, mode='auto', cloud=None):
             clear_observation_pose(node,planner)
             reframe_target(node,poses,blocked.centre)
             points, grasps, widths, observation = perceive(prompt,node,poses)
+        # For showing afterwards: the measured cloud with the first few grasps on it.
+        from core.grasping import picture
+        picture.save(prompt, observation['points'], grasps, widths, observation.get('geometry_kind'))
         # Auto mode test-lifts cylinders; other shapes stop at a contact hold.
         is_can = observation.get('geometry_kind') == 'cylinder'
         lift_requested = mode == 'pickup' or (mode == 'auto' and is_can)
